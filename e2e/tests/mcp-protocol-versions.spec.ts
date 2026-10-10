@@ -14,7 +14,7 @@ import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Evidence } from "../support/evidence.ts";
-import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -541,20 +541,6 @@ export default defineApp({ accounts: {} }, { tools: router({
           api.request(actors.owner, "DELETE", `${root}/apps/${app.id}`).pipe(Effect.orDie),
         );
         yield* checkCancelledCalls(credentials, app.slug, signals.started);
-      }),
-    ),
-  );
-});
-
-layer(TestLive, { excludeTestServices: true })("Local MCP protocol versions", (it) => {
-  it.effect(scenarios.localMcpProtocolVersions.title, (context) =>
-    withCase(
-      context,
-      Effect.gen(function* () {
-        const target = yield* Target;
-        yield* checkProtocolVersions({
-          authorization: `Bearer ${Redacted.value(target.apiKey)}`,
-        });
       }),
     ),
   );

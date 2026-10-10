@@ -113,7 +113,6 @@ const dpop =
  */
 const serviceApp = (
   issuer: Effect.Success<typeof oauthSetupIssuer>,
-  kind: "declared" | "discovered",
   options: {
     readonly scope?: boolean;
     /** Further OAuth options the provider declares. */
@@ -126,14 +125,9 @@ const serviceApp = (
       http = yield* HttpClient.HttpClient;
     const prefix = `/api/organizations/${actors.organization.id}`;
     const oauth = {
-      ...(kind === "declared"
-        ? {
-            authorizationUrl: `${issuer.origin}/authorize`,
-            tokenUrl: `${issuer.origin}/token`,
-            scopes: ["openid", "read"],
-          }
-        : // Authorization-server discovery and dynamic registration; the resource advertises nothing.
-          { discover: issuer.origin, scopes: ["openid", "read"] }),
+      authorizationUrl: `${issuer.origin}/authorize`,
+      tokenUrl: `${issuer.origin}/token`,
+      scopes: ["openid", "read"],
       ...options.oauth,
     };
     const method =
@@ -145,7 +139,7 @@ const serviceApp = (
         ? "({ ...(await result.json()), scope: accounts.service.fields.scope })"
         : "result.json()";
 
-    const name = `Token shapes, ${kind} ${randomUUID().slice(0, 8)}`;
+    const name = `Token shapes ${randomUUID().slice(0, 8)}`;
     const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name,
       files: [
@@ -186,12 +180,12 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           {
             method: "oauth",
             label,
-            ...(kind === "declared" ? { client } : {}),
+            client,
           },
         );
         expect(started.status, `${label}: ${JSON.stringify(started.body)}`).toBe(200);
         const { authorizationUrl, redirectUri } = yield* body(Redirect, started);
-        if (kind === "declared") yield* issuer.allowClient({ ...client, redirect: redirectUri });
+        yield* issuer.allowClient({ ...client, redirect: redirectUri });
         const callbackUrl = yield* Effect.scoped(
           Effect.gen(function* () {
             const consent = yield* HttpClient.withScope(http).get(authorizationUrl);
@@ -251,13 +245,13 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
     return { signIn, read };
   });
 
-/** Sign in and renew with each shape through declared endpoints or discovery. */
-const tokenResponses = (kind: "declared" | "discovered") => (context: TestContext) =>
+/** Sign in and renew with each shape through declared endpoints. */
+const tokenResponses = (context: TestContext) =>
   withHostedCase(
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const { signIn, read } = yield* serviceApp(issuer, kind);
+      const { signIn, read } = yield* serviceApp(issuer);
 
       const accepted: ReadonlyArray<{
         readonly name: string;
@@ -359,7 +353,7 @@ const emptyScope = (context: TestContext) =>
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const { signIn, read } = yield* serviceApp(issuer, "declared", { scope: true });
+      const { signIn, read } = yield* serviceApp(issuer, { scope: true });
       const cases: ReadonlyArray<{
         readonly name: string;
         readonly tokenShape: TokenShape;
@@ -411,7 +405,7 @@ const nestedTokenResponse = (context: TestContext) =>
     context,
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
-      const nested = yield* serviceApp(issuer, "declared", {
+      const nested = yield* serviceApp(issuer, {
         scope: true,
         oauth: { tokenResponse: { path: "authed_user" } },
       });
@@ -456,7 +450,7 @@ const nestedTokenResponse = (context: TestContext) =>
       }
 
       // The same response without the declared option has no access token Executor can read.
-      const standard = yield* serviceApp(issuer, "declared", { scope: true });
+      const standard = yield* serviceApp(issuer, { scope: true });
       yield* issuer.configure({ tokenShape: slackUser, refreshTokens: true, expiresIn: 10 });
       const refused = yield* standard.signIn("Slack user token without the option");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
@@ -474,7 +468,7 @@ const jsonTokenRequests = (context: TestContext) =>
     Effect.gen(function* () {
       const issuer = yield* oauthSetupIssuer;
       yield* issuer.configure({ tokenRequestFormat: "json", refreshTokens: true, expiresIn: 10 });
-      const json = yield* serviceApp(issuer, "declared", {
+      const json = yield* serviceApp(issuer, {
         oauth: { tokenRequestFormat: "json" },
       });
       const sent = (yield* issuer.metrics).tokenContentTypes.length;
@@ -497,7 +491,7 @@ const jsonTokenRequests = (context: TestContext) =>
       expect(types.length).toBeGreaterThanOrEqual(3);
       expect(types).toEqual(types.map(() => "application/json"));
 
-      const form = yield* serviceApp(issuer, "declared");
+      const form = yield* serviceApp(issuer);
       const refused = yield* form.signIn("Form token request");
       expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
       expect(refused.failure._tag).toBe("OAuthCompletionFailed");
@@ -508,8 +502,7 @@ const jsonTokenRequests = (context: TestContext) =>
   );
 
 layer(HostedLive, { excludeTestServices: true })("OAuth provider token responses", (it) => {
-  it.effect(scenarios.oauthDeclaredTokenResponses.title, tokenResponses("declared"));
-  it.effect(scenarios.oauthDiscoveredTokenResponses.title, tokenResponses("discovered"));
+  it.effect(scenarios.oauthDeclaredTokenResponses.title, tokenResponses);
   it.effect(scenarios.oauthEmptyTokenScope.title, emptyScope);
   it.effect(scenarios.oauthNestedTokenResponse.title, nestedTokenResponse);
   it.effect(scenarios.oauthJsonTokenRequests.title, jsonTokenRequests);

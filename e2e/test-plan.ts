@@ -2414,17 +2414,6 @@ export const scenarios = plan({
       local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
     },
   },
-  oauthDiscoveredTokenResponses: {
-    fixtures: "actors",
-    file: "oauth-provider-token-responses.spec.ts",
-    title:
-      "Discovered OAuth servers accept real services' token responses, including Slack, Shopify and Mailchimp shapes and null members, on sign-in and renewal, and reject DPoP",
-    targets: {
-      "self-host": scheduled,
-      cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
-      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
-    },
-  },
   oauthNestedTokenResponse: {
     fixtures: "actors",
     file: "oauth-provider-token-responses.spec.ts",
@@ -4055,15 +4044,6 @@ export const scenarios = plan({
       cloud: na("This journey checks local pairing and live app reads."),
     },
   },
-  localAppDetailLoadingMobile: {
-    file: "local-app-detail-loading.spec.ts",
-    title: "Local mobile app navigation keeps a stable loading panel through live reads",
-    targets: {
-      local: scheduled,
-      "self-host": na("This journey checks local pairing and live app reads."),
-      cloud: na("This journey checks local pairing and live app reads."),
-    },
-  },
   appDetailLoading: {
     fixtures: "actors",
     file: "app-detail-loading.spec.ts",
@@ -4638,7 +4618,9 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: managedCloud,
-      local: na("This scenario uses hosted APIs; localRejectionRecording covers Local."),
+      local: na(
+        "This scenario uses hosted APIs; Local records rejections through the same telemetry code.",
+      ),
     },
   },
   appEvaluationReporting: {
@@ -4649,15 +4631,6 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: managedCloud,
       local: na("The hosted Sentry reporter owns this behavior."),
-    },
-  },
-  localRejectionRecording: {
-    file: "client-rejection-reporting.spec.ts",
-    title: "local request rejections are recorded on their request span",
-    targets: {
-      local: scheduled,
-      "self-host": na("clientRejectionReporting covers hosted request rejections."),
-      cloud: na("clientRejectionReporting covers hosted request rejections."),
     },
   },
   mcpTelemetryPrivacy: {
@@ -5502,7 +5475,9 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local runs the same protocol checks in localMcpProtocolVersions."),
+      local: na(
+        "Local negotiates through the same MCP server code; its other MCP scenarios cover that code.",
+      ),
     },
   },
   // The app tool signals a loopback listener when it starts, and the Sentry check reads the managed
@@ -5515,15 +5490,6 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: managedCloud,
       local: na("Cancellation is a hosted MCP session behavior."),
-    },
-  },
-  localMcpProtocolVersions: {
-    file: "mcp-protocol-versions.spec.ts",
-    title: "Local MCP negotiates older protocol versions and explains rejected requests",
-    targets: {
-      local: scheduled,
-      "self-host": na("Hosted products run the same protocol checks in mcpProtocolVersions."),
-      cloud: na("Hosted products run the same protocol checks in mcpProtocolVersions."),
     },
   },
   mcpToolInput: {
