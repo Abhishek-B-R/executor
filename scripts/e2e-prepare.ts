@@ -57,7 +57,7 @@ const steps: ReadonlyArray<Step> = [
     packages: ["packages/sdk"],
     files: ["scripts/build-test-runtime.ts"],
     after: [],
-    outputs: [".local/test-runtime/host.json"],
+    outputs: [".local/test-runtime/host.json", ".local/test-runtime/host.json.map"],
   },
   {
     name: "e2e:apps",

@@ -2,10 +2,12 @@
  * Product line coverage of the E2E suite, per scenario.
  *
  * `E2E_COVERAGE=1` makes the runner profile each self-host and local product process (see
- * `support/managed-server.ts`): Bun writes lcov, Node writes V8 coverage. Each scenario starts its
- * own product, so each report belongs to one scenario. Chromium records every scenario's page
- * scripts, on Cloud too (see `support/browser.ts`), which the dashboards' source maps map to their
- * sources. Cloud's Worker serves all scenarios at once and is not profiled.
+ * `support/managed-server.ts`): Bun writes lcov, Node writes V8 coverage. The product's workerd
+ * logs which functions its isolates ran (see `support/workerd-coverage.ts`); the host bundle's and
+ * the app framework's source maps map them to their sources. Each scenario
+ * starts its own product, so each report belongs to one scenario. Chromium records every scenario's
+ * page scripts, on Cloud too (see `support/browser.ts`), which the dashboards' source maps map to
+ * their sources. Cloud's Worker serves all scenarios at once and is not profiled.
  *
  * - `collect <out> <directory...>` reduces the raw reports under each run directory to one compact
  *   file: the lines each scenario covered, and each target's executable lines.
@@ -249,6 +251,25 @@ const readBrowser = (
   }
 };
 
+/**
+ * workerd's coverage, as `support/workerd-coverage.ts` saves it from its isolates' function logs:
+ * each script's functions, counted 1 when they ran and 0 when not, so it counts functions rather
+ * than blocks. `bundle` is the host bundle the product loaded.
+ */
+const WorkerdCoverage = Schema.Struct({ bundle: Schema.String, scripts: BrowserCoverage });
+/** Modules by name with their source maps, as `writeWorkerdHostBundle` and `apps:build` write them. */
+const BundleModules = Schema.Array(Schema.Struct({ name: Schema.String, content: Schema.Unknown }));
+const FrameworkModules = Schema.Struct({ server: Schema.Record(Schema.String, Schema.String) });
+const SourceMaps = Schema.Record(Schema.String, SourceMap);
+/** How long the script a coverage report describes is: its outermost function spans all of it. */
+const scriptLength = (functions: typeof V8Functions.Type) =>
+  Math.max(
+    0,
+    ...functions.flatMap(({ ranges }) =>
+      ranges[0]?.startOffset === 0 ? [ranges[0].endOffset] : [],
+    ),
+  );
+
 const collect = (out: string, directories: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -280,6 +301,33 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
     yield* findBundles(path.join(root, "apps"), false);
     const bundles = new Map<string, Bundle | undefined>();
     const bundleOf = (url: string) => bundles.get(path.basename(new URL(url).pathname));
+    // Inside workerd, the host bundle's modules are `file:///bundle/<name>`, and app Workers link
+    // the app framework's modules as `node_modules/apps/<name>`, as the staged package's
+    // `runtime.json` holds them.
+    const workerdBundles = new Map<string, Bundle | undefined>();
+    const loadModules = (
+      key: string,
+      modules: Effect.Effect<ReadonlyMap<string, string>, unknown>,
+      mapsFile: string,
+    ) =>
+      Effect.gen(function* () {
+        if (workerdBundles.has(`${key}\0`)) return;
+        workerdBundles.set(`${key}\0`, undefined);
+        const texts = yield* modules;
+        const maps = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceMaps))(
+          yield* fs.readFileString(mapsFile),
+        );
+        for (const [name, map] of Object.entries(maps)) {
+          const text = texts.get(name);
+          if (text !== undefined)
+            workerdBundles.set(`${key}\0${name}`, { text, map, directory: path.dirname(mapsFile) });
+        }
+      }).pipe(Effect.ignore);
+    const framework = path.join(root, "packages/apps/dist/runtime.json");
+    const workerdBundleOf = (bundle: string) => (url: string) =>
+      url.startsWith("file:///bundle/")
+        ? workerdBundles.get(`${bundle}\0${url.slice("file:///bundle/".length)}`)
+        : workerdBundles.get(`${framework}\0${url}`);
     const scenarioDirectories: string[] = [];
     const walk = (directory: string): Effect.Effect<void, unknown> =>
       Effect.gen(function* () {
@@ -324,6 +372,44 @@ const collect = (out: string, directories: ReadonlyArray<string>) =>
             }
             readBrowser(
               coverage,
+              root,
+              bundleOf,
+              (from, to) => path.relative(from, path.resolve(to)),
+              found,
+            );
+          } else if (report.startsWith("workerd-")) {
+            const coverage = yield* Schema.decodeUnknownEffect(
+              Schema.fromJsonString(WorkerdCoverage),
+            )(text);
+            yield* loadModules(
+              coverage.bundle,
+              fs.readFileString(coverage.bundle).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(BundleModules))),
+                Effect.map(
+                  (modules) =>
+                    new Map(
+                      modules.flatMap(({ name, content }) =>
+                        typeof content === "string" ? [[name, content] as const] : [],
+                      ),
+                    ),
+                ),
+              ),
+              `${coverage.bundle}.map`,
+            );
+            yield* loadModules(
+              framework,
+              fs.readFileString(framework).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkModules))),
+                Effect.map(({ server }) => new Map(Object.entries(server))),
+              ),
+              `${framework}.map`,
+            );
+            const bundleOf = workerdBundleOf(coverage.bundle);
+            readBrowser(
+              // A module rebuilt since the run no longer matches its coverage's offsets.
+              coverage.scripts.filter(
+                ({ url, functions }) => bundleOf(url)?.text.length === scriptLength(functions),
+              ),
               root,
               bundleOf,
               (from, to) => path.relative(from, path.resolve(to)),

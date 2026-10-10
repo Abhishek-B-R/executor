@@ -36,6 +36,7 @@ import {
   productDatabase,
 } from "./legacy-storage.ts";
 import { scenarios } from "../test-plan.ts";
+import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
@@ -112,6 +113,8 @@ export const startManagedServer = (
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
+    /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
+    let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
       PATH: runtimePath,
       NODE_ENV: "test",
@@ -155,6 +158,10 @@ export const startManagedServer = (
     const shutdown = Effect.suspend(() => {
       const child = running;
       if (child === undefined) return Effect.void;
+      // workerd's function logs are complete once it has stopped with the product.
+      return stopProduct(child).pipe(Effect.andThen(saveWorkerdCoverage));
+    });
+    const stopProduct = (child: ChildProcessSpawner.ChildProcessHandle) => {
       // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
       // PID: once the product is reaped, its PID can name another process before its handle
       // reports the exit. A write to a product that already exited never completes, so the
@@ -172,7 +179,7 @@ export const startManagedServer = (
         ),
         Effect.ignore,
       );
-    });
+    };
     const stop = Effect.suspend(() =>
       current === undefined
         ? Effect.void
@@ -199,6 +206,8 @@ export const startManagedServer = (
           coverageDirectory === undefined
             ? undefined
             : path.join(coverageDirectory, String(generation++));
+        // The product's workerd logs its function events here; see workerd-coverage.ts.
+        if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
         const child = yield* processes.spawn(
           ChildProcess.make(
             target.metadata.target === "local" ? "node" : "bun",
@@ -222,10 +231,15 @@ export const startManagedServer = (
             {
               extendEnv: false,
               ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
-              env:
-                coverage !== undefined && target.metadata.target === "local"
-                  ? { ...env, NODE_V8_COVERAGE: coverage }
-                  : env,
+              env: {
+                ...env,
+                ...(coverage === undefined
+                  ? {}
+                  : { ALCHEMY_WORKERD_V8_FLAGS: workerdCoverageFlags(coverage) }),
+                ...(coverage !== undefined && target.metadata.target === "local"
+                  ? { NODE_V8_COVERAGE: coverage }
+                  : {}),
+              },
               stdout: "pipe",
               stderr: "pipe",
               additionalFds: { fd3: { type: "input" } },
@@ -241,6 +255,19 @@ export const startManagedServer = (
             if (running === child) running = undefined;
           }),
         );
+        if (coverage !== undefined) {
+          const recorder = yield* recordWorkerdCoverage({
+            directory: coverage,
+            bundle: env.EXECUTOR_WORKER_BUNDLE,
+          });
+          saveWorkerdCoverage = recorder.save;
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.sync(() => {
+              if (saveWorkerdCoverage === recorder.save) saveWorkerdCoverage = Effect.void;
+            }),
+          );
+        }
         const ready = yield* Deferred.make<void>();
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
           Stream.decodeText(),
@@ -319,8 +346,10 @@ export const startManagedServer = (
         yield* gate.withPermits(1)(
           Effect.gen(function* () {
             // A kill models a crash or out-of-memory stop: the whole process group ends at once.
-            if (action === "kill" && running !== undefined)
+            if (action === "kill" && running !== undefined) {
               yield* running.kill({ killSignal: "SIGKILL" });
+              yield* saveWorkerdCoverage;
+            }
             if (action !== "start") yield* stop;
             if (action === "start" || action === "restart") yield* start;
           }),

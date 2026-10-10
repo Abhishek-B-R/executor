@@ -65,6 +65,18 @@ target; `e2e:prepare` builds the dashboards with unreferenced source maps, which
 that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
 at once, so Cloud counts only browser coverage.
 
+The code each product runs inside workerd is profiled too: the host Worker, and the app
+framework in every app and data facet Worker. The runner starts workerd with V8's
+`--log-function-events` (through `ALCHEMY_WORKERD_V8_FLAGS`), and
+`support/workerd-coverage.ts` reads each isolate's log once the product stops. A function
+counts as run when V8 compiled it lazily, which only a call does, or logged its first
+execution: a function that ran counts all its lines, including branches it skipped.
+Nothing attaches to the product. workerd's inspector stays closed: with it open, an app
+Worker the runtime unloaded fails to load again under the same name. `e2e:prepare` writes
+source maps beside the host bundle (`.local/test-runtime/host.json.map`) and the framework
+modules (`packages/apps/dist/runtime.json.map`, outside the package's files), which map that
+coverage to `packages/`. An app's own bundle is not product code and is not counted.
+
 ```sh
 E2E_COVERAGE=1 bun run e2e:self-host --test-name 'password login'
 node e2e/coverage.ts collect .local/line-coverage.json .local/e2e/<run>

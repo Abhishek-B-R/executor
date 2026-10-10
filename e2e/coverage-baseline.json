@@ -2,13 +2,13 @@
   "tolerance": 0.004,
   "targets": {
     "cloud": {
-      "covered": 10737
+      "covered": 10763
     },
     "local": {
-      "covered": 55123
+      "covered": 65084
     },
     "self-host": {
-      "covered": 64080
+      "covered": 78390
     }
   }
 }
