@@ -13,7 +13,7 @@
  * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Fiber, Schedule, Schema } from "effect";
+import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -217,13 +217,37 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               return { execution, calls: made.found, objectId: String(made.objectId) };
             });
           const token = `return await ${tool("token")}({})`;
-          // The session reads the live profile on its first calls; the server's reconcile can
-          // update a profile just after it is saved, which the next call reads as a change.
-          let warm = yield* run("Warm the session", token, 1);
-          for (let attempt = 1; warm.calls[0]?.batches.length !== 1; attempt++) {
-            expect(attempt, "A call that sends one batch").toBeLessThan(4);
-            warm = yield* run("Warm the session again", token, 1);
+          // Saving the selection wakes the profile's setup after the response, and setup writes
+          // the profile again when it finishes. A call made before that write reads it as a
+          // changed profile and sends its reads once more, so the profile is settled first:
+          // reconciled at its current revision, after which nothing writes it.
+          const settled = Schema.Struct({
+            revision: Schema.Number,
+            status: Schema.String,
+            reconciledRevision: Schema.NullOr(Schema.Number),
+          });
+          const deadline = (yield* Clock.currentTimeMillis) + 30_000;
+          const settling: Array<typeof settled.Type> = [];
+          for (;;) {
+            const reconciled = yield* api.request(
+              actors.owner,
+              "POST",
+              `${path}/profiles/${profile.id}/reconcile`,
+            );
+            expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
+            const current = yield* body(settled, reconciled);
+            settling.push(current);
+            if (current.status === "ready" && current.reconciledRevision === current.revision)
+              break;
+            expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(deadline);
+            yield* Effect.sleep("100 millis");
           }
+          yield* evidence.json("cloud-batch-settled.json", settling);
+          // The session's first call reads the profile, then sends its reads with it; every later
+          // call sends one batch.
+          const cold = yield* run("The session's first call", token, 1);
+          expect(cold.calls[0]?.batches.length, "The session's first call").toBe(2);
+          const warm = yield* run("Warm the session", token, 1);
           const owner = `executor mcp ${warm.objectId}`.slice(0, 63);
 
           yield* evidence.step(
