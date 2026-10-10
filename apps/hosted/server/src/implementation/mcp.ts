@@ -32,7 +32,7 @@ import {
 import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { CurrentMcpGrant } from "../contracts/mcp.ts";
-import { listTools } from "./tools.ts";
+import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
@@ -194,6 +194,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
         return appTargets(app, profiles, accounts);
       }).pipe((work) => observe("listTargets", work, "read")),
     listTools: (input, options) => observe("listTools", listTools(input, options), "read"),
+    searchableTools: (input, options) =>
+      observe("searchableTools", searchableTools(input, options), "read"),
+    searchTools: (input) => observe("searchTools", searchTools(input), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;

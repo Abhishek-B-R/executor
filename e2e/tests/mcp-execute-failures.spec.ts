@@ -522,6 +522,12 @@ export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
   marker: query({ input: object({}) }, async () => (await ctx.cache.read("guarded", string())) ?? "missing"),
 }) }));`;
 
+/** An app with one tool for search to find. */
+const searchRowsAppSource = `import { defineApp, query, object, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ tools: router({
+  findWidget: query({ description: "Find a widget by its name.", input: object({}) }, async () => "widget"),
+}) }));`;
+
 /**
  * An app whose factory saves a record each time it is evaluated. Its queries save a record and
  * then fail with an unavailable cache (`check`), or have an approval policy that saves a record
@@ -753,6 +759,16 @@ const Completed = Schema.Struct({
     error: Schema.optional(Schema.Struct({ kind: Schema.String, message: Schema.String })),
     logs: Schema.optional(Schema.Array(Schema.String)),
   }),
+});
+
+/** A completed search, with the apps the execution reports unavailable. */
+const SearchedWithUnavailable = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({
+    ok: Schema.Boolean,
+    value: Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+  }),
+  unavailableApps: Schema.Array(Schema.Struct({ app: Schema.String, reason: Schema.String })),
 });
 
 const Pending = Schema.Struct({
@@ -2880,6 +2896,90 @@ try { return await call(); } catch (error) {
           `StorageError (HTTP 500): Executor could not read or write its saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expectNoRepeatAdvice(failed.response.recovery.instructions, "MCP");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpSearchRowsUnsaved.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        // Executor's storage refuses every search listing this organization saves.
+        if (!/^[A-Za-z0-9_-]+$/.test(actors.organization.id))
+          return yield* Effect.die("Expected an organization ID");
+        yield* legacyStorage([
+          {
+            sql: `CREATE FUNCTION e2e_search_rows_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+              BEGIN RAISE EXCEPTION 'Synthetic storage failure for e2e search rows'; END $$`,
+          },
+          {
+            sql: `CREATE TRIGGER e2e_search_rows_fault
+              BEFORE INSERT OR UPDATE ON executor_tool_search_listings
+              FOR EACH ROW WHEN (NEW.owner = 'organization:${actors.organization.id}')
+              EXECUTE FUNCTION e2e_search_rows_fault()`,
+          },
+        ]);
+        yield* serverControl("start");
+        const app = yield* hostedApp("Unsaved search rows", searchRowsAppSource);
+        const searched = yield* executeOnce(
+          app.client,
+          "Search for a tool whose search rows cannot be saved",
+          `return await tools.search({ query: "widget" });`,
+          "search-rows-unsaved.json",
+        );
+        const result = yield* Schema.decodeUnknownEffect(SearchedWithUnavailable)(
+          searched.structured,
+        );
+        // Search names the app as unavailable, with why, instead of a page without its tools.
+        expect(result.execution.ok).toBe(true);
+        expect(result.execution.value.items).toEqual([]);
+        const reported = result.unavailableApps.filter((entry) => entry.app === app.id);
+        expect(reported).toHaveLength(1);
+        expect(yield* Schema.decodeUnknownEffect(Diagnostic)(reported[0]!.reason)).toMatchObject({
+          code: "ToolSearchUnavailable",
+          status: 503,
+          message:
+            "Executor could not save this app's tools for search, so search cannot rank them.",
+        });
+        // The app itself still loads: its tools are callable, only searching them failed.
+        const called = yield* executeOnce(
+          app.client,
+          "Call the tool search could not rank",
+          `return await tools[${JSON.stringify(app.slug)}].findWidget({});`,
+          "search-rows-unsaved-call.json",
+        );
+        expect(yield* Schema.decodeUnknownEffect(Completed)(called.structured)).toMatchObject({
+          execution: { ok: true, value: "widget" },
+        });
+        // A program that loaded the app's tools first, by calling or describing one, still learns
+        // why the search that follows has none of them.
+        const tool = `tools[${JSON.stringify(app.slug)}].findWidget`;
+        for (const [label, first, file] of [
+          ["Call a tool, then search", `await ${tool}({});`, "search-rows-unsaved-after-call.json"],
+          [
+            "Describe a tool, then search",
+            `await tools.search.describe({ paths: [${JSON.stringify(`${app.slug}.findWidget`)}] });`,
+            "search-rows-unsaved-after-describe.json",
+          ],
+        ] as const) {
+          const after = yield* executeOnce(
+            app.client,
+            label,
+            `${first}\nreturn await tools.search({ query: "widget" });`,
+            file,
+          );
+          const searched = yield* Schema.decodeUnknownEffect(SearchedWithUnavailable)(
+            after.structured,
+          );
+          expect(searched.execution.ok, label).toBe(true);
+          expect(searched.execution.value.items, label).toEqual([]);
+          const unavailable = searched.unavailableApps.filter((entry) => entry.app === app.id);
+          expect(unavailable, label).toHaveLength(1);
+          expect(
+            yield* Schema.decodeUnknownEffect(Diagnostic)(unavailable[0]!.reason),
+            label,
+          ).toMatchObject({ code: "ToolSearchUnavailable", status: 503 });
+        }
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

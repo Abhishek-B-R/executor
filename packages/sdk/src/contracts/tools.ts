@@ -292,6 +292,73 @@ export const ToolIndex = Schema.Struct({
 
 export type ToolIndex = typeof ToolIndex.Type;
 
+/**
+ * A listing kept as search rows: its declaration key, so a new deployment, profile revision,
+ * account selection or credential generation is another one.
+ */
+export const ToolSearchListing = Schema.String.pipe(Schema.brand("ToolSearchListing"));
+export type ToolSearchListing = typeof ToolSearchListing.Type;
+
+/** One app target's current listing, kept as search rows. */
+export interface SearchableTools {
+  readonly listing: ToolSearchListing;
+  readonly deployment: DeploymentId;
+  /** The listing's routers that could not list their tools. */
+  readonly routers: ReadonlyArray<ToolRouter>;
+}
+
+/**
+ * Tools of a search target: the read-only ones when `readOnly` is set, and the tools `names`
+ * lists. A target's tools must be in every scope it carries; a target with none has every tool.
+ */
+export interface ToolSearchScope {
+  readonly readOnly: boolean;
+  readonly names: ReadonlyArray<ToolName>;
+}
+
+/** A searchable listing of one app target, in the order its tools rank on ties. */
+export interface ToolSearchTarget {
+  readonly listing: ToolSearchListing;
+  readonly app: AppId;
+  readonly profile?: ProfileId | undefined;
+  /** Words every tool of the target also matches, such as its app's name and profile label. */
+  readonly labels: ReadonlyArray<string>;
+  readonly scopes: ReadonlyArray<ToolSearchScope>;
+  /** Only tools named this or below it, such as the tools of one router. */
+  readonly below?: string | undefined;
+}
+
+export interface ToolSearchInput {
+  readonly targets: ReadonlyArray<ToolSearchTarget>;
+  /** Words to rank tools by. A query without words lists every tool in target and name order. */
+  readonly query: string;
+  readonly offset: number;
+  readonly limit: number;
+}
+
+/**
+ * One ranked tool. Targets are indexes into the input. A tool several of an app's targets list
+ * with the same signature is one item, at its first target; `also` lists the others.
+ */
+export interface ToolSearchItem {
+  readonly target: number;
+  readonly also: ReadonlyArray<number>;
+  readonly tool: Tool;
+  /** The router the tool is listed under, if any. */
+  readonly router?: ToolRouter | undefined;
+}
+
+export interface ToolSearchPage {
+  readonly items: ReadonlyArray<ToolSearchItem>;
+  /** Ranked items after this page. */
+  readonly remaining: number;
+  /**
+   * Indexes of targets whose listing has no rows any more, such as one superseded for longer
+   * than its rows are kept. Their tools are not ranked; callers report them unavailable.
+   */
+  readonly missing: ReadonlyArray<number>;
+}
+
 const evaluationInstructions =
   "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
 /**
@@ -751,6 +818,45 @@ export const ToolListingTimedOut = UserFacingError.define({
   }),
 });
 export type ToolListingTimedOut = typeof ToolListingTimedOut.Type;
+
+const searchFailures = {
+  unsaved: "Executor could not save this app's tools for search, so search cannot rank them.",
+  removed:
+    "The tools this execution found for this app are no longer kept for search: a newer listing replaced them long enough ago that they were removed.",
+} as const;
+/**
+ * Search cannot rank an app target's tools: its rows could not be saved, or the listing an
+ * execution found was since removed. Search reports the app unavailable instead of ranking none
+ * of its tools, which would look like an app without matches.
+ */
+export const ToolSearchUnavailable = UserFacingError.define({
+  tag: "ToolSearchUnavailable",
+  status: 503,
+  fields: {
+    app: AppId,
+    reason: Schema.Literals(["unsaved", "removed"]),
+  },
+  recorded: ({ reason }) => searchFailures[reason],
+  presentation: ({ reason }) => ({
+    title: "App tools are not searchable",
+    description: searchFailures[reason],
+    retryable: reason === "unsaved",
+    recovery:
+      reason === "unsaved"
+        ? {
+            action:
+              "Try again. If this continues, copy the fix prompt into your agent to check Executor’s storage.",
+            instructions:
+              "Check Executor’s storage availability and safe diagnostics for the failed tool search write. Do not change the app or its accounts to work around a storage failure. Other apps remain searchable.",
+          }
+        : {
+            action: "Search again in a new execute.",
+            instructions:
+              "Tell the user this execution ran long enough that the app's earlier tool listing was removed. A new execute finds the current listing. Other apps remain searchable.",
+          },
+  }),
+});
+export type ToolSearchUnavailable = typeof ToolSearchUnavailable.Type;
 
 /** Why renewing an account's refused credentials failed, as resolving them reports it. */
 export const RenewalFailure = Schema.Union([

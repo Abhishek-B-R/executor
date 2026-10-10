@@ -19,6 +19,7 @@ export {
   permitsTool,
   permitsTarget,
   permitsRouter,
+  discoverableTools,
   selectsApp,
   selectsTool,
   selectsTarget,

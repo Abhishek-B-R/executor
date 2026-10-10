@@ -6,6 +6,7 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountId, OwnerId, WebhookId } from "../contracts/shared.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { removeToolSearch } from "./tool-search-store.ts";
 
 /**
  * The refusals a caller cannot clear by acting on providers: work is in flight
@@ -151,6 +152,7 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
           yield* query(() =>
             tx.deleteMany("accountChecks", { where: (b) => b("app", "in", appIds) }),
           );
+          yield* removeToolSearch(tx, appIds);
           yield* query(() => tx.deleteMany("apps", { where: (b) => b("owner", "=", owner) }));
         }
         if (accountIds.length > 0) {

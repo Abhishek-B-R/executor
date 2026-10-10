@@ -33,6 +33,7 @@ import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 import { makeListings } from "./listings.ts";
+import { makeToolSearch } from "./tool-search.ts";
 import { makeEvents } from "./events.ts";
 import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
@@ -136,6 +137,7 @@ export const createExecutor = (
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };
+    const search = makeToolSearch({ store: options.database.toolSearch, crypto });
     const tools = makeTools(
       options.database,
       oauth,
@@ -150,6 +152,7 @@ export const createExecutor = (
         resolveAccount: oauth.resolveSelected,
         lifecycle: options.hooks,
         policy: toolListings,
+        search,
       }),
       workflows.controls,
       options.hooks,
@@ -256,7 +259,7 @@ export const createExecutor = (
         workflows.controls,
         options.hooks,
       ),
-      tools,
+      tools: { ...tools, search: search.page },
     };
   });
 

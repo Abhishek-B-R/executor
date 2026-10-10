@@ -37,6 +37,11 @@ const refusal = (message: string) => ({
   },
 });
 const listTools = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+const SearchPage = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ path: Schema.String })),
+  remaining: Schema.Number,
+  next: Schema.Unknown,
+});
 const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
@@ -207,6 +212,114 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
               yield* api.request(operator, "GET", "/dashboard/api/mcp/connections"),
             );
             expect(listed).toEqual([]);
+          }),
+        );
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.localScopedSearch.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          target = yield* Target,
+          evidence = yield* Evidence,
+          mcp = yield* McpClient;
+        const operator = yield* pairLocalOperator;
+        const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const receipt = randomUUID();
+        const deployed = yield* operator.send(
+          "POST",
+          "/v1/apps/deploy",
+          {
+            owner: "local",
+            name: `Scoped search ${receipt.slice(0, 8)}`,
+            files: readWriteAppFiles(receipt),
+          },
+          headers,
+        );
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const { app } = yield* body(Schema.Struct({ app: App }), deployed);
+        yield* Effect.addFinalizer(() =>
+          operator.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
+        );
+        const appPath = `tools[${JSON.stringify(app.slug)}]`;
+        const search =
+          (client: Effect.Success<ReturnType<typeof mcp.connect>>) =>
+          (operation: string, input: object) =>
+            client
+              .use(operation, (client, signal) =>
+                client.callTool(
+                  {
+                    name: "execute",
+                    arguments: { code: `return await tools.search(${JSON.stringify(input)});` },
+                  },
+                  undefined,
+                  { signal },
+                ),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                ),
+                Effect.flatMap(({ execution }) =>
+                  Schema.decodeUnknownEffect(SearchPage)(execution.value),
+                ),
+              );
+        // Every tool of the app matches its name, so a page of one would count the other.
+        const full = search(
+          yield* mcp.connect(Redacted.make(Redacted.value(target.apiKey)), "local-full"),
+        );
+        const unrestricted = yield* evidence.step(
+          "Full access finds both of the app's tools",
+          full("Search the app with full access", {
+            query: app.name,
+            namespace: app.slug,
+            limit: 1,
+          }),
+        );
+        expect(unrestricted.items).toHaveLength(1);
+        expect(unrestricted.remaining).toBe(1);
+        const clients: string[] = [];
+        yield* revokeClientGrants(operator, () => clients);
+        const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
+          id: randomUUID(),
+          name: "Read by name",
+          apps: [
+            {
+              app: app.id,
+              runsAs: [{ kind: "app" }],
+              tools: { kind: "selected", names: ["read"] },
+            },
+          ],
+        });
+        expect(created.status, JSON.stringify(created.body)).toBe(200);
+        const connection = yield* body(ConnectionView, created);
+        const consent = yield* evidence.step(
+          "Authorize a connection that names only the read tool",
+          consentTo(operator, connection.url),
+        );
+        clients.push(consent.clientId);
+        expect(consent.status).toBe(200);
+        const scoped = search(
+          yield* mcp.connect(yield* consent.tokens, "local-scoped-search", {
+            connection: connection.id,
+          }),
+        );
+        yield* evidence.step(
+          "Search, listing and exact paths never reach the tool the connection leaves out",
+          Effect.gen(function* () {
+            const ranked = yield* scoped("Search the app by name", { query: app.name, limit: 1 });
+            expect(ranked.items.map((item) => item.path)).toEqual([`${appPath}.read`]);
+            expect(ranked.remaining).toBe(0);
+            expect(ranked.next).toBeNull();
+            const listed = yield* scoped("List the app's tools", { namespace: app.slug });
+            expect(listed.items.map((item) => item.path)).toEqual([`${appPath}.read`]);
+            expect(listed.remaining).toBe(0);
+            const exact = yield* scoped("Search for the left-out tool's exact path", {
+              query: `${appPath}.write`,
+            });
+            expect(exact.items.map((item) => item.path)).not.toContain(`${appPath}.write`);
           }),
         );
       }).pipe(Effect.provide(McpClient.layer)),

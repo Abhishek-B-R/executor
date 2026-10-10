@@ -1196,6 +1196,20 @@ export const makeTools = (
             : {}),
         };
       }).pipe(Effect.withSpan("sdk.tools.list")),
+    /** Keep the target's current listing as search rows; see `Listings.searchable`. */
+    searchable: (
+      input: Omit<Parameters<Executor["tools"]["list"]>[0], "cursor" | "limit">,
+      options?: ToolListOptions,
+    ) =>
+      Effect.gen(function* () {
+        const state = yield* listed(input);
+        const found = yield* listings.searchable(state, listingOf(state), options);
+        return {
+          listing: found.listing,
+          deployment: state.deployment.id,
+          routers: found.routers.filter((router) => router.error !== undefined),
+        };
+      }).pipe(Effect.withSpan("sdk.tools.searchable")),
     /**
      * Describe the declared operations that have schedules. Current builds skip dynamic
      * tool discovery, which can compile a large catalog in the shared app runtime.

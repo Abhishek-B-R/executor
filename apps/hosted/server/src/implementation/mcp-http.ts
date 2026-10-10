@@ -79,6 +79,8 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     listApps: unavailable,
     listTargets: unavailable,
     listTools: unavailable,
+    searchableTools: unavailable,
+    searchTools: unavailable,
     callTool: unavailable,
     resumeInvocation: unavailable,
     authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
@@ -101,6 +103,9 @@ const requestBackend: McpBackend<RequestError> = {
   listTargets: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTargets(input)),
   listTools: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.listTools(input, options)),
+  searchableTools: (input, options) =>
+    Effect.flatMap(RequestBackend, (backend) => backend.searchableTools(input, options)),
+  searchTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.searchTools(input)),
   callTool: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.callTool(input, options)),
   resumeInvocation: (request, response, options) =>

@@ -1,5 +1,12 @@
 import { authorizeTarget, authorizeTool } from "./authorization.ts";
-import { permitsRouter, permitsTool, requiresToolMetadata } from "@executor-js/authorization";
+import {
+  discoverableTools,
+  permitsApp,
+  permitsRouter,
+  permitsTarget,
+  permitsTool,
+  requiresToolMetadata,
+} from "@executor-js/authorization";
 import {
   approvalRequired,
   RequestInvalid,
@@ -23,6 +30,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
+import { CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   browserOnly,
   checkInvocationAccounts,
@@ -54,6 +62,57 @@ export const listTools = (
           page.items,
         ),
       ),
+    };
+  });
+/** Keep the target's current catalog as search rows after the same checks as discovery. */
+export const searchableTools = (
+  input: Parameters<Executor["tools"]["searchable"]>[0],
+  options?: ToolListOptions,
+) =>
+  Effect.gen(function* () {
+    const policy = yield* authorizeTarget(input.app, input.profile);
+    const owner = yield* currentOwner;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    const deployment = yield* selectedActiveDeployment(executor, owner, input);
+    const searchable = yield* executor.tools.searchable({ ...input, deployment }, options);
+    // Failed routers list no tools, so the policy decides them without the catalog.
+    return {
+      ...searchable,
+      routers: searchable.routers.filter((router) =>
+        permitsRouter(policy, { app: input.app, profile: input.profile, path: router.path }, []),
+      ),
+    };
+  });
+/**
+ * Rank the tools of listings `searchableTools` kept for this request's caller, with each target
+ * narrowed to the tools discovery would list. A target the policy no longer permits has none.
+ */
+export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =>
+  Effect.gen(function* () {
+    const policy = yield* CurrentAuthorization;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    const page = yield* executor.tools.search({
+      ...input,
+      targets: input.targets.map((target) => {
+        const scope =
+          permitsApp(policy, target.app) && permitsTarget(policy, target.app, target.profile)
+            ? discoverableTools(policy, target.app, target.profile)
+            : { readOnly: false, names: [] };
+        return scope === undefined ? target : { ...target, scopes: [...target.scopes, scope] };
+      }),
+    });
+    return {
+      ...page,
+      items: page.items.map(({ router, ...item }) => {
+        const target = input.targets[item.target];
+        return router !== undefined &&
+          target !== undefined &&
+          permitsRouter(policy, { app: target.app, profile: target.profile, path: router.path }, [
+            item.tool,
+          ])
+          ? { ...item, router }
+          : item;
+      }),
     };
   });
 /** Names and descriptions for browsing; schemas are read per tool. */

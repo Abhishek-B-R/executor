@@ -11,10 +11,14 @@ import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
 import type {
+  SearchableTools,
   ToolApproval,
   ToolApprovalNotFound,
   ToolInvocationOptions,
   ToolListOptions,
+  ToolSearchInput,
+  ToolSearchPage,
+  ToolSearchUnavailable,
 } from "./tools.ts";
 import type { App } from "./apps.ts";
 import type { Account } from "./account.ts";
@@ -218,6 +222,24 @@ export type Executor = Omit<
       readonly requestId: ApprovalRequestId;
       readonly owner?: OwnerId;
     }) => Effect.Effect<ToolApproval, StorageError | ToolApprovalNotFound>;
+    /**
+     * Host-only: keep the target's current listing as search rows, reading the listing as `list`
+     * does only when its rows are missing or older than a kept listing may be served. It names
+     * the listing only once its rows are saved, and fails with `ToolSearchUnavailable` when they
+     * cannot be. Hosts authorize the target as for `list`.
+     */
+    readonly searchable: (
+      input: Omit<Parameters<FlatExecutor["tools"]["list"]>[0], "cursor" | "limit">,
+      options?: ToolListOptions,
+    ) => Effect.Effect<
+      SearchableTools,
+      Effect.Error<ReturnType<FlatExecutor["tools"]["list"]>> | ToolSearchUnavailable
+    >;
+    /**
+     * Host-only: rank the tools of listings `searchable` returned with BM25. Hosts narrow each
+     * target's scopes to the tools the caller may discover; the SDK never widens them.
+     */
+    readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
   };
   readonly apps: FlatExecutor["apps"] & {
     readonly profiles: FlatExecutor["appProfiles"];
@@ -256,5 +278,5 @@ export type PromiseExecutor = Promisify<
     | "events"
     | "managedAccounts"
     | "tools"
-  > & { readonly tools: Omit<Executor["tools"], "approval"> }
+  > & { readonly tools: Omit<Executor["tools"], "approval" | "searchable" | "search"> }
 >;

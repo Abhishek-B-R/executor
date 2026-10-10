@@ -14,6 +14,7 @@ import {
   permitsEvent,
   permitsTarget,
   permitsRouter,
+  discoverableTools,
   permitsTool,
   permittedAppIds,
   requiresToolMetadata,
@@ -182,6 +183,53 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
               page.items,
             ),
           ),
+        };
+      }),
+    searchableTools: (input, options) =>
+      Effect.gen(function* () {
+        yield* checkApp(input.app, input.profile);
+        const searchable = yield* backend.searchableTools(input, options);
+        const policy = yield* authority;
+        // Failed routers list no tools, so the grant decides them without the catalog.
+        return {
+          ...searchable,
+          routers: searchable.routers.filter((router) =>
+            permitsRouter(
+              policy,
+              { app: input.app, profile: input.profile, path: router.path },
+              [],
+            ),
+          ),
+        };
+      }),
+    // A target the grant no longer permits keeps its place with no tools, so result indexes hold.
+    searchTools: (input) =>
+      Effect.gen(function* () {
+        const policy = yield* authority;
+        const page = yield* backend.searchTools({
+          ...input,
+          targets: input.targets.map((target) => {
+            const scope =
+              appRefusal(policy, target.app, target.profile) === undefined
+                ? discoverableTools(policy, target.app, target.profile)
+                : { readOnly: false, names: [] };
+            return scope === undefined ? target : { ...target, scopes: [...target.scopes, scope] };
+          }),
+        });
+        return {
+          ...page,
+          items: page.items.map(({ router, ...item }) => {
+            const target = input.targets[item.target];
+            return router !== undefined &&
+              target !== undefined &&
+              permitsRouter(
+                policy,
+                { app: target.app, profile: target.profile, path: router.path },
+                [item.tool],
+              )
+              ? { ...item, router }
+              : item;
+          }),
         };
       }),
     callTool: (input, options) =>

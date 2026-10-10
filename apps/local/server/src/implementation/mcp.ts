@@ -49,6 +49,8 @@ export const localMcpBackend = (executor: Executor, principal: string) =>
         );
       }),
     listTools: (input, options) => executor.tools.list(input, options),
+    searchableTools: (input, options) => executor.tools.searchable(input, options),
+    searchTools: (input) => executor.tools.search(input),
     callTool: (input, options?: ToolInvocationOptions) => executor.tools.call(input, options),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       executor.tools.resume({ requestId: request.requestId, response }, options),
@@ -69,6 +71,8 @@ export const localMcp = (
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
         listTargets: () => Effect.fail(new LocalMcpUnauthorized()),
         listTools: () => Effect.fail(new LocalMcpUnauthorized()),
+        searchableTools: () => Effect.fail(new LocalMcpUnauthorized()),
+        searchTools: () => Effect.fail(new LocalMcpUnauthorized()),
         callTool: () => Effect.fail(new LocalMcpUnauthorized()),
         resumeInvocation: () => Effect.fail(new LocalMcpUnauthorized()),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
@@ -105,6 +109,9 @@ export const localMcp = (
         listTargets: (input) => Effect.flatMap(RequestBackend, (b) => b.listTargets(input)),
         listTools: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.listTools(input, options)),
+        searchableTools: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.searchableTools(input, options)),
+        searchTools: (input) => Effect.flatMap(RequestBackend, (b) => b.searchTools(input)),
         callTool: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.callTool(input, options)),
         resumeInvocation: (request, response, options) =>

@@ -5029,6 +5029,20 @@ export const scenarios = plan({
       cloud: na("Hosted connections are covered by the hosted scoped connection scenarios."),
     },
   },
+  localScopedSearch: {
+    file: "local-mcp-connections.spec.ts",
+    title:
+      "Local scoped connections search only the tools they name, and pages count no hidden tool",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Hosted grants narrow search the same way; scopedConnectionAccess searches under a read-only rule.",
+      ),
+      cloud: na(
+        "Hosted grants narrow search the same way; scopedConnectionAccess searches under a read-only rule.",
+      ),
+    },
+  },
   localMcpOAuthWithoutResource: {
     file: "local-mcp-connections.spec.ts",
     title: "Local MCP OAuth without a resource parameter grants the plain /mcp URL",
@@ -5444,6 +5458,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Storage faults need a runner-owned database; Cloud cases share one."),
       local: na("Hosted self-host covers the shared tool call path."),
+    },
+  },
+  mcpSearchRowsUnsaved: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "mcp-execute-failures.spec.ts",
+    title:
+      "A search whose app's search rows cannot be saved reports the app unavailable with why, instead of a page without its tools, even after the program called or described one of them, and its tools stay callable",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Storage faults need a runner-owned database; Cloud cases share one."),
+      local: na("Hosted self-host covers the shared search path."),
     },
   },
   mcpExecuteUnnamedKindWrote: {

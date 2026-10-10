@@ -30,10 +30,14 @@ interface Statement {
 }
 /** The rows an older server left, copied from the targeted connection's owner and provider. */
 const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => [
-  // The layout before 4.0.8: a nullable target whose default is JSON null.
+  // The layout before 4.0.8: a nullable target whose default is JSON null, and none of the
+  // tables later steps add.
   {
     sql: `ALTER TABLE executor_account_connections
       ALTER COLUMN target DROP NOT NULL, ALTER COLUMN target SET DEFAULT 'null'::json`,
+  },
+  {
+    sql: `DROP TABLE executor_tool_search, executor_tool_search_definitions, executor_tool_search_listings`,
   },
   { sql: `UPDATE private_executor_settings SET value = '4.0.7' WHERE key = 'version'` },
   {
@@ -115,7 +119,7 @@ const expectUpgraded = (
   ids: Ids,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.8" }]);
+  expect(version).toEqual([{ value: "4.0.9" }]);
   // Only the connection with a target is left, and only the sign-in no connection pointed at.
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);

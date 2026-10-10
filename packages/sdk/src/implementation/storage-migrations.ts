@@ -5,6 +5,8 @@ import { schema, type CustomMigrationFn } from "fumadb-effect/schema";
 import {
   eventIndexes,
   storageSchema,
+  toolSearchIndexes,
+  version408Schema,
   version402Tables,
   version403Tables,
   version404Tables,
@@ -25,7 +27,7 @@ export const storageIndexes = [
 ] as const;
 
 /** Every index of the current layout, for a new database. Upgrades add each in its own step. */
-export const currentIndexes = [...storageIndexes, ...eventIndexes] as const;
+export const currentIndexes = [...storageIndexes, ...eventIndexes, ...toolSearchIndexes] as const;
 
 /** A shipped version 4 layout, with the same foreign keys as the current schema. */
 const version4 = <Version extends string>(version: Version, up?: CustomMigrationFn) =>
@@ -137,6 +139,8 @@ export const storageSchemas = [
   }),
   // Deletes connections without a target, then requires one. The running server has written a
   // target on every connection since #2135 and reads the column as nullable, so it is unaffected.
+  version408Schema,
+  // Additive: three tool search tables and their indexes, which the running server never names.
   storageSchema,
 ] as const;
 

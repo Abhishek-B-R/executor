@@ -44,6 +44,7 @@ import {
 } from "../contracts/shared.ts";
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
 import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
 import type { Registry } from "../contracts/registry.ts";
@@ -693,6 +694,7 @@ export const makeApps = (
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("app", "=", app.id) }),
             );
+            yield* removeToolSearch(tx, [app.id]);
             yield* query(() => tx.deleteMany("apps", { where: (b) => b("id", "=", app.id) }));
           }
           return { app: input.app };
