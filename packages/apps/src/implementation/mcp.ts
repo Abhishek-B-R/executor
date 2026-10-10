@@ -172,6 +172,8 @@ const transportFetch =
           try: () => {
             const headers = new Headers(Redacted.value(connection.headers));
             new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+            // Workers send no User-Agent, and some Cloudflare-hosted servers refuse requests without one.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             return HttpClientRequest.fromWeb(new Request(target, { ...init, headers }));
           },
           // The provider's headers cannot form an HTTP request, such as a name with a space.

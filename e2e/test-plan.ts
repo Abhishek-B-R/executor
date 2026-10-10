@@ -1832,6 +1832,16 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  mcpUserAgent: {
+    fixtures: "actors",
+    file: "mcp-user-agent.spec.ts",
+    title: "Remote MCP requests supply User-Agent and preserve an app's own",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker MCP transport."),
+      local: na("Exercises the hosted app deploy and tool call APIs."),
+    },
+  },
   templateAccounts: {
     fixtures: "actors",
     file: "template-accounts.spec.ts",
