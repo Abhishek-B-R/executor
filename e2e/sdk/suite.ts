@@ -366,6 +366,9 @@ export const runSuite = ({
                           ...(process.env.E2E_WORKFLOW_HOLD_MS === undefined
                             ? {}
                             : { E2E_WORKFLOW_HOLD_MS: process.env.E2E_WORKFLOW_HOLD_MS }),
+                          ...(process.env.E2E_COVERAGE === undefined
+                            ? {}
+                            : { E2E_COVERAGE: process.env.E2E_COVERAGE }),
                           E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
                           E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),

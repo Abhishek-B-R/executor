@@ -93,6 +93,20 @@ export const startManagedServer = (
     // Each product process sends its analytics to its own loopback collector, kept across restarts.
     const analyticsPort = yield* startAnalyticsCollector(target.directory);
     const gate = yield* Semaphore.make(1);
+    // `E2E_COVERAGE=1` profiles each product process; see `e2e/coverage.ts`.
+    const coverageDirectory =
+      (yield* Config.Boolean("E2E_COVERAGE").pipe(Config.withDefault(false))) &&
+      target.scenarioId !== undefined
+        ? path.join(target.evidenceDirectory ?? target.directory, "coverage", target.scenarioId)
+        : undefined;
+    if (coverageDirectory !== undefined) {
+      yield* fs.makeDirectory(coverageDirectory, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(coverageDirectory, "scenario.json"),
+        JSON.stringify({ target: target.metadata.target, title: target.scenarioLabel }),
+      );
+    }
+    let generation = 0;
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
@@ -169,21 +183,41 @@ export const startManagedServer = (
       const scope = yield* Scope.make();
       current = scope;
       yield* Effect.gen(function* () {
+        const preloads = ["./wall-clock.mjs", "./stop-request.mjs"].map(
+          (file) => new URL(file, import.meta.url),
+        );
+        // Each process generation writes its own report: Bun's lcov file has a fixed name.
+        const coverage =
+          coverageDirectory === undefined
+            ? undefined
+            : path.join(coverageDirectory, String(generation++));
         const child = yield* processes.spawn(
           ChildProcess.make(
             target.metadata.target === "local" ? "node" : "bun",
-            [
-              // Bun accepts Node's --import preload, so self-host can advance wall time too.
-              "--import",
-              new URL("./wall-clock.mjs", import.meta.url).href,
-              "--import",
-              new URL("./stop-request.mjs", import.meta.url).href,
-              ...entry.command,
-            ],
+            coverage !== undefined && target.metadata.target === "self-host" && mode === "product"
+              ? [
+                  "test",
+                  "--coverage",
+                  "--coverage-reporter=lcov",
+                  `--coverage-dir=${coverage}`,
+                  "--timeout=0",
+                  ...(yield* Effect.forEach(preloads, path.fromFileUrl).pipe(Effect.orDie)).flatMap(
+                    (file) => ["--preload", file],
+                  ),
+                  "./apps/hosted/self-host/scripts/coverage-main.ts",
+                ]
+              : [
+                  // Bun accepts Node's --import preload, so self-host can advance wall time too.
+                  ...preloads.flatMap((url) => ["--import", url.href]),
+                  ...entry.command,
+                ],
             {
               extendEnv: false,
               ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
-              env,
+              env:
+                coverage !== undefined && target.metadata.target === "local"
+                  ? { ...env, NODE_V8_COVERAGE: coverage }
+                  : env,
               stdout: "pipe",
               stderr: "pipe",
               additionalFds: { fd3: { type: "input" } },

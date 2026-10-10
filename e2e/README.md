@@ -41,6 +41,31 @@ writers. Smaller runs use the same assertions. `--test-name` is a regular expres
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
 
+## Line coverage
+
+`E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs
+under `bun test --coverage` through `apps/hosted/self-host/scripts/coverage-main.ts`,
+because Bun profiles nothing else; local runs with `NODE_V8_COVERAGE`. Each scenario
+starts its own product, so each report under `<run>/<target>/coverage/<scenario id>/`
+belongs to one scenario. Chromium also records each scenario's page scripts on every
+target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
+that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
+at once, so Cloud counts only browser coverage.
+
+```sh
+E2E_COVERAGE=1 bun run e2e:self-host --test-name 'password login'
+node e2e/coverage.ts collect .local/line-coverage.json .local/e2e/<run>
+node e2e/coverage.ts report .local/line-coverage.json
+```
+
+`report` prints coverage by target and package, and the scenarios that cover no line
+another scenario does not. On a full run, CI's `line-coverage` job fails when a target
+covers fewer lines than `e2e/coverage-baseline.json` records, less a tolerance for
+paths that timing decides. Before deleting a scenario as redundant, check that it adds
+no line; a change that removes product code records a new baseline with
+`node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
+`line-coverage-*` artifacts of a full run.
+
 ## Dependency injection
 
 `support/platform.ts` supplies target configuration and native platform services.

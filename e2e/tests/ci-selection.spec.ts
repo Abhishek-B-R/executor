@@ -302,8 +302,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     Effect.gen(function* () {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
-      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs].sort());
+      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs, "full"].sort());
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
+      expect(run.outputs.full).toBe("true");
       expect(run.summary).toContain("Full suite: this run is not for a pull request.");
     }),
   );
@@ -839,8 +840,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(none.exitCode).toBe(0);
       for (const job of [...jobs, ...runnerOutputs]) expect(none.outputs[job], job).toBe("");
+      expect(none.outputs.full).toBe("false");
       expect(all.exitCode).toBe(0);
       for (const job of [...jobs, ...runnerOutputs]) expect(all.outputs[job], job).not.toBe("");
+      expect(all.outputs.full).toBe("true");
       expect(all.summary).toContain("Full suite: changes the lockfile");
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);

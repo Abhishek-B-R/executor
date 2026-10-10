@@ -92,7 +92,10 @@ const steps: ReadonlyArray<Step> = [
  */
 const rootFiles = ["package.json", "bun.lock", "tsconfig.json", "patches", ".gitignore"];
 /** Environment variables the build configs read. */
-const buildEnv = /^(NODE_ENV|VITE_.*|HOSTED_API_URL|EXECUTOR_DESKTOP_DEV)$/;
+const buildEnv =
+  /^(NODE_ENV|VITE_.*|HOSTED_API_URL|EXECUTOR_DESKTOP_DEV|EXECUTOR_DASHBOARD_SOURCEMAP)$/;
+// The dashboards keep unreferenced source maps, which map the suite's browser coverage to source.
+process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
 /** Entries kept per step. Older ones are removed after a store. */
 const keep = 20;
 

@@ -1058,6 +1058,8 @@ NodeRuntime.runMain(
           : [],
       ),
       `cloud-runners=${cloudRunners.length === 0 ? "" : JSON.stringify(cloudRunners)}`,
+      // Line coverage is comparable only between runs of every scenario.
+      `full=${files === undefined}`,
     ].join("\n");
     const report = [
       "## E2E selection",
