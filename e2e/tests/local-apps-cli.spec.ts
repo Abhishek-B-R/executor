@@ -32,8 +32,13 @@ const Deployed = Schema.Struct({
 const Source = Schema.fromJsonString(
   Schema.Struct({ files: Schema.Array(Schema.Struct({ path: Schema.String })) }),
 );
-/** A CLI commit prints only its new revision, never the files it sent. */
-const Committed = Schema.fromJsonString(Schema.Struct({ revision: Workspace.fields.revision }));
+/** A CLI commit prints its new revision and the files it removed, never the files it sent. */
+const Committed = Schema.fromJsonString(
+  Schema.Struct({
+    revision: Workspace.fields.revision,
+    removed: Schema.Struct({ count: Schema.Number, paths: Schema.Array(Schema.String) }),
+  }),
+);
 
 /** The real CLI, run as a child process against the managed local server with its own home. */
 const cli = Effect.gen(function* () {
@@ -215,7 +220,8 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           `Add "apps": "${appsVersion}" to package.json dependencies.`,
         );
 
-        // Committing the current directory prints only the new revision, which the next read reports.
+        // Committing the current directory prints the new revision, which the next read reports,
+        // and that it removed no file: the skipped dependency and Git folders were never saved.
         yield* fs.writeFileString(`${source}/lib/label.ts`, 'export const label = "edited";\n');
         const committed = yield* run(
           [
@@ -241,6 +247,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         });
         expect(saved.revision.code).toBe(directory.revision.code);
         expect(saved.revision.commit).not.toBe(directory.revision.commit);
+        expect(saved.removed).toEqual({ count: 0, paths: [] });
         const edited = yield* run(["source", "--host", origin, "--app", app.id], true);
         expect(edited.code, edited.stderr).toBe(0);
         const after = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Workspace))(

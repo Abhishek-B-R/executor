@@ -14,6 +14,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { Target } from "../support/platform.ts";
 import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
 import { scenarios } from "../test-plan.ts";
+import { expectUnknownOutcome } from "../support/write-outcome.ts";
 
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const Connection = Schema.Struct({
@@ -185,13 +186,16 @@ return { connect, read };`,
         const error = refused.execution.error;
         expect(error.response.code).toBe("AccountSelectionInvalid");
         // The agent reads why the account no longer fits and that it must connect a new one,
-        // not the generic advice to review the profile's choices.
+        // not the generic advice to review the profile's choices. `accounts.connect` is a
+        // mutation the host handed to the management app's code, so its recovery first says not
+        // to repeat the call, then quotes the API's own advice, whose other steps still apply.
         expect(error.response.message).toContain("different provider definition");
         expect(error.response.message).not.toBe(
           "The selected accounts do not match this app’s requirements.",
         );
-        expect(error.response.recovery.action).toBe(
-          "Open Accounts and connect a new account for this requirement.",
+        expectUnknownOutcome(
+          error.response.recovery,
+          "The API’s error response said: “Open Accounts and connect a new account for this requirement. This account can’t be selected or reconnected for this requirement.",
         );
         expect(error.response.recovery.instructions).toContain("without `account`");
         expect(error.message).toContain("different provider definition");
