@@ -76,4 +76,3 @@ new `execute` call.
 ## What is coming later
 
 - Automatic updates from another app or public package.
-- Imports between Executor app packages.

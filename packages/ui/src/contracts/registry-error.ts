@@ -10,8 +10,6 @@ export const registryErrorMessage = (error: RegistryError) =>
     "invalid-source":
       "Check the source files. Credential files and generated dependencies cannot be published.",
     "invalid-manifest": "Publishing needs a scoped name in package.json, such as @team/my-app.",
-    "unsupported-dependencies":
-      "Executor app dependencies are not supported yet. Include the required app source directly; normal npm dependencies are supported.",
     storage: "The published source could not be read. Try again.",
     network: "The app registry could not be reached. Check the network connection and try again.",
     status: "The app registry returned an unexpected response. Try again later.",

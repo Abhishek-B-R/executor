@@ -36,13 +36,8 @@ const publicationSource = (files: SourceFiles) =>
     )
       return yield* invalid("limit");
     if (
-      files.some(
-        (file) =>
-          /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.executor)(?:\/|$)/.test(
-            file.path,
-          ) ||
-          file.path === "executor.lock.json" ||
-          file.path.startsWith("__executor_deps/"),
+      files.some((file) =>
+        /(^|\/)(?:\.git|node_modules|\.env(?:\..*)?|\.npmrc|\.executor)(?:\/|$)/.test(file.path),
       )
     )
       return yield* invalid("invalid-source");
@@ -59,12 +54,9 @@ const publicationSource = (files: SourceFiles) =>
         /^[a-z0-9][a-z0-9-]{0,62}$/.test(name) ? "unscoped-name" : "invalid-name",
         name,
       );
-    const manifest = yield* Schema.decodeUnknownEffect(PackageManifest)(document).pipe(
+    return yield* Schema.decodeUnknownEffect(PackageManifest)(document).pipe(
       Effect.mapError(() => invalid("invalid-metadata", name)),
     );
-    if (Object.keys(manifest.executor?.dependencies ?? {}).length > 0)
-      return yield* invalid("unsupported-dependencies", name);
-    return manifest;
   });
 
 /** Keep the established write error contract while previews expose the precise repair. */
@@ -76,7 +68,6 @@ const publicationFailure = (issue: PublicationIssue): RegistryError => {
       return new RegistryError({ reason: "conflict" });
     case "limit":
     case "invalid-source":
-    case "unsupported-dependencies":
       return new RegistryError({ reason: issue.reason });
     case "missing-manifest":
     case "invalid-json":

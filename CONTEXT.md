@@ -54,7 +54,7 @@ listing; unpublishing removes it. Installed copies remain independent.
 **Public app installation**:
 Copy a reviewed publication's source into a new owned app and deploy it. It has
 its own Git repository, account selections and app data. Upstream changes do not
-update it. Executor app-to-app package dependencies are deferred.
+update it.
 
 **App code**:
 The authored program and revision history behind configured copies.

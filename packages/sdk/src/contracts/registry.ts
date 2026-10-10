@@ -20,11 +20,6 @@ export type PackageName = typeof PackageName.Type;
 export const PackageManifest = Schema.Struct({
   name: PackageName,
   description: Schema.optional(Schema.String.check(Schema.isMaxLength(2000))),
-  executor: Schema.optional(
-    Schema.Struct({
-      dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
-    }),
-  ),
 });
 export type PackageManifest = typeof PackageManifest.Type;
 /** Derive a public name from an authenticated publishing namespace and an app label. */
@@ -42,7 +37,6 @@ export class PublicationIssue extends Schema.TaggedError<PublicationIssue>()("Pu
     "unscoped-name",
     "invalid-name",
     "invalid-metadata",
-    "unsupported-dependencies",
     "invalid-source",
     "limit",
     "forbidden-scope",
@@ -88,7 +82,6 @@ const registryFailures = {
   "invalid-source": "The app source at this commit cannot be read as a public listing.",
   "invalid-manifest":
     "The app's package.json needs a valid package name in the publisher's scope and valid metadata.",
-  "unsupported-dependencies": "The app declares dependencies that public listings do not support.",
   storage: "Executor could not read or write the public app catalog. Try again.",
   network: "Executor could not reach the public app registry. Try again.",
   status: "The public app registry returned an unexpected HTTP status.",
@@ -108,7 +101,6 @@ export const RegistryError = ApiError.define({
       "changed",
       "invalid-source",
       "invalid-manifest",
-      "unsupported-dependencies",
       "storage",
       "network",
       "status",

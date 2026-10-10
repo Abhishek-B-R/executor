@@ -243,8 +243,8 @@ their working files and remain undeployed.
 Publishing reads a scoped `name` and optional `description` from `package.json`.
 The public listing points to the selected Git commit. Normal npm `dependencies`
 are supported; `version` is optional author metadata and does not select an
-Executor release. Executor app dependencies are deferred. Include the app source
-it needs directly; do not add `executor.dependencies` or an Executor lockfile.
+Executor release. Apps cannot depend on other Executor apps; include the source
+an app needs directly.
 
 Copy a public app with `appManagement.copy`, using `from: { package, commit }`
 and a new `name`. Owned apps use the same operation with `from: { app }`. This creates an independent app and Git repository with empty
