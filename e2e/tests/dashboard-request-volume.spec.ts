@@ -29,6 +29,13 @@ const tabs = [
 /** Simulated idle time, advanced with the browser's clock in small steps. */
 const idleMinutes = 3;
 const step = 10_000;
+/**
+ * Advances past the 4-millisecond window in which the dashboard collects reads into one batch,
+ * well short of any poll interval and not a multiple of `step`, so the reads a visible page
+ * decided at the end of its idle time are sent before it hides. See `batchWindow` in
+ * packages/dashboard-start/src/implementation/batch-browser.ts.
+ */
+const flush = 1_000;
 /** Freshness allows periodic reconciliation, but no more than one read per 20 seconds idle. */
 const idleReadLimit = (idleMinutes * 60) / 20;
 
@@ -196,7 +203,26 @@ export default defineApp({ accounts: {} }, async () => ({
         for (const kind of shared)
           expect(navigation[kind], `${kind} during tab navigation`).toBe(0);
 
-        const visible = yield* measure("visible-idle", idle("Visible idle"));
+        // From here page time moves only when the scenario advances it, so a poll fires inside an
+        // idle step and never beside the visibility change. With the clock running on its own, a
+        // poll could fire just before the page hid, decide to read while visible, and send that
+        // read after the hidden count began.
+        yield* browser.use("Pause the page clock", (page) =>
+          page.evaluate(() => Date.now()).then((now) => page.clock.pauseAt(now + step)),
+        );
+        yield* settled;
+        const visible = yield* measure(
+          "visible-idle",
+          idle("Visible idle").pipe(
+            // A poll at the end of the last step has decided to read but not yet sent the read.
+            Effect.andThen(
+              browser.use("Send the reads the visible page started", (page) =>
+                page.clock.runFor(flush),
+              ),
+            ),
+            Effect.andThen(settled),
+          ),
+        );
         for (const kind of shared) {
           expect(visible[kind], `${kind} reconciles while visible`).toBeGreaterThan(0);
           expect(visible[kind], `${kind} reads while visible`).toBeLessThanOrEqual(idleReadLimit);
@@ -235,6 +261,8 @@ export default defineApp({ accounts: {} }, async () => ({
           );
         }
 
+        // The page clock runs on its own again; the hidden page still decides no read.
+        yield* browser.use("Resume the page clock", (page) => page.clock.resume());
         // Returning to the tab reconciles every shared read once.
         const returned = yield* measure(
           "return",

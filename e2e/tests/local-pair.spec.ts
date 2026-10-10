@@ -20,7 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
-import { freePort, holdPort } from "../support/ports.ts";
+import { freePort, holdPort, refusingPort } from "../support/ports.ts";
 
 const nothingChanged = "Nothing was changed.";
 const desktopHint =
@@ -265,7 +265,7 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           expect(yield* keyFiles(running)).toEqual(afterRotation);
 
           // A port with no server says so instead of blaming the keys or the port being in use.
-          const silentPort = yield* freePort;
+          const silentPort = yield* refusingPort;
           const silent = yield* pair(running, silentPort);
           yield* evidence.json("no-server.json", silent);
           expect(silent.code).toBe(1);

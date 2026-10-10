@@ -20,7 +20,7 @@ import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, sentryEvents, traceExceptionTypes } from "../support/sentry-events.ts";
-import { freePort } from "../support/ports.ts";
+import { refusingPort } from "../support/ports.ts";
 import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
 const JsonRpcRequest = Schema.Struct({
@@ -212,7 +212,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
         // failure a fault in Executor's own network would cause. The app's fetch rejects.
         const unanswered = yield* deploy(
           "Unanswered MCP",
-          mcpAppFiles(`http://127.0.0.1:${yield* freePort}/mcp`),
+          mcpAppFiles(`http://127.0.0.1:${yield* refusingPort}/mcp`),
         );
         // A credential handle not sealed for this app: Executor's network refuses the request.
         const egress = yield* deploy(
@@ -240,7 +240,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
             path: "index.ts",
             content: githubSkillsApp(`(input, init) => {
       const missing = () => new Response(null, { status: 404 });
-      return ctx.fetch("http://127.0.0.1:${yield* freePort}/", init).then(
+      return ctx.fetch("http://127.0.0.1:${yield* refusingPort}/", init).then(
         (response) => (response.ok ? response : missing()),
         missing,
       );
@@ -272,7 +272,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           {
             path: "index.ts",
             content: wellKnownSkillsApp(
-              `http://127.0.0.1:${yield* freePort}/index.json`,
+              `http://127.0.0.1:${yield* refusingPort}/index.json`,
               ", fetch: ctx.fetch",
             ),
           },
