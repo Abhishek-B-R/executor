@@ -231,14 +231,31 @@ export const appRuntime = (host: AppRuntimeHost) =>
             );
             yield* Effect.annotateCurrentSpan({
               "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
+              "executor.runner.wait_ms": runner.waitMs,
+              "executor.runner.gap_ms": parts.gaps.runner,
               ...(supervisor === undefined
                 ? {}
-                : { "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs }),
+                : {
+                    "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs,
+                    "executor.supervisor.wait_ms": supervisor.waitMs,
+                    "executor.supervisor.gap_ms": parts.gaps.supervisor ?? 0,
+                  }),
               "executor.app.elapsed_ms": dispatch.elapsedMs,
               "executor.app.own_ms": parts.appOwnMs,
+              "executor.app.gap_ms": parts.gaps.app,
               "executor.upstream.wait_ms": parts.upstreamMs,
               "executor.elicitation.wait_ms": parts.elicitationMs,
               "executor.authored_ms": parts.authoredMs,
+              "executor.lease.wait_ms": parts.leaseMs,
+              "executor.background_ms": parts.backgroundMs,
+              "executor.start_ms": parts.startMs,
+              "executor.unclocked_ms": parts.unclockedMs,
+              ...(parts.started === undefined
+                ? {}
+                : {
+                    "executor.runtime.cold": parts.cold === true,
+                    "executor.runtime.started": parts.started.join(","),
+                  }),
               ...(parts.staleClocks.length === 0
                 ? {}
                 : {

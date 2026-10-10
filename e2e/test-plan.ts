@@ -4766,6 +4766,26 @@ export const scenarios = plan({
       local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
     },
   },
+  toolCallOverheadBackground: {
+    fixtures: "actors",
+    file: "tool-call-overhead.spec.ts",
+    title: "Executor time excludes a stale cache entry's refresh running beside an upstream wait",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
+    },
+  },
+  toolCallOverheadLease: {
+    fixtures: "actors",
+    file: "tool-call-overhead.spec.ts",
+    title: "Executor time excludes waiting on another call's load of the same cache entry",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
+    },
+  },
   toolCallOverheadAuthoredCache: {
     fixtures: "actors",
     file: "tool-call-overhead.spec.ts",

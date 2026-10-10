@@ -17,7 +17,13 @@ import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data
 import { RuntimeContext } from "alchemy";
 import { CacheCommand } from "@executor-js/app-cache/contracts";
 import { BlobStore } from "@executor-js/sdk/core";
-import { makeAppRunner, serveAppRunner, type RemoteCapabilities } from "@executor-js/sdk/workerd";
+import {
+  IsolateStarted,
+  makeAppRunner,
+  serveAppRunner,
+  type RemoteCapabilities,
+} from "@executor-js/sdk/workerd";
+import { withRemoteSpan } from "@executor-js/telemetry";
 import { cloudBuildReader } from "./infrastructure/blobs.ts";
 import { cloudOrigin } from "./infrastructure/stage.ts";
 import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build-storage.ts";
@@ -48,6 +54,7 @@ const CacheAnswered = Schema.Struct({
     ...EvaluatedSupervisor.fields,
     colo: Schema.String,
     wokeEarlier: Schema.optionalKey(Schema.Boolean),
+    isolateWoke: Schema.optionalKey(Schema.Boolean),
   }),
 });
 /**
@@ -58,18 +65,32 @@ const CacheAnswered = Schema.Struct({
  */
 const annotateCacheSupervisor = (reply: unknown) => {
   const answered = Schema.decodeUnknownOption(CacheAnswered)(reply);
-  if (Option.isNone(answered)) return Effect.void;
-  const { woke, wokeEarlier, instanceMs, isolateMs, colo } = answered.value.supervisor;
-  return Effect.annotateCurrentSpan({
-    "cache.supervisor.woke": woke || wokeEarlier === true,
-    ...(woke
-      ? { "cache.supervisor.woke_by": "command" }
-      : wokeEarlier === true
-        ? { "cache.supervisor.woke_by": "earlier" }
-        : {}),
-    "cache.supervisor.instance_ms": instanceMs,
-    "cache.supervisor.isolate_ms": isolateMs,
-    "cache.supervisor.colo": colo,
+  // A supervisor that predates this reports nothing, so whether it started is unknown.
+  if (Option.isNone(answered))
+    return Effect.gen(function* () {
+      (yield* IsolateStarted)("unknown");
+    });
+  const { woke, wokeEarlier, isolateWoke, instanceMs, isolateMs, colo } = answered.value.supervisor;
+  return Effect.gen(function* () {
+    // This command woke the supervisor; its isolate started too when it is the isolate's first.
+    if (woke) {
+      const started = yield* IsolateStarted;
+      started("supervisor");
+      // One that predates `isolateWoke` cannot say whether its isolate started too.
+      if (isolateWoke === undefined) started("unknown");
+      else if (isolateWoke) started("supervisor-isolate");
+    }
+    yield* Effect.annotateCurrentSpan({
+      "cache.supervisor.woke": woke || wokeEarlier === true,
+      ...(woke
+        ? { "cache.supervisor.woke_by": "command" }
+        : wokeEarlier === true
+          ? { "cache.supervisor.woke_by": "earlier" }
+          : {}),
+      "cache.supervisor.instance_ms": instanceMs,
+      "cache.supervisor.isolate_ms": isolateMs,
+      "cache.supervisor.colo": colo,
+    });
   });
 };
 /** The current trace's ID, which a supervisor compares with the call that woke it. */
@@ -100,9 +121,9 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
         // decoder ignores the extra field, so runners from before it read the reply unchanged.
         cache: (namespace: string, command: unknown, trace?: string) =>
           supervisor.observedCache(namespace, command, trace).pipe(
-            Effect.map(({ reply, supervisor: running, wokeEarlier }) => ({
+            Effect.map(({ reply, supervisor: running, wokeEarlier, isolateWoke }) => ({
               ...reply,
-              supervisor: { ...running, wokeEarlier, colo: colo() },
+              supervisor: { ...running, wokeEarlier, isolateWoke, colo: colo() },
             })),
           ),
         evaluated: supervisor.evaluated,
@@ -111,7 +132,15 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
           load: () => Promise<typeof FacetBundle.Type>,
           elicitation: ((input: unknown) => Promise<unknown>) | null = null,
           workflows: ((input: unknown) => Promise<unknown>) | null = null,
-        ) => supervisor.invoke(input, load, elicitation, workflows),
+        ) =>
+          supervisor.invoke(input, load, elicitation, workflows).pipe(
+            // The runner's trace context travels in the invocation's headers, so the supervisor's
+            // part of a database call joins the tool call's trace.
+            withRemoteSpan(
+              new Request("https://app-data.internal", { headers: input.headers }),
+              "runtime.app.data.invoke",
+            ),
+          ),
         cancel: (id: string) => supervisor.cancel(id),
         fetch: Effect.gen(function* () {
           const [response, socket] = yield* Cloudflare.upgrade();

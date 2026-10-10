@@ -1,7 +1,7 @@
 /** Bind the portable Effect cache to an app invocation's author API. */
 import { Effect, Schema, type Context } from "effect";
 import { makeCache, CacheError } from "@executor-js/app-cache";
-import { owned } from "@executor-js/telemetry";
+import { captureTelemetry, owned, ownedBy } from "@executor-js/telemetry";
 import type { AppCache, CacheGetOptions, HostCache } from "../contracts/cache.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
 import type { JsonValue } from "../contracts/schema.ts";
@@ -51,8 +51,24 @@ export const authorCache = (
   /** The invocation's trusted deadline. Waiting on another caller's load never runs past it. */
   deadline?: number,
 ): AppCache => {
-  const scoped = (scope: JsonValue, callerSignal = signal): CacheWithReads => {
-    const cache = makeCache(host.transport, host.background, scope, deadline);
+  const scoped = (
+    scope: JsonValue,
+    callerSignal = signal,
+    /**
+     * The telemetry its calls run in. A loader's cache runs in its load's, so the loader's own
+     * cache calls belong to the load, and to the background when the load runs there.
+     */
+    services = telemetry,
+  ): CacheWithReads => {
+    const cache = makeCache(
+      host.transport,
+      // A refresh handed to the background runs beside the caller, which does not wait on it.
+      (task) => host.background(task.pipe(owned("background", "app.cache.refresh"))),
+      scope,
+      deadline,
+      // Waiting on another caller's load is waiting, not Executor's work.
+      (wait) => wait.pipe(Effect.withSpan("app.cache.lease.wait", ownedBy("lease"))),
+    );
     const getOptions = <A>(options: CacheGetOptions<A>) => ({
       key: options.key,
       schema: decoderOf(options.schema),
@@ -62,15 +78,15 @@ export const authorCache = (
       load: Effect.acquireUseRelease(
         Effect.sync(() => new AbortController()),
         (controller) =>
-          appInvocationFetch(controller.signal).pipe(
-            Effect.flatMap((fetch) =>
+          Effect.all([appInvocationFetch(controller.signal), captureTelemetry]).pipe(
+            Effect.flatMap(([fetch, loading]) =>
               fromPromise(
                 method(options, "load"),
                 "loader",
               )({
                 fetch,
                 signal: controller.signal,
-                cache: scoped(scope, controller.signal),
+                cache: scoped(scope, controller.signal, loading.context),
               }),
             ),
           ),
@@ -101,7 +117,7 @@ export const authorCache = (
             owned("executor", "app.cache.call", { attributes: { "cache.method": method } }),
           ),
         callerSignal,
-        telemetry,
+        services,
       );
     const authored: CacheWithReads = {
       get: service("get", <A>(options: CacheGetOptions<A>) => load("get", options)),
@@ -134,6 +150,7 @@ export const authorCache = (
         return scoped(
           { account: bound.id, method: bound.method, generation: bound.generation },
           callerSignal,
+          services,
         );
       },
     };

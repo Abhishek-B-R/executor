@@ -60,6 +60,12 @@ export const makeCache = (
   scope: Schema.Json = "shared",
   /** The caller's own deadline, when the host supplies one. Waiting never runs past it. */
   deadline?: number,
+  /**
+   * Wraps the time this caller waits on another caller's load of the same entry, polls included,
+   * so the host can trace it and count it as waiting rather than as its own work.
+   */
+  leaseWait: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R> = (effect) =>
+    effect,
 ) => {
   // Every round trip to the host store is visible from the app, whichever host runs it.
   const transport: CacheTransport = (command) =>
@@ -153,8 +159,9 @@ export const makeCache = (
         deadline ?? Number.POSITIVE_INFINITY,
       );
       let initialVersion: string | null | undefined;
-      while (true) {
-        // One transaction reads the entry and, when it needs loading, claims the lease.
+      // One transaction reads the entry and, when it needs loading, claims the lease. Decides what
+      // this caller does next; the work itself runs outside any wait for another caller.
+      const attempt = Effect.gen(function* () {
         const acquired = yield* transport({
           operation: "acquire",
           key,
@@ -175,24 +182,38 @@ export const makeCache = (
         if (initialVersion === undefined) initialVersion = entry?.version ?? null;
         const refreshed = refresh && entry !== null && entry.version !== initialVersion;
         // A lease means the store found the entry due for loading; this caller must not drop it.
-        if (
-          entry !== null &&
-          (refreshed || (!refresh && lease === null && now < entry.freshUntil))
-        ) {
-          yield* Effect.annotateCurrentSpan("cache.result", "fresh");
-          return withReads(yield* decode(entry.value), together);
-        }
+        if (entry !== null && (refreshed || (!refresh && lease === null && now < entry.freshUntil)))
+          return { next: "fresh", entry, together } as const;
         const kept = !refresh && entry !== null && now < entry.staleUntil;
-        if (kept && options.stale !== "revalidate") {
+        if (kept && options.stale !== "revalidate")
+          return { next: "stale", entry, lease, together } as const;
+        if (lease !== null) return { next: "load", lease, kept } as const;
+        if (now >= waitUntil) return { next: "local" } as const;
+        return { next: "wait" } as const;
+      });
+      let decided = yield* attempt;
+      // Another caller holds the lease: this caller waits on that caller's load, polling the
+      // store, until the entry is published, the lease frees up or waiting runs out.
+      if (decided.next === "wait")
+        decided = yield* Effect.gen(function* () {
+          while (true) {
+            yield* Effect.sleep("100 millis");
+            const next = yield* attempt;
+            if (next.next !== "wait") return next;
+          }
+        }).pipe(leaseWait);
+      switch (decided.next) {
+        case "fresh":
+          yield* Effect.annotateCurrentSpan("cache.result", "fresh");
+          return withReads(yield* decode(decided.entry.value), decided.together);
+        case "stale":
           yield* Effect.annotateCurrentSpan("cache.result", "stale");
-          if (lease !== null) yield* background(load(lease).pipe(Effect.asVoid));
-          return withReads(yield* decode(entry.value), together);
-        }
-        if (lease !== null) {
-          yield* Effect.annotateCurrentSpan("cache.result", kept ? "revalidated" : "miss");
-          return loaded(yield* load(lease));
-        }
-        if (now >= waitUntil) {
+          if (decided.lease !== null) yield* background(load(decided.lease).pipe(Effect.asVoid));
+          return withReads(yield* decode(decided.entry.value), decided.together);
+        case "load":
+          yield* Effect.annotateCurrentSpan("cache.result", decided.kept ? "revalidated" : "miss");
+          return loaded(yield* load(decided.lease));
+        case "local":
           // Without the lease this value is not published; the holder or a later caller does.
           yield* Effect.annotateCurrentSpan("cache.result", "local");
           return loaded(
@@ -202,8 +223,6 @@ export const makeCache = (
               Effect.withSpan("app.cache.load", { attributes: { "cache.load.leased": false } }),
             ),
           );
-        }
-        yield* Effect.sleep("100 millis");
       }
     }).pipe(Effect.withSpan("app.cache.get"));
   return {

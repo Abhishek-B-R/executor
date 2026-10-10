@@ -42,14 +42,31 @@ export const FacetInvocation = Schema.Struct({
 /**
  * The supervisor attaches the revision the invocation observed, whether the invocation
  * invalidated app cache data, and its own part of the invocation on its own clock, queueing
- * included: how long it took and how much of that it waited on the facet.
+ * included: how long it took and how much of that it waited on the facet; and what started for the
+ * call (`started`): the supervisor's object and its isolate, before its clock began, and the facet
+ * and its Worker, inside that wait.
  */
 export const FacetResult = Schema.Struct({
   value: Schema.Json,
   revision: Schema.Int,
   cacheChanged: Schema.optionalKey(Schema.Boolean),
-  timing: Schema.optionalKey(Schema.Struct({ elapsedMs: Schema.Finite, waitMs: Schema.Finite })),
+  timing: Schema.optionalKey(
+    Schema.Struct({
+      elapsedMs: Schema.Finite,
+      waitMs: Schema.Finite,
+      started: Schema.optionalKey(
+        Schema.Array(
+          Schema.Literals(["supervisor", "supervisor-isolate", "facet", "facet-worker"]),
+        ),
+      ),
+    }),
+  ),
 });
+/** What started for one facet call: the facet itself, and its Worker in the Worker Loader. */
+interface FacetStarts {
+  facet: boolean;
+  worker: boolean;
+}
 const causes = new WeakMap<AppDatabaseError, unknown>();
 /** Internal diagnostics, deliberately absent from the serialized error. */
 export const facetFailureCause = (error: AppDatabaseError): unknown => causes.get(error);
@@ -196,6 +213,8 @@ export const makeFacetSupervisor = (
   Effect.gen(function* () {
     const metadata = yield* Semaphore.make(1);
     const startedAt = yield* Clock.currentTimeMillis;
+    // The isolate's first supervisor: its start was the isolate's, so its wake started the isolate.
+    const firstInIsolate = isolateStartedAt === undefined;
     const isolateStarted = (isolateStartedAt ??= startedAt);
     /**
      * Calls and events this instance has received, of every kind that can activate it: host RPCs,
@@ -231,6 +250,8 @@ export const makeFacetSupervisor = (
             supervisor,
             /** An earlier call of the caller's trace woke this instance. */
             wokeEarlier: !woke && trace !== undefined && trace === wokenBy,
+            /** This call woke the isolate's first supervisor, so the isolate started for it. */
+            isolateWoke: woke && firstInIsolate,
           };
         }),
       );
@@ -334,6 +355,7 @@ export const makeFacetSupervisor = (
     const acquire = (
       invocation: typeof FacetInvocation.Type,
       load: () => Promise<typeof FacetBundle.Type>,
+      starts: FacetStarts,
     ) =>
       Effect.gen(function* () {
         const supervisor = state.id.toString();
@@ -344,20 +366,28 @@ export const makeFacetSupervisor = (
           state.facets.abort("data", "Execution context changed");
           active = loaded;
         }
-        if (!unloadReplacedFacets) return yield* select(name, invocation.app, load);
+        if (!unloadReplacedFacets) return yield* select(name, invocation.app, load, starts);
         // Also covers a facet an evicted supervisor left loaded, which `active` never saw.
         const replaced = loadedFacets.get(supervisor);
         loadedFacets.set(supervisor, { name, loaded });
         if (replaced !== undefined && replaced.loaded !== loaded) yield* unloadReplaced(replaced);
-        return yield* select(name, invocation.app, load);
+        return yield* select(name, invocation.app, load, starts);
       });
-    const select = (name: string, app: string, load: () => Promise<typeof FacetBundle.Type>) =>
+    const select = (
+      name: string,
+      app: string,
+      load: () => Promise<typeof FacetBundle.Type>,
+      starts: FacetStarts,
+    ) =>
       Effect.try({
         try: () =>
           // An abort invalidates stubs. Reacquire on every invocation.
           Schema.decodeUnknownSync(FacetEntrypoint)(
             state.facets.get("data", () => {
+              // The runtime asks for the class only when it starts the facet.
+              starts.facet = true;
               const { worker } = loadWorker(loader, name, async () => {
+                starts.worker = true;
                 const bundle = Schema.decodeUnknownSync(Schema.toType(FacetBundle))(await load());
                 return {
                   ...bundle,
@@ -464,11 +494,14 @@ export const makeFacetSupervisor = (
       elicitation: ((input: unknown) => Promise<unknown>) | null,
       workflows: ((input: unknown) => Promise<unknown>) | null,
       waited: (ms: number) => void,
+      starts: FacetStarts,
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
-          yield* admit(invocation.identity, invocation.concurrent);
-          const entrypoint = yield* acquire(invocation, load);
+          yield* admit(invocation.identity, invocation.concurrent).pipe(
+            Effect.withSpan("runtime.app.data.admit"),
+          );
+          const entrypoint = yield* acquire(invocation, load, starts);
           // Capture the revision before execution so a later write cannot make an old query
           // look current. A write that commits while the query runs only causes a refetch.
           const observedRevision = yield* revision;
@@ -555,7 +588,9 @@ export const makeFacetSupervisor = (
             );
             // Waiting on the facet, which runs the app, is not the supervisor's own time.
             const from = yield* Clock.currentTimeNanos;
-            const result = yield* Effect.promise(() => call.result);
+            const result = yield* Effect.promise(() => call.result).pipe(
+              Effect.withSpan("runtime.app.data.facet"),
+            );
             waited(Number((yield* Clock.currentTimeNanos) - from) / 1_000_000);
             if (Result.isFailure(result)) return yield* failed(result.failure);
             return yield* Schema.decodeUnknownEffect(Schema.Json)(result.success).pipe(
@@ -580,9 +615,9 @@ export const makeFacetSupervisor = (
        */
       observedCache: (namespace: string, command: unknown, trace?: string) =>
         runningIn(trace).pipe(
-          Effect.flatMap(({ supervisor, wokeEarlier }) =>
+          Effect.flatMap(({ supervisor, wokeEarlier, isolateWoke }) =>
             cache(namespace, command).pipe(
-              Effect.map((reply) => ({ reply, supervisor, wokeEarlier })),
+              Effect.map((reply) => ({ reply, supervisor, wokeEarlier, isolateWoke })),
             ),
           ),
         ),
@@ -611,40 +646,76 @@ export const makeFacetSupervisor = (
         elicitation: ((input: unknown) => Promise<unknown>) | null = null,
         workflows: ((input: unknown) => Promise<unknown>) | null = null,
       ) =>
-        enter(
-          Effect.scoped(
-            Effect.gen(function* () {
-              const invocation = yield* Schema.decodeUnknownEffect(Schema.toType(FacetInvocation))(
-                input,
-              ).pipe(Effect.mapError(failed));
-              const handle = {
-                cancel: yield* Deferred.make<void>(),
-                done: yield* Deferred.make<void>(),
-              };
-              if (calls.has(invocation.id)) return yield* failed();
-              yield* Effect.acquireRelease(
-                Effect.sync(() => {
-                  calls.set(invocation.id, handle);
-                }),
-                () =>
-                  Effect.gen(function* () {
-                    calls.delete(invocation.id);
-                    yield* Deferred.succeed(handle.done, undefined);
+        Effect.suspend(() => {
+          // The first call or event an instance receives woke it, before its clock started.
+          const cold = received === 0;
+          return enter(
+            Effect.scoped(
+              Effect.gen(function* () {
+                const invocation = yield* Schema.decodeUnknownEffect(
+                  Schema.toType(FacetInvocation),
+                )(input).pipe(Effect.mapError(failed));
+                const handle = {
+                  cancel: yield* Deferred.make<void>(),
+                  done: yield* Deferred.make<void>(),
+                };
+                if (calls.has(invocation.id)) return yield* failed();
+                yield* Effect.acquireRelease(
+                  Effect.sync(() => {
+                    calls.set(invocation.id, handle);
                   }),
-              );
-              const started = yield* Clock.currentTimeNanos;
-              let waitMs = 0;
-              const result = yield* Effect.raceFirst(
-                invoke(invocation, load, elicitation, workflows, (ms) => {
-                  waitMs += ms;
-                }),
-                Deferred.await(handle.cancel).pipe(Effect.andThen(Effect.interrupt)),
-              );
-              const elapsedMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
-              return { ...result, timing: { elapsedMs, waitMs } };
-            }),
-          ),
-        ),
+                  () =>
+                    Effect.gen(function* () {
+                      calls.delete(invocation.id);
+                      yield* Deferred.succeed(handle.done, undefined);
+                    }),
+                );
+                const started = yield* Clock.currentTimeNanos;
+                let waitMs = 0;
+                const starts: FacetStarts = { facet: false, worker: false };
+                // Bounded attributes on the supervisor's span, when its host traces the call.
+                const annotate = () =>
+                  Effect.annotateCurrentSpan({
+                    "executor.supervisor.cold": cold,
+                    "executor.supervisor.isolate_cold": cold && firstInIsolate,
+                    "executor.facet.cold": starts.facet,
+                    "executor.facet.worker_cold": starts.worker,
+                    "executor.data.write": invocation.write,
+                  });
+                const result = yield* Effect.raceFirst(
+                  invoke(
+                    invocation,
+                    load,
+                    elicitation,
+                    workflows,
+                    (ms) => {
+                      waitMs += ms;
+                    },
+                    starts,
+                  ),
+                  Deferred.await(handle.cancel).pipe(Effect.andThen(Effect.interrupt)),
+                ).pipe(Effect.ensuring(Effect.suspend(annotate)));
+                const elapsedMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
+                const isolateCold = cold && firstInIsolate;
+                const startedParts = [
+                  ...(cold ? ["supervisor" as const] : []),
+                  ...(isolateCold ? ["supervisor-isolate" as const] : []),
+                  ...(starts.facet ? ["facet" as const] : []),
+                  ...(starts.worker ? ["facet-worker" as const] : []),
+                ];
+                return {
+                  ...result,
+                  timing: {
+                    elapsedMs,
+                    waitMs,
+                    // Always sent, so a warm call is told apart from a supervisor that predates it.
+                    started: startedParts,
+                  },
+                };
+              }),
+            ),
+          );
+        }),
       cancel: (id: string) =>
         enter(
           Effect.gen(function* () {

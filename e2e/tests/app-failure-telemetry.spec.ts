@@ -602,6 +602,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                     "executor.upstream.wait_ms",
                     "executor.elicitation.wait_ms",
                     "executor.authored_ms",
+                    "executor.lease.wait_ms",
+                    "executor.background_ms",
                     "executor.overhead_ms",
                   ].includes(key),
               ),
@@ -625,6 +627,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           "executor.upstream.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.elicitation.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.authored_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.lease.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.background_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
           "executor.overhead_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
         });
         expect(named(thrown.spans, "app.call")).toMatchObject([

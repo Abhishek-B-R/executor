@@ -25,7 +25,13 @@ import {
 import { BuildId } from "../contracts/shared.ts";
 import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
 import { WorkerInvocation } from "../contracts/workerd-host.ts";
-import type { AppCapabilities, AppInvocation, AppRunner } from "./app-runner.ts";
+import {
+  RunnerIngress,
+  runnerIngress,
+  type AppCapabilities,
+  type AppInvocation,
+  type AppRunner,
+} from "./app-runner.ts";
 import { invocationBuildLoader } from "./app-runtime.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
@@ -251,6 +257,8 @@ export const serveAppRunner = (
     answer(
       Effect.scoped(
         Effect.gen(function* () {
+          // The runner's part starts here, so decoding the call and reading its build count too.
+          const ingress = yield* runnerIngress;
           const {
             elicitation: _elicitation,
             workflowControls: _controls,
@@ -264,6 +272,7 @@ export const serveAppRunner = (
               runner.invoke(decoded, yield* localCapabilities(capabilities, loader.load)),
             );
           }).pipe(
+            Effect.provideService(RunnerIngress, ingress),
             withRemoteSpan(
               new Request("https://app-runner.internal", { headers: decoded.headers }),
               "runtime.app.serve",

@@ -10,7 +10,7 @@
  * request and reply passes through the adapter of the protocol the build's framework speaks.
  */
 import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
-import { Clock, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
+import { Clock, Context, Effect, Exit, Option, Redacted, Result, Schema, Semaphore } from "effect";
 import {
   ElicitationReply,
   type HostRequest,
@@ -47,6 +47,7 @@ import {
   type RuntimeFailure,
 } from "../contracts/runtime.ts";
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
+import type { StartedPart } from "../contracts/runtime.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
 import { appNetworkModule } from "./app-network.ts";
@@ -391,14 +392,49 @@ type Timed = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 const notTimed: Timed = (effect) => effect;
 
 /**
+ * Told when a part the runner reaches for a call started for it: the app's Worker on a Worker
+ * Loader cold start, or its data supervisor on a cache command. `unknown` when a part answered
+ * without saying whether it started, such as a supervisor that predates it. Telemetry only.
+ */
+export const IsolateStarted = Context.Reference<(part: StartedPart | "unknown") => void>(
+  "executor/IsolateStarted",
+  { defaultValue: () => () => undefined },
+);
+
+// oxlint-disable-next-line executor/no-module-level-mutable-state -- whether this isolate has received a call; it carries no request data
+let runnerReceived = false;
+
+/**
+ * Where a call entered the runner's isolate: when, on its clock, and whether it was the first call
+ * the isolate received, so its start-up ran in the caller's wait. Taken once, where the call
+ * arrives, before anything it waits on, so concurrent first calls cannot both claim the start.
+ */
+export const runnerIngress = Effect.map(Clock.currentTimeNanos, (receivedAt) => {
+  const first = !runnerReceived;
+  runnerReceived = true;
+  return { receivedAt, first };
+});
+
+/**
+ * The call's ingress, when the host that serves the runner took the call before `invoke`, for
+ * instance to decode it. The runner's part starts there.
+ */
+export const RunnerIngress = Context.Reference<
+  { readonly receivedAt: bigint; readonly first: boolean } | undefined
+>("executor/RunnerIngress", { defaultValue: () => undefined });
+
+/**
  * The runner's own part of one invocation, on its own clock: how long it took, and how much of that
  * it waited on the isolate running the app. Starting the call there, cold starts included, is the
  * runner's own time: the app runs only once the runner waits for its result. A caller in another
  * isolate cannot measure any of it, since Workers clocks advance only on I/O and are not comparable
- * across isolates.
+ * across isolates. It also tells what started for this call: the runner's isolate, and what the
+ * runner reached (see `IsolateStarted`).
  */
 const runnerTiming = () => {
   let waitMs = 0;
+  const startedParts = new Set<StartedPart>();
+  let startsKnown = true;
   const waiting: Timed = (effect) =>
     Effect.flatMap(Clock.currentTimeNanos, (from) =>
       effect.pipe(
@@ -414,11 +450,23 @@ const runnerTiming = () => {
   /** Add the timing to an object reply: an additive field, like `cacheChanged`. */
   const report = <E, R>(invoke: Effect.Effect<unknown, E, R>) =>
     Effect.gen(function* () {
-      const started = yield* Clock.currentTimeNanos;
-      const result = yield* invoke;
+      const ingress = (yield* RunnerIngress) ?? (yield* runnerIngress);
+      if (ingress.first) startedParts.add("runner");
+      const started = ingress.receivedAt;
+      const result = yield* invoke.pipe(
+        Effect.provideService(IsolateStarted, (part) => {
+          if (part === "unknown") startsKnown = false;
+          else startedParts.add(part);
+        }),
+      );
       const elapsedMs = Number((yield* Clock.currentTimeNanos) - started) / 1_000_000;
       return typeof result === "object" && result !== null && !Array.isArray(result)
-        ? { ...result, runner: { elapsedMs, waitMs } }
+        ? {
+            ...result,
+            // `started` is sent whenever it is known, so a warm call is told apart from a runner
+            // that predates it or a part that did not say.
+            runner: { elapsedMs, waitMs, ...(startsKnown ? { started: [...startedParts] } : {}) },
+          }
         : result;
     });
   return { waiting, report };
@@ -461,6 +509,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               );
         const services = yield* Effect.context<never>();
         const load = async () => {
+          Context.get(services, IsolateStarted)("app");
           // Recorded when the Worker Loader runs its cold-start callback, inside runtime.app.rpc.start.
           const read = await Effect.runPromiseWith(services)(
             Effect.tryPromise({ try: code, catch: (cause) => cause }).pipe(

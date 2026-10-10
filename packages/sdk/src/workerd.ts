@@ -14,6 +14,7 @@ export { bindingWorkerdApps } from "./implementation/binding-workerd-apps.ts";
 export { declarationFailed } from "./implementation/worker-source-map.ts";
 export { workerdHostHandler } from "./implementation/workerd-client.ts";
 export {
+  IsolateStarted,
   makeAppRunner,
   type AppRunner,
   type AppRunnerHost,

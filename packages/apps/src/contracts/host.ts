@@ -295,6 +295,13 @@ export const InvocationTiming = Schema.Struct({
   upstreamMs: Schema.Finite,
   elicitationMs: Schema.Finite,
   authoredMs: Schema.Finite,
+  /** Waiting on another call that holds the lease to load a cache entry this call needs. */
+  leaseMs: Schema.optionalKey(Schema.Finite),
+  /**
+   * How long background work, such as a stale cache entry's refresh, ran within the invocation.
+   * It runs beside the invocation, so it is not part of the division above.
+   */
+  backgroundMs: Schema.optionalKey(Schema.Finite),
 });
 export type InvocationTiming = typeof InvocationTiming.Type;
 /** Receives the invocation's timing once it is over; hosts that do not return it ignore it. */

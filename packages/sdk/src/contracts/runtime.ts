@@ -33,12 +33,39 @@ export const AppCacheChanges = Context.Reference<{
 }>("executor/AppCacheChanges", { defaultValue: () => ({ changed: () => Effect.void }) });
 
 /**
+ * A part of a call's path that started for it, rather than serving it warm. `runner`: the runner's
+ * isolate. `app`: the app's Worker, a Worker Loader cold start. `supervisor`: the data supervisor's
+ * object, before its clock started; `supervisor-isolate` when its isolate started too. `facet`: the
+ * app's data facet, inside the supervisor's wait; `facet-worker` when its Worker cold-started too.
+ * The isolate starts (`runner`, `app`, `supervisor-isolate`, `facet-worker`) are the costly ones;
+ * an object starting in a warm isolate is cheap.
+ */
+export const StartedPart = Schema.Literals([
+  "runner",
+  "app",
+  "supervisor",
+  "supervisor-isolate",
+  "facet",
+  "facet-worker",
+]);
+export type StartedPart = typeof StartedPart.Type;
+/** The parts whose start is an isolate's: what makes a call cold. */
+export const isolateStarts: ReadonlySet<StartedPart> = new Set([
+  "runner",
+  "app",
+  "supervisor-isolate",
+  "facet-worker",
+]);
+
+/**
  * One isolate's own part of an invocation, on its own clock: how long it took and how much of that
  * it waited on the next isolate. The runner and the data supervisor report it beside their reply.
  */
 export const IsolateTiming = Schema.Struct({
   elapsedMs: Schema.Finite,
   waitMs: Schema.Finite,
+  /** What started for this call, as this isolate saw it; see `StartedPart`. */
+  started: Schema.optionalKey(Schema.Array(StartedPart)),
 });
 export type IsolateTiming = typeof IsolateTiming.Type;
 
@@ -69,6 +96,38 @@ export interface RuntimeCallTiming {
     readonly upstreamMs: number;
     readonly elicitationMs: number;
     readonly authoredMs: number;
+    /** Waiting on another call's load of a cache entry. */
+    readonly leaseMs: number;
+    /**
+     * How long background work no caller waited on, such as refreshing a stale cache entry, ran
+     * beside the call. Not part of any other part.
+     */
+    readonly backgroundMs: number;
+    /**
+     * Isolate start-up that ran while a caller waited, before the started isolate's clock began:
+     * the gap between a caller's wait and the started isolate's elapsed time. `ownMs` includes it.
+     * It is a cross-isolate bound, and a facet's includes the app's synchronous code on that call.
+     */
+    readonly startMs: number;
+    /**
+     * The hops' gaps that `startMs` does not count: transit between isolates, and a warm data
+     * facet's synchronous SQL and code, which no clock sees. Not part of `ownMs`; with it, an
+     * upper bound on the call's Executor time.
+     */
+    readonly unclockedMs: number;
+    /**
+     * What started for the call, in `StartedPart` order. Undefined when a runner or supervisor
+     * that predates it did not say, so the call is not known to be warm.
+     */
+    readonly started: readonly StartedPart[] | undefined;
+    /** An isolate on the call's path started for it (`isolateStarts`); undefined when unknown. */
+    readonly cold: boolean | undefined;
+    /** Each hop's wait not covered by its child's elapsed time: start-up and transit. */
+    readonly gaps: {
+      readonly runner: number;
+      readonly supervisor?: number;
+      readonly app: number;
+    };
     /** Adjacent isolates whose clocks disagree, such as `runner/app`: a lower bound. */
     readonly staleClocks: readonly string[];
   };
