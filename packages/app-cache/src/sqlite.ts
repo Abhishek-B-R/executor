@@ -165,7 +165,23 @@ export const sqliteCache = (storage: CacheSqlStorage) => {
                 (command.refresh || current === null || now >= current.freshUntil);
               const lease =
                 wanted && (row === undefined || row.lease_until <= now) ? claim(command.key) : null;
-              return { entry: current, lease };
+              if (command.reads === undefined || command.reads.length > cacheLimits.batchEntries)
+                return { entry: current, lease };
+              // The same reads a `read` makes, in this transaction. Past the batch's byte bound the
+              // reply leaves them out and the caller reads them on its own, as it would without them.
+              let bytes = 0;
+              const reads: (CacheEntry | null)[] = [];
+              for (const key of command.reads) {
+                const found = read(key);
+                if (found === undefined || found.value === null) {
+                  reads.push(null);
+                  continue;
+                }
+                bytes += found.bytes;
+                if (bytes > cacheLimits.batchBytes) return { entry: current, lease };
+                reads.push(entry(found));
+              }
+              return { entry: current, lease, reads };
             }
             case "claim": {
               const row = read(command.key);

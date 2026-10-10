@@ -493,6 +493,19 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpCatalogAccountsOneCommand: {
+    fixtures: "actors",
+    file: "mcp-catalog.spec.ts",
+    title:
+      "MCP catalog warm calls alternating between two accounts read each catalog and tool in one cache command",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Framework catalog code, the same on Cloud; Cloud's hop is covered by tool-call-overhead",
+      ),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpCatalogScale: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
@@ -1701,6 +1714,39 @@ export const scenarios = plan({
       local: na("Local MCP sessions use the local database."),
     },
   },
+  cloudMcpParallelCalls: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud MCP session objects run parallel tool calls, each call's reads on one connection, beside resumed approvals, each with its own result",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host MCP sessions run in its server process with its own pool."),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
+  cloudMcpAbandonedStatement: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud MCP session objects cancel a statement a caller gave up on while it waits on a lock, and the next call does not wait for it",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host MCP sessions run in its server process with its own pool."),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
+  cloudMcpDiscoveryListings: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud MCP session objects discover the other apps of an execute while one app's listing waits on a lock",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host MCP sessions run in its server process with its own pool."),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
   cloudMcpObjectConnectRetry: {
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
@@ -1716,6 +1762,17 @@ export const scenarios = plan({
     file: "cloud-mcp-session-timing.spec.ts",
     title:
       "Cloud MCP session objects report their own handling time and the requests they were already answering",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host serves MCP sessions in its server process, with no gateway hop."),
+      local: na("Local serves MCP sessions in its server process, with no gateway hop."),
+    },
+  },
+  cloudMcpSessionRouting: {
+    fixtures: "actors",
+    file: "cloud-mcp-session-routing.spec.ts",
+    title:
+      "Cloud MCP routes a request inside a session by its signed session id and checks its bearer only in the session object",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host serves MCP sessions in its server process, with no gateway hop."),
@@ -4694,6 +4751,16 @@ export const scenarios = plan({
       local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
     },
   },
+  toolCallOverheadOneCacheTrip: {
+    fixtures: "actors",
+    file: "tool-call-overhead.spec.ts",
+    title: "A warm call of a cached MCP tool reads its catalog and the tool in one cache command",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
+    },
+  },
   toolCallOverheadLoader: {
     fixtures: "actors",
     file: "tool-call-overhead.spec.ts",
@@ -4999,6 +5066,54 @@ export const scenarios = plan({
     file: "tool-call-held-check.spec.ts",
     title:
       "a tool call runs the profile and the key or OAuth account saved while its access check waits",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The statement hold is mounted by the self-host test entry point."),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
+  cloudMcpObjectPool: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud MCP session objects' database pool runs a callback once, holds one connection, and settles abandoned statements off the caller's path",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host uses PGlite, not this PostgreSQL pool."),
+      local: na("Local uses PGlite, not this PostgreSQL pool."),
+    },
+  },
+  toolCallBatch: {
+    fixtures: "actors",
+    file: "tool-call-batch.spec.ts",
+    title:
+      "an MCP tool call sends its checks and reads in one batch, reads a changed profile in one more, and waits for a grant renewed meanwhile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Reads SQL spans from the self-host Motel collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
+      ),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
+  cloudMcpCallBatch: {
+    fixtures: "actors",
+    file: "cloud-tool-call-batch.spec.ts",
+    title:
+      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, and read again in order when a batch fails",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host runs a batch under PGlite's lock, which no table lock can stop partway; tool-call-batch.spec.ts covers its batches.",
+      ),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
+  toolCallReadAhead: {
+    fixtures: "actors",
+    file: "tool-call-read-ahead.spec.ts",
+    title:
+      "an MCP tool call sends its independent reads together and uses none of them before its checks pass",
     targets: {
       "self-host": scheduled,
       cloud: na("The statement hold is mounted by the self-host test entry point."),

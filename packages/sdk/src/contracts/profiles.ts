@@ -1,10 +1,11 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Durable account bindings and setup state for one use of an app. Deployments belong to the app. */
-import { Context, Schema, type Effect } from "effect";
+import { Context, Schema, type Effect, type Result } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { AppId, OwnerId, ProfileId, DeploymentId, StorageError } from "./shared.ts";
 import { AppNotFound, AccountSelectionInvalid, SelectedAccounts } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
+import type { Executor } from "./executor.ts";
 
 /** A revision protects account choices and durable setup against concurrent updates. */
 export const ProfileRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1));
@@ -59,6 +60,89 @@ export type Profile = typeof Profile.Type;
 export const CurrentProfile = Context.Reference<Profile | undefined>("executor/CurrentProfile", {
   defaultValue: () => undefined,
 });
+/**
+ * Host-only: the profile the host's own access check read for the tool call it is about to make,
+ * and the app's owner it read it under. With it, `tools.call` reads the app, the profile and the
+ * accounts that profile selects, and runs the profile recheck, in one round trip instead of one
+ * after another. Nothing here is trusted. The call still makes every read, after the host's
+ * check, and uses a read made with these values only when its own app and profile reads agree
+ * with them; otherwise it reads and checks again in order. Never supplied by authored code.
+ */
+export const InvocationSelection = Context.Reference<
+  | {
+      readonly app: AppId;
+      readonly owner: OwnerId;
+      readonly profile: Profile;
+    }
+  | undefined
+>("executor/InvocationSelection", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
+ * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
+ * it only for the app, owner and a profile equal to its {@link InvocationSelection}, and only
+ * once: a later call in its scope reads live, as grant rows from `GrantReadAhead` are consumed on
+ * first use. Every read it holds is checked as the call's own reads are. Never supplied by
+ * authored code.
+ */
+export const InvocationPrefetch = Context.Reference<
+  | {
+      readonly app: AppId;
+      readonly owner: OwnerId;
+      readonly profile: Profile;
+      readonly value: unknown;
+    }
+  | undefined
+>("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
+export const PrefetchHost = Symbol("executor.PrefetchHost");
+export interface PrefetchHost {
+  /**
+   * The reads `apps.get`, `apps.profiles.get` and then `tools.call` make for one selection, as
+   * effects of one statement each that never fail, for the host to send in one batch beside its
+   * own checks. Without `known`, only the app and the profile are read. With it, the accounts that
+   * `known.profile` selects are read too, with their profile recheck and the grants of the
+   * accounts `known.hint` says hold one (all of them without a hint): `known` is the profile and
+   * hint the host's previous call for this selection read, and names rows to read, nothing more.
+   * Once the leaves have run, `take` returns what they read.
+   */
+  readonly invocation: (selection: {
+    readonly app: AppId;
+    readonly owner: OwnerId;
+    readonly profile: ProfileId;
+    readonly known?: { readonly profile: Profile; readonly hint: unknown } | undefined;
+  }) => {
+    readonly leaves: ReadonlyArray<Effect.Effect<void>>;
+    readonly take: Effect.Effect<PrefetchedInvocation>;
+  };
+}
+/** What {@link PrefetchHost} read for one selection. */
+export interface PrefetchedInvocation {
+  /** What `apps.get({ app, owner })` would have returned; undefined when it was not read. */
+  readonly app:
+    | Result.Result<
+        Effect.Success<ReturnType<Executor["apps"]["get"]>>,
+        Effect.Error<ReturnType<Executor["apps"]["get"]>>
+      >
+    | undefined;
+  /** What `apps.profiles.get({ app, owner, profile })` would have returned. */
+  readonly profile: Result.Result<Profile, ProfileNotFound | StorageError> | undefined;
+  /**
+   * For {@link InvocationPrefetch}: the reads made with `known`, when every one answered; a read
+   * that failed in storage makes the call read again on its own.
+   */
+  readonly invocation:
+    | {
+        readonly app: AppId;
+        readonly owner: OwnerId;
+        readonly profile: Profile;
+        readonly value: unknown;
+      }
+    | undefined;
+  /** Keep beside the live profile for the next call's `known`; opaque to the host. */
+  readonly hint: unknown;
+  /** Whether any read failed in storage; the host then reads nothing from this batch. */
+  readonly failed: boolean;
+}
 /** Profiles are always resolved within the requested app and optional owner. */
 export const ProfileNotFound = UserFacingError.define({
   tag: "ProfileNotFound",

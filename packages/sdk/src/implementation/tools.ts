@@ -9,6 +9,7 @@ import {
   type Crypto,
   Effect,
   ErrorReporter,
+  Exit,
   Match,
   Option,
   Redacted,
@@ -46,8 +47,9 @@ import {
   type AppId,
   type DeploymentId,
 } from "../contracts/shared.ts";
+import type { Account } from "../contracts/account.ts";
 import { OAuthReconnectRequired } from "../contracts/oauth.ts";
-import type { makeOAuth } from "./oauth.ts";
+import { GrantReadAhead, type GrantRow, type makeOAuth } from "./oauth.ts";
 import {
   AppEvaluationFailed,
   appFailure,
@@ -78,14 +80,56 @@ import {
 import type { ExecutorDatabase } from "./storage.ts";
 import { type Credentials, StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
-import { storedDeployment } from "./apps.ts";
+import { gotApp, storedDeployment } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
 import { storedProfile } from "./profiles.ts";
-import { CurrentProfile, ProfileConflict, ProfileNotFound } from "../contracts/profiles.ts";
-import type { ProfileId } from "../contracts/shared.ts";
-import { validateSelection } from "./selection.ts";
+import {
+  CurrentProfile,
+  InvocationPrefetch,
+  type PrefetchedInvocation,
+  type PrefetchHost,
+  InvocationSelection,
+  Profile as ProfileSchema,
+  type Profile,
+  ProfileConflict,
+  ProfileNotFound,
+} from "../contracts/profiles.ts";
+import type { OwnerId, ProfileId } from "../contracts/shared.ts";
+import {
+  answered,
+  readSelectionAccounts,
+  selectionAccountIds,
+  type SelectionAccountsRead,
+  validateSelection,
+} from "./selection.ts";
 import type { Listings, ToolListing } from "./listings.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+
+/** The configured app with its active deployment, in one statement. */
+const readApp = (db: Query, app: AppId) =>
+  query(() =>
+    db.findFirst("apps", {
+      join: (b) => b.deployment(),
+      where: (b) => b("id", "=", app),
+    }),
+  );
+
+/**
+ * The reads {@link snapshot} makes, made ahead and at once. The profile read stands in only when
+ * it was made under the owner the app read returns, and the account read only when it named the
+ * accounts the profile read returns; otherwise the snapshot reads again, in order. A read that
+ * failed for storage stands in for nothing (see `answered`).
+ */
+interface SnapshotReads {
+  readonly app: Result.Result<Effect.Success<ReturnType<typeof readApp>>, StorageError>;
+  readonly profile:
+    | {
+        readonly owner: OwnerId;
+        readonly read: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
+      }
+    | undefined;
+  readonly accounts: SelectionAccountsRead;
+}
 
 /**
  * Resolve the app, pinned deployment, profile and account selection before invoking authored code.
@@ -110,14 +154,13 @@ export function snapshot(
   savedAccounts?: import("../contracts/apps.ts").SelectedAccounts,
   savedProfileRevision?: number,
   cleanup = false,
+  ahead?: SnapshotReads,
 ) {
   return Effect.gen(function* () {
-    const row = yield* query(() =>
-      db.findFirst("apps", {
-        join: (b) => b.deployment(),
-        where: (b) => b("id", "=", input.app),
-      }),
-    );
+    const row =
+      ahead !== undefined && answered(ahead.app)
+        ? yield* Effect.fromResult(ahead.app)
+        : yield* readApp(db, input.app);
     if (row === null) return yield* new AppNotFound({ app: input.app });
     const app = yield* Schema.decodeUnknownEffect(StoredApp)(row).pipe(
       Effect.mapError(() => new StorageError()),
@@ -136,11 +179,15 @@ export function snapshot(
     const profile =
       input.profile === undefined
         ? undefined
-        : yield* storedProfile(db, {
-            app: app.id,
-            profile: input.profile,
-            owner: app.owner,
-          });
+        : ahead?.profile !== undefined &&
+            ahead.profile.owner === app.owner &&
+            answered(ahead.profile.read)
+          ? yield* Effect.fromResult(ahead.profile.read)
+          : yield* storedProfile(db, {
+              app: app.id,
+              profile: input.profile,
+              owner: app.owner,
+            });
     if (profile !== undefined) {
       if (
         profile.status === "removed" ||
@@ -160,7 +207,13 @@ export function snapshot(
         });
     }
     const bindings = profile === undefined ? {} : (savedAccounts ?? profile.accounts);
-    const validated = yield* validateSelection(db, app.id, deployment.requirements, bindings);
+    const validated = yield* validateSelection(
+      db,
+      app.id,
+      deployment.requirements,
+      bindings,
+      ahead?.accounts,
+    );
     const selections = yield* Effect.forEach(
       Object.keys(deployment.requirements.accounts),
       (slot) =>
@@ -186,11 +239,87 @@ export function snapshot(
   });
 }
 
-/** Resolve current credentials without holding a database transaction open. */
+/**
+ * A profile recheck run beside the snapshot's reads, before the call's own profile and accounts
+ * were known: the profile and accounts it ran for, and its outcome.
+ */
+export interface RecheckAhead {
+  readonly profile: Profile;
+  readonly accounts: readonly Pick<Account, "id" | "owner">[];
+  readonly result: Exit.Exit<ReadonlySet<AccountId>, StorageError>;
+}
+
+const sameProfile = Schema.toEquivalence(ProfileSchema);
+/**
+ * Per selected account, whether resolving it reads a grant: its slot's provider signs in with
+ * something other than secrets, by the account's method when its row was read, else by any of
+ * the provider's methods. Opaque to the host, which keeps it beside the profile it was made for.
+ */
+class GrantHint {
+  readonly accounts: ReadonlyMap<AccountId, boolean>;
+  constructor(accounts: ReadonlyMap<AccountId, boolean>) {
+    this.accounts = accounts;
+  }
+  static read(hint: unknown) {
+    return hint instanceof GrantHint ? hint.accounts : undefined;
+  }
+}
+/** The {@link GrantHint} for a profile, from the app's deployment and any account rows read. */
+const grantHint = (
+  app: Effect.Success<ReturnType<typeof gotApp>>,
+  profile: Profile,
+  rows: ReadonlyArray<{ readonly id: AccountId; readonly method: string }>,
+) => {
+  const methods = new Map(rows.map((row) => [row.id, row.method]));
+  const grants = new Map<AccountId, boolean>();
+  for (const [slot, selection] of Object.entries(profile.accounts)) {
+    const auth = app.requirements.accounts[slot]?.definition.auth;
+    for (const id of typeof selection === "string" ? [selection] : selection) {
+      const method = methods.get(id);
+      const types =
+        auth === undefined
+          ? undefined
+          : method === undefined
+            ? Object.values(auth).map((entry) => entry.type)
+            : [auth[method]?.type];
+      grants.set(
+        id,
+        grants.get(id) === true || types === undefined || types.some((type) => type !== "secrets"),
+      );
+    }
+  }
+  return new GrantHint(grants);
+};
+/** Each account's grant row as read in the batch; taken once, by the account's first read. */
+const grantReadAhead = (ids: readonly AccountId[], rows: ReadonlyArray<GrantRow>) => {
+  const byId = new Map<AccountId, GrantRow | null>(ids.map((id) => [id, null]));
+  for (const row of rows) if (byId.has(row.id as AccountId)) byId.set(row.id as AccountId, row);
+  return byId;
+};
+/** The recheck ran for exactly this profile and these accounts, each under the same owner. */
+const recheckedFor = (
+  ahead: RecheckAhead,
+  profile: Profile,
+  accounts: readonly Pick<Account, "id" | "owner">[],
+) => {
+  const owners = new Map(ahead.accounts.map((account) => [account.id, account.owner]));
+  return (
+    sameProfile(ahead.profile, profile) &&
+    owners.size === ahead.accounts.length &&
+    owners.size === new Set(accounts.map((account) => account.id)).size &&
+    accounts.every((account) => owners.get(account.id) === account.owner)
+  );
+};
+
+/**
+ * Resolve current credentials without holding a database transaction open. `ahead` stands in
+ * for the profile recheck only when it succeeded, for the profile and accounts this state holds.
+ */
 export function resolve(
   state: Effect.Success<ReturnType<typeof snapshot>>,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   lifecycle?: ResourceLifecycle,
+  ahead?: RecheckAhead,
 ) {
   return Effect.gen(function* () {
     const selections = new Map<string, HostAccounts[string]>();
@@ -208,10 +337,18 @@ export function resolve(
       state.profile !== undefined && lifecycle?.profileResolving
         ? yield* resolveAccount(
             selected,
-            lifecycle.profileResolving(
-              state.profile,
-              selected.map(({ account }) => account),
-            ),
+            ahead !== undefined &&
+              Exit.isSuccess(ahead.result) &&
+              recheckedFor(
+                ahead,
+                state.profile,
+                selected.map(({ account }) => account),
+              )
+              ? ahead.result
+              : lifecycle.profileResolving(
+                  state.profile,
+                  selected.map(({ account }) => account),
+                ),
           )
         : yield* resolveAccount(selected);
     const credentials = new Map(
@@ -705,6 +842,225 @@ export const makeTools = (
           Effect.withSpan("sdk.tools.kind"),
         )
       : Effect.succeed(kind);
+  /**
+   * With the profile the host's check read ({@link InvocationSelection}), make the call's reads of
+   * the app, the profile and its accounts, and the profile recheck, at once. The host's check has
+   * finished, so each read still follows it. The snapshot uses a read only where the call's own
+   * reads agree with what it was made for, and the recheck only when it ran for the profile and
+   * accounts the call runs; failures are reported in the snapshot's order. A recheck after the
+   * reads would come before the grant reads anyway, so running it beside them leaves nothing
+   * older when the app starts. Without a matching selection, or without a profile, nothing is
+   * read ahead.
+   */
+  const invocationReads = (
+    selection: {
+      readonly app: AppId;
+      readonly owner: OwnerId;
+      readonly profile: Profile;
+    },
+    /** Accounts whose grant rows to read too, for a host that sends them in the same batch. */
+    grantsOf: readonly AccountId[] = [],
+  ) => {
+    const profile = selection.profile;
+    const ids = selectionAccountIds(profile.accounts);
+    const accounts = ids.map((id) => ({ id, owner: selection.owner }));
+    const slots: {
+      app?: SnapshotReads["app"];
+      read?: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
+      rows?: SelectionAccountsRead["rows"];
+      recheck?: RecheckAhead["result"];
+      grants?: Result.Result<ReadonlyArray<GrantRow>, StorageError>;
+    } = {};
+    const leaves: Array<Effect.Effect<void>> = [
+      Effect.result(readApp(db, selection.app)).pipe(
+        Effect.map((app) => {
+          slots.app = app;
+        }),
+      ),
+      Effect.result(
+        storedProfile(db, { app: selection.app, profile: profile.id, owner: selection.owner }),
+      ).pipe(
+        Effect.map((read) => {
+          slots.read = read;
+        }),
+      ),
+      Effect.result(readSelectionAccounts(db, ids)).pipe(
+        Effect.map((rows) => {
+          slots.rows = rows;
+        }),
+      ),
+    ];
+    if (lifecycle?.profileResolving !== undefined)
+      leaves.push(
+        Effect.exit(
+          lifecycle
+            .profileResolving(profile, accounts)
+            .pipe(Effect.withSpan("sdk.accounts.recheck")),
+        ).pipe(
+          Effect.map((recheck) => {
+            slots.recheck = recheck;
+          }),
+        ),
+      );
+    if (grantsOf.length > 0)
+      leaves.push(
+        Effect.result(
+          query(() => db.findMany("oauthGrants", { where: (b) => b("id", "in", grantsOf) })),
+        ).pipe(
+          Effect.map((grants) => {
+            slots.grants = grants;
+          }),
+        ),
+      );
+    return {
+      leaves,
+      slots,
+      take: () => {
+        if (slots.app === undefined || slots.read === undefined || slots.rows === undefined)
+          return undefined;
+        return {
+          reads: {
+            app: slots.app,
+            profile: { owner: selection.owner, read: slots.read },
+            accounts: { ids, rows: slots.rows },
+          } satisfies SnapshotReads,
+          recheck:
+            slots.recheck === undefined
+              ? undefined
+              : ({ profile, accounts, result: slots.recheck } satisfies RecheckAhead),
+          grants:
+            slots.grants === undefined || Result.isFailure(slots.grants)
+              ? undefined
+              : { ids: grantsOf, rows: slots.grants.success },
+        };
+      },
+      /** Whether any read failed in storage: a batch that did is not used at all. */
+      failed: () =>
+        (
+          [slots.app, slots.read, slots.rows, slots.grants] as ReadonlyArray<
+            Result.Result<unknown, { readonly _tag: string }> | undefined
+          >
+        ).some(
+          (read) =>
+            read !== undefined && Result.isFailure(read) && read.failure._tag === "StorageError",
+        ) ||
+        (slots.recheck !== undefined && Exit.isFailure(slots.recheck)),
+    };
+  };
+  type InvocationReads = NonNullable<ReturnType<ReturnType<typeof invocationReads>["take"]>>;
+  /**
+   * {@link PrefetchHost}: what `apps.get`, `apps.profiles.get` and the reads above return, read by
+   * the host in one batch with its own checks. The hint says which of the live profile's accounts
+   * resolve through a grant (see {@link GrantHint}), so the next batch reads only those grants. A
+   * stale hint costs a grant read in the resolve loop, in the call's own order, never a different
+   * answer.
+   */
+  const prefetchInvocation: PrefetchHost["invocation"] = (selection) => {
+    const known = selection.known;
+    const hint = known === undefined ? undefined : GrantHint.read(known.hint);
+    const ids = known === undefined ? [] : selectionAccountIds(known.profile.accounts);
+    // Grants of accounts the hint says hold none are not read; the resolve loop reads any it needs.
+    const grantsOf = ids.filter((id) => hint?.get(id) !== false);
+    const reads =
+      known === undefined
+        ? undefined
+        : invocationReads(
+            { app: selection.app, owner: selection.owner, profile: known.profile },
+            grantsOf,
+          );
+    const slots: {
+      app?: SnapshotReads["app"];
+      read?: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
+    } = reads?.slots ?? {};
+    const leaves: ReadonlyArray<Effect.Effect<void>> = reads?.leaves ?? [
+      Effect.result(readApp(db, selection.app)).pipe(
+        Effect.map((app) => {
+          slots.app = app;
+        }),
+      ),
+      Effect.result(
+        storedProfile(db, {
+          app: selection.app,
+          profile: selection.profile,
+          owner: selection.owner,
+        }),
+      ).pipe(
+        Effect.map((read) => {
+          slots.read = read;
+        }),
+      ),
+    ];
+    // What `apps.get` returns for the row: it reads the app under its owner only.
+    const asGot = (row: Effect.Success<ReturnType<typeof readApp>>) =>
+      Effect.gen(function* () {
+        if (row === null || row.owner !== selection.owner)
+          return yield* new AppNotFound({ app: selection.app });
+        return yield* gotApp(row);
+      });
+    const stored = (read: Result.Result<unknown, { readonly _tag: string }> | undefined) =>
+      read !== undefined && Result.isFailure(read) && read.failure._tag === "StorageError";
+    const take = Effect.gen(function* () {
+      const app =
+        slots.app === undefined
+          ? undefined
+          : Result.isFailure(slots.app)
+            ? Result.fail(slots.app.failure)
+            : yield* Effect.result(asGot(slots.app.success));
+      const value = reads === undefined || reads.failed() ? undefined : reads.take();
+      const live =
+        slots.read !== undefined && Result.isSuccess(slots.read) ? slots.read.success : undefined;
+      return {
+        app,
+        profile: slots.read,
+        invocation:
+          known === undefined || value === undefined
+            ? undefined
+            : { app: selection.app, owner: selection.owner, profile: known.profile, value },
+        hint:
+          app === undefined || Result.isFailure(app) || live === undefined
+            ? undefined
+            : grantHint(
+                app.success,
+                live,
+                reads?.slots.rows !== undefined && Result.isSuccess(reads.slots.rows)
+                  ? reads.slots.rows.success
+                  : [],
+              ),
+        failed: reads?.failed() ?? (stored(slots.app) || stored(slots.read)),
+      } satisfies PrefetchedInvocation;
+    });
+    return { leaves, take };
+  };
+  // A prefetch answers one call: it is provided around the whole host call, so a later call in
+  // that scope (none today) must read live rather than reuse reads that may be seconds old.
+  const consumedPrefetches = new WeakSet<object>();
+  const readAhead = (input: { readonly app: AppId; readonly profile?: ProfileId | undefined }) =>
+    Effect.gen(function* () {
+      const selection = yield* InvocationSelection;
+      if (
+        selection === undefined ||
+        input.profile === undefined ||
+        selection.app !== input.app ||
+        selection.profile.app !== input.app ||
+        selection.profile.id !== input.profile
+      )
+        return undefined;
+      // Made by the host in one batch with its checks, for exactly this selection.
+      const prefetched = yield* InvocationPrefetch;
+      if (
+        prefetched !== undefined &&
+        !consumedPrefetches.has(prefetched) &&
+        prefetched.app === selection.app &&
+        prefetched.owner === selection.owner &&
+        sameProfile(prefetched.profile, selection.profile)
+      ) {
+        consumedPrefetches.add(prefetched);
+        return prefetched.value as InvocationReads;
+      }
+      const reads = invocationReads(selection);
+      yield* Effect.all(reads.leaves, { concurrency: "unbounded", discard: true });
+      return reads.take();
+    });
   /** Evaluate the selected profile's live catalog. */
   const evaluate = <A, R>(
     input: Parameters<Executor["tools"]["index"]>[0],
@@ -781,6 +1137,7 @@ export const makeTools = (
       Effect.map(toListing(state)),
     );
   return {
+    prefetchInvocation,
     /**
      * The first account selected by this profile whose saved sign-in must reconnect before the
      * profile's tools can run; undefined when every account can supply credentials. Reads stored
@@ -922,9 +1279,21 @@ export const makeTools = (
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Json))),
           Effect.mapError(() => new RequestInvalid()),
         );
-        const state = yield* snapshot(db, parsed).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+        const { ahead, state } = yield* Effect.gen(function* () {
+          const ahead = yield* readAhead(parsed);
+          const state = yield* snapshot(db, parsed, undefined, undefined, false, ahead?.reads);
+          return { ahead, state };
+        }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
+        // Grant rows read in the batch, for accounts this state holds, stand in for each grant's
+        // first read; other accounts read theirs in the resolve loop.
+        const held = new Set(selectionAccountIds(state.accounts));
+        const grants =
+          ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
+            ? grantReadAhead(ahead.grants.ids, ahead.grants.rows)
+            : undefined;
+        const context = yield* resolve(state, resolveAccount, lifecycle, ahead?.recheck).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
+          Effect.provideService(GrantReadAhead, grants),
         );
         const identity = { app: state.app.id, deployment: state.deployment.id, tool: parsed.tool };
         yield* Effect.annotateCurrentSpan({

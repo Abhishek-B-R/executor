@@ -229,6 +229,16 @@ export const cloudDatabasePool = (options: {
   readonly maxConnections: number;
   readonly idleTimeout?: Duration.Input;
   readonly applicationName?: string;
+  /**
+   * Statements of one `PgPool.grouped` group that are in flight at the same time share one
+   * connection and go out in one write; the connection carries no other statement meanwhile, so a
+   * group only ever waits behind its own statements. Ungrouped statements, transactions, streams
+   * and reserved connections each take a connection of their own, as without this. A statement
+   * whose caller gives up while it runs stops the connection taking new statements (the group's
+   * next ones take another); before the connection goes back, what nobody awaits is cancelled and
+   * drained, and the connection is kept, as an interrupted statement's is without grouping.
+   */
+  readonly statementGroups?: boolean;
 }) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -245,7 +255,12 @@ export const cloudDatabasePool = (options: {
       });
       const sql = yield* Layer.build(
         PgClient.layer({
-          ...options,
+          url: options.url,
+          maxConnections: options.maxConnections,
+          idleTimeout: options.idleTimeout,
+          applicationName: options.applicationName,
+          // One connection per lease: grouping is what puts statements on a connection together.
+          ...(options.statementGroups === true ? { multiplex: true, multiplexConcurrency: 1 } : {}),
           prepare: false,
           connectTimeout: connectAttemptTimeout,
           connectRetries: 1,

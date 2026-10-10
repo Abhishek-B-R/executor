@@ -581,6 +581,522 @@
         }
       ]
     },
+    "cacheCommand": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "read"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "keys",
+              "type": {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isPattern",
+                          "payload": {
+                            "source": "^[a-f0-9]{64}$",
+                            "flags": ""
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "acquire"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "refresh",
+              "type": {
+                "_tag": "Boolean"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "version",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "String"
+                  },
+                  {
+                    "_tag": "Null"
+                  }
+                ]
+              },
+              "isOptional": true
+            },
+            {
+              "name": "reads",
+              "type": {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isPattern",
+                          "payload": {
+                            "source": "^[a-f0-9]{64}$",
+                            "flags": ""
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ]
+              },
+              "isOptional": true
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "claim"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "version",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "String"
+                  },
+                  {
+                    "_tag": "Null"
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "publish"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "lease",
+              "type": {
+                "_tag": "String"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "entry",
+              "type": {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "value",
+                    "type": {
+                      "_tag": "Declaration",
+                      "representation": {
+                        "id": "effect/schema/Json",
+                        "payload": null
+                      }
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "version",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "freshUntil",
+                    "type": {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isFinite",
+                            "payload": null
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isGreaterThanOrEqualTo",
+                            "payload": {
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "staleUntil",
+                    "type": {
+                      "_tag": "Number",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isFinite",
+                            "payload": null
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isGreaterThanOrEqualTo",
+                            "payload": {
+                              "minimum": 0
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "release"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "lease",
+              "type": {
+                "_tag": "String"
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "renew"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "lease",
+              "type": {
+                "_tag": "String"
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "write"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "entries",
+              "type": {
+                "_tag": "Arrays",
+                "rest": [
+                  {
+                    "_tag": "Objects",
+                    "propertySignatures": [
+                      {
+                        "name": "key",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isPattern",
+                                "payload": {
+                                  "source": "^[a-f0-9]{64}$",
+                                  "flags": ""
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "entry",
+                        "type": {
+                          "_tag": "Objects",
+                          "propertySignatures": [
+                            {
+                              "name": "value",
+                              "type": {
+                                "_tag": "Declaration",
+                                "representation": {
+                                  "id": "effect/schema/Json",
+                                  "payload": null
+                                }
+                              },
+                              "isOptional": false
+                            },
+                            {
+                              "name": "version",
+                              "type": {
+                                "_tag": "String"
+                              },
+                              "isOptional": false
+                            },
+                            {
+                              "name": "freshUntil",
+                              "type": {
+                                "_tag": "Number",
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isFinite",
+                                      "payload": null
+                                    }
+                                  },
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isGreaterThanOrEqualTo",
+                                      "payload": {
+                                        "minimum": 0
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "isOptional": false
+                            },
+                            {
+                              "name": "staleUntil",
+                              "type": {
+                                "_tag": "Number",
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isFinite",
+                                      "payload": null
+                                    }
+                                  },
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isGreaterThanOrEqualTo",
+                                      "payload": {
+                                        "minimum": 0
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "isOptional": false
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "invalidate"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "key",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isPattern",
+                      "payload": {
+                        "source": "^[a-f0-9]{64}$",
+                        "flags": ""
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
+    },
     "accounts": {
       "_tag": "Objects",
       "propertySignatures": [],
@@ -631,7 +1147,6 @@
     "workflowStep",
     "workflowStepReply",
     "workflowControl",
-    "cacheCommand",
     "cacheReply",
     "accountCheck",
     "migrate"

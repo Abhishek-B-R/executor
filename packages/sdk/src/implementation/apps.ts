@@ -172,6 +172,12 @@ const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown
     }),
   );
 
+/** The app `get` returns for a row read with its active deployment joined. */
+export const gotApp = (row: { readonly deployment: unknown }) => {
+  const { deployment, ...app } = row;
+  return projectedApp({ app, deployment });
+};
+
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
   if (app.activeDeployment === null)
@@ -548,8 +554,7 @@ export const makeApps = (
           }),
         );
         if (row === null) return yield* new AppNotFound({ app: input.app });
-        const { deployment, ...app } = row;
-        return yield* projectedApp({ app, deployment });
+        return yield* gotApp(row);
       }).pipe(Effect.withSpan("sdk.apps.get")),
     list: (input: NonNullable<Parameters<Executor["apps"]["list"]>[0]> = {}) =>
       Effect.gen(function* () {

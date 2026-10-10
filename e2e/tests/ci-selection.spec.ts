@@ -20,6 +20,7 @@ const jobs = [
   "cloud-domains",
   "cloud-workers",
   "cloud-locks",
+  "cloud-batch",
   "cloud-isolate",
   "cloud-rate-limit",
   "cloud-rollback",
@@ -352,7 +353,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           const runners = cloudRunners(run.outputs);
           expect(runners.map(({ name }) => name)).toEqual([
             "cloud, cloud-isolate",
-            "cloud-workers, cloud-locks, cloud-rollback",
+            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
             "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
           ]);
           // Each Cloud job's pattern is on exactly one runner, unchanged, and empty on the others.
@@ -369,7 +370,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
         expect(main.summary).toMatch(
-          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-rollback\) \|/,
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
         );
 
         // A selection runs each job on one runner, and starts only the Cloud runners it needs.
@@ -1010,6 +1011,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-domains",
         "cloud-workers",
         "cloud-locks",
+        "cloud-batch",
         "cloud-isolate",
         "cloud-rate-limit",
         "cloud-rollback",

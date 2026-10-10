@@ -180,6 +180,7 @@
     "effect@4.0.1": "patches/effect@4.0.1.patch",
     "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
     "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
+    "@effect/sql-pglite@4.0.1": "patches/@effect%2Fsql-pglite@4.0.1.patch",
     "@opencode-ai/codemode@0.0.0-dev-19272": "patches/@opencode-ai%2Fcodemode@0.0.0-dev-19272.patch",
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",

@@ -35,6 +35,15 @@ const idleWindow = Duration.seconds(30);
  * Connections one object may hold, shared by the executor and Better Auth: enough that a
  * transaction in one MCP operation does not stall every other operation of the session. The
  * pool opens them on demand. See notes/database-pool.md for the resulting PgBouncer client total.
+ *
+ * The pool groups statements (`statementGroups`): the statements one MCP tool call has in flight
+ * at the same time share one connection and go out in one write, so its independent reads cost one
+ * round trip together. A connection carries one group's statements at a time, so a statement that
+ * is slow in the database only ever delays its own group's; the rest of the request (discovery
+ * listings, skill reads) is ungrouped and takes a connection per statement, as before grouping.
+ * A statement its caller gave up on is cancelled, drained and its connection kept before the
+ * connection goes back, as without grouping. A transaction, a stream and Better Auth's checkout
+ * each reserve a connection of their own.
  */
 export const objectConnectionLimit = 4;
 
@@ -138,6 +147,7 @@ export const cloudObjectDatabase = Effect.gen(function* () {
             maxConnections: objectConnectionLimit,
             idleTimeout: idleWindow,
             applicationName: applicationName(owner),
+            statementGroups: true,
           }),
           scope,
         ).pipe(

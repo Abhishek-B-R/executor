@@ -6,7 +6,7 @@ import {
 } from "../contracts/product-analytics.ts";
 import { McpSchema } from "effect/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
-import { permittedAppIds } from "@executor-js/authorization";
+import { permittedAppIds, requiresToolMetadata } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-policy.ts";
@@ -16,6 +16,7 @@ import {
   AppNotFound,
   ElicitationFailed,
   EventNotFound,
+  InvocationSelection,
   type AppId,
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
@@ -23,11 +24,12 @@ import { Context, Effect, Option } from "effect";
 import {
   currentOwner,
   selectedApp,
-  selectedActiveDeployment,
+  checkedActiveDeployment,
   ownProfile,
   checkInvocationAccounts,
+  SelectionReadAhead,
 } from "./access.ts";
-import { HostedExecutor } from "../contracts/executor.ts";
+import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { CurrentMcpGrant } from "../contracts/mcp.ts";
 import { listTools } from "./tools.ts";
@@ -196,9 +198,25 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
-        const deployment = yield* selectedActiveDeployment(executor, owner, input);
+        // Under a read-only rule the grant check evaluates the app before the call reaches here,
+        // so selection reads made beside authentication would be older than that evaluation.
+        const ahead = yield* SelectionReadAhead;
+        const read =
+          ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
+        const { deployment, profile } = yield* checkedActiveDeployment(
+          executor,
+          owner,
+          input,
+          read,
+        );
         yield* authorizeTool({ ...input, deployment });
-        return yield* executor.tools.call({ ...input, deployment }, options);
+        const call = executor.tools.call({ ...input, deployment }, options);
+        // The check has finished: the call may read its state and recheck the profile at once.
+        return yield* profile !== undefined && (yield* ConcurrentStatements) !== undefined
+          ? call.pipe(
+              Effect.provideService(InvocationSelection, { app: input.app, owner, profile }),
+            )
+          : call;
       }).pipe((work) => observe("callTool", work)),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {

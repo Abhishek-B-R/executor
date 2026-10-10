@@ -5,6 +5,7 @@ import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@executor-j
 import {
   Array as Arr,
   Clock,
+  Context,
   type Crypto,
   Effect,
   Fiber,
@@ -164,6 +165,23 @@ const renewalLease = 20_000;
  * memory limit, cannot make this process take over its own renewal.
  */
 const heldClaims = new Set<string>();
+
+/** A stored grant row, as the resolve loop reads it. */
+export interface GrantRow {
+  readonly id: string;
+  readonly encrypted: Uint8Array;
+  readonly status: string;
+  readonly updatedAt: Date;
+}
+/**
+ * SDK-internal: grant rows a tool call read in one batch with its checks, by account. An account's
+ * first read in the resolve loop takes its row instead of reading again; a row is used once, and
+ * all are dropped as soon as any account waits for a renewal, since they are older than that wait.
+ */
+export const GrantReadAhead = Context.Reference<Map<AccountId, GrantRow | null> | undefined>(
+  "executor/GrantReadAhead",
+  { defaultValue: () => undefined },
+);
 
 /** Why a saved grant cannot supply credentials. Recorded on the resolve and usable spans. */
 type ReconnectReason =
@@ -1435,10 +1453,19 @@ export const makeOAuth = (
       // Set once this call has waited for another renewal of the grant. The token it then reads
       // is that renewal's result, and is used until it expires rather than renewed ahead again.
       let awaited = false;
+      const readAhead = yield* GrantReadAhead;
       while (true) {
-        const row = yield* query(() =>
-          db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
-        );
+        const ahead =
+          readAhead !== undefined && !awaited && !resolution.contested
+            ? readAhead.get(account.id)
+            : undefined;
+        readAhead?.delete(account.id);
+        const row: GrantRow | null =
+          ahead !== undefined
+            ? ahead
+            : yield* query(() =>
+                db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+              );
         if (row === null) return yield* reconnect("grant_missing");
         if (row.status === "reconnect") return yield* reconnect("grant_unusable");
         const now = yield* Clock.currentTimeMillis;
@@ -1450,6 +1477,7 @@ export const makeOAuth = (
         ) {
           awaited = true;
           resolution.contested = true;
+          readAhead?.clear();
           yield* Effect.sleep("100 millis");
           continue;
         }
@@ -1639,6 +1667,7 @@ export const makeOAuth = (
         // refresh token the service has already issued. The token request is bounded by its own
         // timeout, so an interruption waits at most that long plus the save.
         resolution.contested = true;
+        readAhead?.clear();
         const renewed = yield* Effect.uninterruptible(
           Effect.gen(function* () {
             const claimedAt = new Date(yield* Clock.currentTimeMillis);

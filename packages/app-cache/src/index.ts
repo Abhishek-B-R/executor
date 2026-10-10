@@ -92,9 +92,26 @@ export const makeCache = (
             }),
       ),
     );
-  const get = <A>(options: CacheGet<A>, refresh: boolean) =>
+  /**
+   * `also` names other keys of this scope to read in the same transaction as the entry, given the
+   * entry's store key. They come back only with a value read from the store (fresh, stale or
+   * refreshed), never with a load's.
+   */
+  const get = <A>(
+    options: CacheGet<A>,
+    refresh: boolean,
+    also: (key: string) => readonly Schema.Json[] = () => [],
+  ) =>
     Effect.gen(function* () {
       const key = yield* keyOf(options.key);
+      const extra = also(key);
+      const reads = extra.length === 0 ? undefined : yield* Effect.forEach(extra, keyOf);
+      const withReads = (value: A, entries: readonly (CacheEntry | null)[] | undefined) => ({
+        value,
+        key,
+        reads: entries,
+      });
+      const loaded = (value: A) => ({ value, key, reads: undefined });
       const { fresh, stale } = yield* durations(options.freshFor, options.staleFor);
       const decode = (value: unknown) => Schema.decodeUnknownEffect(options.schema)(value);
       const load = (lease: string) =>
@@ -138,11 +155,12 @@ export const makeCache = (
       let initialVersion: string | null | undefined;
       while (true) {
         // One transaction reads the entry and, when it needs loading, claims the lease.
-        const { entry, lease } = yield* transport({
+        const acquired = yield* transport({
           operation: "acquire",
           key,
           refresh,
           ...(initialVersion === undefined ? {} : { version: initialVersion }),
+          ...(reads === undefined ? {} : { reads }),
         }).pipe(
           Effect.flatMap((reply) =>
             Schema.decodeUnknownEffect(CacheAcquired)(reply).pipe(
@@ -150,6 +168,9 @@ export const makeCache = (
             ),
           ),
         );
+        const { entry, lease } = acquired;
+        // Reads the store left out (an older store, or past its byte bound) are not reported.
+        const together = acquired.reads?.length === reads?.length ? acquired.reads : undefined;
         const now = yield* Clock.currentTimeMillis;
         if (initialVersion === undefined) initialVersion = entry?.version ?? null;
         const refreshed = refresh && entry !== null && entry.version !== initialVersion;
@@ -159,25 +180,27 @@ export const makeCache = (
           (refreshed || (!refresh && lease === null && now < entry.freshUntil))
         ) {
           yield* Effect.annotateCurrentSpan("cache.result", "fresh");
-          return yield* decode(entry.value);
+          return withReads(yield* decode(entry.value), together);
         }
         const kept = !refresh && entry !== null && now < entry.staleUntil;
         if (kept && options.stale !== "revalidate") {
           yield* Effect.annotateCurrentSpan("cache.result", "stale");
           if (lease !== null) yield* background(load(lease).pipe(Effect.asVoid));
-          return yield* decode(entry.value);
+          return withReads(yield* decode(entry.value), together);
         }
         if (lease !== null) {
           yield* Effect.annotateCurrentSpan("cache.result", kept ? "revalidated" : "miss");
-          return yield* load(lease);
+          return loaded(yield* load(lease));
         }
         if (now >= waitUntil) {
           // Without the lease this value is not published; the holder or a later caller does.
           yield* Effect.annotateCurrentSpan("cache.result", "local");
-          return yield* options.load.pipe(
-            Effect.flatMap(decode),
-            Effect.timeout(cacheLimits.loadTimeoutMs),
-            Effect.withSpan("app.cache.load", { attributes: { "cache.load.leased": false } }),
+          return loaded(
+            yield* options.load.pipe(
+              Effect.flatMap(decode),
+              Effect.timeout(cacheLimits.loadTimeoutMs),
+              Effect.withSpan("app.cache.load", { attributes: { "cache.load.leased": false } }),
+            ),
           );
         }
         yield* Effect.sleep("100 millis");
@@ -220,9 +243,19 @@ export const makeCache = (
      * Read fresh data, refresh stale data in the background (or first, with `stale: "revalidate"`),
      * or wait for the lease owner.
      */
-    get: <A>(options: CacheGet<A>) => get(options, false),
+    get: <A>(options: CacheGet<A>) => get(options, false).pipe(Effect.map(({ value }) => value)),
+    /**
+     * `get`, also reading the keys of this scope that `keys` names in the same round trip. `keys`
+     * gets the entry's store key, which is unique to this scope and key, so a caller can remember
+     * what it read under it. `reads` holds their entries, undecoded and in order, when the value
+     * was read from the store; it is undefined when the value was loaded or the store did not read
+     * them, and the caller then reads what it still needs.
+     */
+    getWith: <A>(options: CacheGet<A>, keys: (key: string) => readonly Schema.Json[]) =>
+      get(options, false, keys),
     /** Force one awaited refresh without removing the retained value. Concurrent refreshes share a load. */
-    revalidate: <A>(options: CacheGet<A>) => get(options, true),
+    revalidate: <A>(options: CacheGet<A>) =>
+      get(options, true).pipe(Effect.map(({ value }) => value)),
   };
 };
 

@@ -225,6 +225,7 @@
       "dependencies": {
         "@effect/platform-bun": "4.0.1",
         "@effect/platform-node": "4.0.1",
+        "@effect/sql-pg": "4.0.1",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/devtools": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
@@ -477,7 +478,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.75",
+      "version": "0.0.1-beta.76",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",
@@ -828,6 +829,7 @@
     "workerd",
   ],
   "patchedDependencies": {
+    "@effect/sql-pglite@4.0.1": "patches/@effect%2Fsql-pglite@4.0.1.patch",
     "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch",
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",

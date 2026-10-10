@@ -48,6 +48,8 @@ const organizationOf = (owner: OwnerId) =>
     : Effect.fail(new StorageError());
 
 const AllowedAccount = Schema.Struct({ id: AccountId, owner: Schema.String });
+/** What the account checks read of an account: its ID and the owner the SDK resolved it under. */
+type AccountOwner = Pick<Account, "id" | "owner">;
 type AllowedAccount = typeof AllowedAccount.Type;
 const ProfileRecheck = Schema.Struct({
   access: Schema.Number,
@@ -75,14 +77,14 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             join hosted_group_members gm on gm.group_id = g.group_id
             where g.app_id = p.id and gm.member_id = m.id)))`;
   // An account outside an organization is never authorized; it is refused in its turn.
-  const organizationAccounts = (accounts: readonly Account[]) =>
+  const organizationAccounts = <A extends AccountOwner>(accounts: readonly A[]) =>
     accounts.filter(
       (account) =>
         account.owner.startsWith("organization:") &&
         Schema.is(OrganizationId)(account.owner.slice("organization:".length)),
     );
   /** The accounts whose policy still lets the user use them, with the owner each belongs to. */
-  const accountAccess = (accounts: readonly Account[], user: string) =>
+  const accountAccess = (accounts: readonly AccountOwner[], user: string) =>
     sql`select p.account_id as id, 'organization:' || p.organization_id as owner
         from hosted_account_access p
         where ${sql.in(
@@ -98,7 +100,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
               select 1 from hosted_account_groups g join hosted_group_members gm on gm.group_id = g.group_id
               where g.account_id = p.account_id and gm.member_id = m.id)))))`;
   // Each account must still belong to the owner the invocation resolved it under.
-  const allowedOf = (accounts: readonly Account[], allowed: ReadonlyArray<AllowedAccount>) => {
+  const allowedOf = (accounts: readonly AccountOwner[], allowed: ReadonlyArray<AllowedAccount>) => {
     const owners = new Map(accounts.map((account) => [account.id, account.owner]));
     return new Set(allowed.filter((row) => owners.get(row.id) === row.owner).map((row) => row.id));
   };

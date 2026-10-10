@@ -202,20 +202,38 @@ export const makeFacetSupervisor = (
      * the socket upgrade, alarms and socket events. The first one woke it.
      */
     let received = 0;
+    /**
+     * The trace of the call that woke this instance, when that call named one. A later command of
+     * the same trace was not the first, but the request it serves still paid for the wake.
+     */
+    let wokenBy: string | undefined;
     /** Count `effect` as one call or event the instance received. */
     const enter = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.suspend(() => {
         received += 1;
         return effect;
       });
-    /** How this instance is running, for the caller's span. Counts the call it answers. */
-    const running = Clock.currentTimeMillis.pipe(
-      Effect.map((now): EvaluatedSupervisor => ({
-        woke: received++ === 0,
-        instanceMs: now - startedAt,
-        isolateMs: now - isolateStarted,
-      })),
-    );
+    /**
+     * How this instance is running, for the caller's span. Counts the call it answers. `trace` is
+     * the caller's trace ID; it is only compared with the waking call's, never reported.
+     */
+    const runningIn = (trace?: string) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((now) => {
+          const woke = received++ === 0;
+          if (woke) wokenBy = trace;
+          const supervisor: EvaluatedSupervisor = {
+            woke,
+            instanceMs: now - startedAt,
+            isolateMs: now - isolateStarted,
+          };
+          return {
+            supervisor,
+            /** An earlier call of the caller's trace woke this instance. */
+            wokeEarlier: !woke && trace !== undefined && trace === wokenBy,
+          };
+        }),
+      );
     /**
      * Which calls may run in the facet now. Calls of the loaded execution context run together when
      * their bundle allows it, so a call waiting on an outside service never holds up the app's
@@ -556,12 +574,25 @@ export const makeFacetSupervisor = (
       enter,
       cache: (namespace: string, command: unknown) => enter(cache(namespace, command)),
       /**
+       * A cache command's reply, with how this supervisor was running when it answered: whether
+       * the command woke it, or an earlier call of the caller's `trace` did, and how long it and
+       * its isolate had been running.
+       */
+      observedCache: (namespace: string, command: unknown, trace?: string) =>
+        runningIn(trace).pipe(
+          Effect.flatMap(({ supervisor, wokeEarlier }) =>
+            cache(namespace, command).pipe(
+              Effect.map((reply) => ({ reply, supervisor, wokeEarlier })),
+            ),
+          ),
+        ),
+      /**
        * Host-evaluated results, with how this supervisor was running when it answered. A command
        * the store could not run is answered as missing, a miss; its writer ignores the answer.
        */
-      evaluated: (command: unknown) =>
-        running.pipe(
-          Effect.flatMap((supervisor) =>
+      evaluated: (command: unknown, trace?: string) =>
+        runningIn(trace).pipe(
+          Effect.flatMap(({ supervisor }) =>
             evaluated.command(command).pipe(
               Effect.map((reply): EvaluatedEntry | EvaluatedWritten =>
                 typeof reply === "boolean"

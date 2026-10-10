@@ -3,6 +3,7 @@ import { makeProfileSetup } from "./profile-setup.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
+import { PrefetchHost } from "../contracts/profiles.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -214,6 +215,7 @@ export const createExecutor = (
             Effect.catchTag("SqlError", () => new StorageError()),
           ),
       },
+      [PrefetchHost]: { invocation: tools.prefetchInvocation },
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,

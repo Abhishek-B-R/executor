@@ -1,32 +1,68 @@
 /** Validate stored account selections against a deployment's requirements. */
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import {
   AccountSelectionInvalid,
   type AppRequirements,
   type SelectedAccounts,
 } from "../contracts/apps.ts";
-import { type AppId, StorageError } from "../contracts/shared.ts";
+import { type AccountId, type AppId, StorageError } from "../contracts/shared.ts";
 import { AccountNotFound } from "../contracts/account.ts";
 import { StoredAccount } from "../contracts/storage.ts";
 import { query, type Query } from "./database.ts";
 
-/** Batch-load and resolve supplied slots; missing slots are allowed during setup. */
+/** The distinct accounts a selection names, in selection order. */
+export const selectionAccountIds = (selected: SelectedAccounts): readonly AccountId[] => [
+  ...new Set(
+    Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value)),
+  ),
+];
+
+/** The stored rows of the named accounts, in one statement; none when it names none. */
+export const readSelectionAccounts = (db: Query, ids: readonly AccountId[]) =>
+  ids.length === 0
+    ? Effect.succeed([])
+    : query(() => db.findMany("accounts", { where: (b) => b("id", "in", ids) }));
+
+/** Rows {@link readSelectionAccounts} returned for these IDs, read before the selection was known. */
+export interface SelectionAccountsRead {
+  readonly ids: readonly AccountId[];
+  readonly rows: Result.Result<
+    Effect.Success<ReturnType<typeof readSelectionAccounts>>,
+    StorageError
+  >;
+}
+
+/**
+ * Whether a read made ahead answered: it stands in for the read it was made for unless it failed
+ * for storage. Reads made at once share a connection, so one dropped after an earlier reply fails
+ * the rest; read in order, the same read could reach a fresh connection.
+ */
+export const answered = <A, E extends { readonly _tag: string }>(read: Result.Result<A, E>) =>
+  Result.isSuccess(read) || read.failure._tag !== "StorageError";
+
+const sameIds = (left: readonly AccountId[], right: readonly AccountId[]) => {
+  const ids = new Set(left);
+  return ids.size === right.length && right.every((id) => ids.has(id));
+};
+
+/**
+ * Batch-load and resolve supplied slots; missing slots are allowed during setup. `read` is a read
+ * of the accounts made ahead of the selection; it stands in for this read only when it named the
+ * same accounts and {@link answered}.
+ */
 export const validateSelection = (
   db: Query,
   app: AppId,
   requirements: AppRequirements,
   selected: SelectedAccounts,
+  read?: SelectionAccountsRead,
 ) =>
   Effect.gen(function* () {
-    const ids = [
-      ...new Set(
-        Object.values(selected).flatMap((value) => (typeof value === "string" ? [value] : value)),
-      ),
-    ];
+    const ids = selectionAccountIds(selected);
     const rows =
-      ids.length === 0
-        ? []
-        : yield* query(() => db.findMany("accounts", { where: (b) => b("id", "in", ids) }));
+      read !== undefined && sameIds(read.ids, ids) && answered(read.rows)
+        ? yield* Effect.fromResult(read.rows)
+        : yield* readSelectionAccounts(db, ids);
     const accounts = yield* Schema.decodeUnknownEffect(Schema.Array(StoredAccount))(rows).pipe(
       Effect.mapError(() => new StorageError()),
     );

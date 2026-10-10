@@ -1,5 +1,6 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
+import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
@@ -21,8 +22,15 @@ import {
   type McpOptions,
 } from "@executor-js/mcp";
 import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
-import { Context, Effect, Option, Result, Schema } from "effect";
-import { ElicitationFailed } from "@executor-js/sdk/core";
+import { Cause, Context, Effect, Exit, Option, Result, Schema } from "effect";
+import {
+  ElicitationFailed,
+  InvocationPrefetch,
+  PrefetchHost,
+  Profile as ProfileSchema,
+  type AppId,
+  type ProfileId,
+} from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   CurrentMcpGrant,
@@ -31,7 +39,17 @@ import {
   type McpAccess,
 } from "../contracts/mcp.ts";
 import { CurrentOrganization, OrganizationReference } from "../contracts/organization.ts";
-import { HostedExecutor } from "../contracts/executor.ts";
+import {
+  CallStateCache,
+  ConcurrentStatements,
+  HostedExecutor,
+  StatementBatch,
+  statementGroup,
+  type CallState,
+} from "../contracts/executor.ts";
+import { FoldReadAhead, readSelection, SelectionReadAhead, selectedAccounts } from "./access.ts";
+import { resourceAuthorityForSelection } from "./resource-policy.ts";
+import { BearerHashes } from "./bearer-access.ts";
 import { hostedMcpBackend } from "./mcp.ts";
 
 // A native MCP server retains its tool handlers. Authority is supplied only while
@@ -42,6 +60,9 @@ type RequestError =
   | Effect.Error<ReturnType<HostedBackend[keyof HostedBackend]>>
   | Effect.Error<ReturnType<McpAuthentication["Service"]["authenticate"]>>;
 const unavailable = () => Effect.fail(new McpUnauthorized());
+const sameProfile = Schema.toEquivalence(ProfileSchema);
+/** Selections one session object remembers a profile for (CallStateCache); the oldest goes first. */
+const callStateLimit = 256;
 const RequestCaller = Context.Reference<string | undefined>("hosted/McpRequestCaller", {
   defaultValue: () => undefined,
 });
@@ -178,6 +199,132 @@ export const dispatchHostedMcp = <E, R>(
       Effect.flatMap(scoped),
       Effect.provideContext(services),
     );
+    // Made for this request's organization, whose ID the recheck keeps. If they cannot be made,
+    // the call makes them itself; they never decide the call's outcome or the recheck's.
+    const readAhead = (app: AppId, profile: ProfileId | undefined) =>
+      Effect.flatten(HostedExecutor).pipe(
+        Effect.flatMap((executor) => readSelection(executor, access.access.owner, app, profile)),
+        Effect.provideContext(services),
+        Effect.exit,
+        Effect.map((read) => (Exit.isSuccess(read) ? read.value : undefined)),
+      );
+    /**
+     * One round trip for a warm tool call (F-034). The recheck, then every read the call's checks
+     * and the SDK make, leave in one write: the recheck first, in its own implicit transaction as
+     * on main, then the reads in one read-only snapshot taken after it commits (StatementBatch).
+     * The access fold and the SDK's account reads need the profile's accounts before the profile
+     * is read, so they name those of the profile this session's last call read (CallStateCache);
+     * the same batch reads the profile live. The cache holds no authorization and decides
+     * nothing: the call uses the fold and the SDK's reads only where they were made for the live
+     * profile, and otherwise sends the reads once more, after the recheck passed, with the live
+     * profile: two round trips. Results are evaluated in main's order: the recheck's outcome
+     * first, whatever the reads returned, then the call's own checks over the batch's reads
+     * (checkedSelection, then the SDK's). A read that failed in storage discards the batch's reads
+     * and the call reads on its own, in main's order.
+     */
+    const batchedCall = (
+      batch: NonNullable<Effect.Success<typeof StatementBatch>>,
+      cache: NonNullable<Effect.Success<typeof CallStateCache>>,
+      input: Parameters<McpBackend<RequestError>["callTool"]>[0],
+      profile: ProfileId,
+      options: Parameters<McpBackend<RequestError>["callTool"]>[1],
+    ) =>
+      Effect.gen(function* () {
+        const executor = yield* Effect.flatten(HostedExecutor).pipe(
+          Effect.provideContext(services),
+        );
+        const owner = access.access.owner;
+        const organization = access.access.organization;
+        const key = JSON.stringify([mcpSessionKey(access), input.app, profile]);
+        let recheck: Exit.Exit<
+          Effect.Success<typeof current>,
+          Effect.Error<typeof current>
+        > = Exit.die("unreachable");
+        const round = (known: CallState | undefined, rechecking: boolean) =>
+          Effect.gen(function* () {
+            const sdk = executor[PrefetchHost].invocation({
+              app: input.app,
+              owner,
+              profile,
+              known,
+            });
+            let fold: Effect.Success<typeof FoldReadAhead>;
+            const leaves: Array<Effect.Effect<unknown>> = [
+              ...(rechecking
+                ? [
+                    Effect.exit(current).pipe(
+                      Effect.map((exit) => {
+                        recheck = exit;
+                      }),
+                    ),
+                  ]
+                : []),
+              ...sdk.leaves,
+            ];
+            if (known !== undefined) {
+              const accounts = [...new Set(selectedAccounts(known.profile.accounts))];
+              leaves.push(
+                Effect.exit(
+                  resourceAuthorityForSelection(organization, access.userId, input.app, accounts),
+                ).pipe(
+                  Effect.map((result) => {
+                    fold = { organization, user: access.userId, app: input.app, accounts, result };
+                  }),
+                  Effect.provideContext(services),
+                ),
+              );
+            }
+            yield* batch(leaves, { outside: rechecking ? 1 : 0 });
+            return { read: yield* sdk.take, fold };
+          });
+        const known = cache.get(key);
+        let sent = yield* round(known, true);
+        let rounds = 1;
+        // The recheck decides first, as on main: its refusal or failure is the call's outcome,
+        // whatever the reads returned.
+        const authorized = yield* recheck;
+        const live =
+          sent.read.profile !== undefined && Result.isSuccess(sent.read.profile)
+            ? sent.read.profile.success
+            : undefined;
+        if (live !== undefined && (known === undefined || !sameProfile(known.profile, live))) {
+          sent = yield* round({ profile: live, hint: sent.read.hint }, false);
+          rounds = 2;
+        }
+        const { read, fold } = sent;
+        const latest =
+          read.profile !== undefined && Result.isSuccess(read.profile)
+            ? read.profile.success
+            : undefined;
+        cache.delete(key);
+        if (latest !== undefined) {
+          cache.set(key, { profile: latest, hint: read.hint });
+          if (cache.size > callStateLimit) cache.delete(cache.keys().next().value!);
+        }
+        const failed =
+          read.failed ||
+          (fold !== undefined &&
+            Exit.isFailure(fold.result) &&
+            Cause.findErrorOption(fold.result.cause).pipe(
+              Option.exists((error) => error._tag === "StorageError"),
+            ));
+        yield* Effect.annotateCurrentSpan({
+          "executor.mcp.call.batches": rounds,
+          "executor.mcp.call.batch_discarded": failed,
+        });
+        if (failed || read.app === undefined) return yield* authorized.callTool(input, options);
+        return yield* authorized.callTool(input, options).pipe(
+          Effect.provideService(SelectionReadAhead, {
+            owner,
+            app: input.app,
+            profile,
+            current: read.app,
+            selected: read.profile,
+          }),
+          Effect.provideService(FoldReadAhead, fold),
+          Effect.provideService(InvocationPrefetch, read.invocation),
+        );
+      });
     const authorized: McpBackend<RequestError> = {
       ...backend,
       listSkills: (input, options) =>
@@ -196,7 +343,36 @@ export const dispatchHostedMcp = <E, R>(
           }),
         ),
       callTool: (input, options) =>
-        current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options))),
+        Effect.gen(function* () {
+          // Under a read-only rule the grant check evaluates the app before the selection check,
+          // which then reads the app and profile again (`hostedMcpBackend`): reading ahead would
+          // only add two statements. A grant that changed since this request authenticated is
+          // decided there again.
+          if (
+            (yield* ConcurrentStatements) === undefined ||
+            requiresToolMetadata(grantAuthorization(access.grant.policy).tools, input.app)
+          )
+            return yield* current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options)));
+          const batch = yield* StatementBatch;
+          const cache = yield* CallStateCache;
+          if (batch !== undefined && cache !== undefined && input.profile !== undefined)
+            return yield* batchedCall(batch, cache, input, input.profile, options);
+          // The selection check's app and profile reads go out with the recheck. Nothing they
+          // return is used unless the recheck passes, and the check itself runs after it.
+          const [fresh, read] = yield* Effect.all([current, readAhead(input.app, input.profile)], {
+            concurrency: "unbounded",
+          });
+          return yield* fresh
+            .callTool(input, options)
+            .pipe(Effect.provideService(SelectionReadAhead, read));
+          // A call's statements wait only behind its own, never behind another call's.
+        }).pipe(statementGroup),
+      // Everything else this request runs (discovery listings, skill reads, resumes) stays
+      // ungrouped: each statement takes a connection of its own, as before grouping. Those are
+      // independent units that the request runs side by side and times out one by one (one app's
+      // listing can be stopped while the others go on); sharing a connection would make each wait
+      // behind the slowest. None of them issues statements at the same time, so a group of its
+      // own would save no round trip.
       resumeInvocation: (pending, response, options) =>
         current.pipe(Effect.flatMap((fresh) => fresh.resumeInvocation(pending, response, options))),
       subscribeEvent: (input) =>
@@ -214,6 +390,20 @@ export const dispatchHostedMcp = <E, R>(
       Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
   });
+
+/** The 401 that sends a client without a valid bearer to the MCP resource's metadata. */
+export const mcpChallenge = Effect.gen(function* () {
+  const auth = yield* McpAuthentication;
+  const request = yield* HttpServerRequest.HttpServerRequest;
+  const address = requestedMcpAddress(new URL(request.url, auth.origin));
+  if (address === undefined) return invalidAddress;
+  return HttpServerResponse.empty({
+    status: 401,
+    headers: {
+      "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(requestResourceOrigin(auth.resourceOrigins.mcp, request.headers.host), address)}", scope="mcp offline_access"`,
+    },
+  });
+});
 
 const invalidAddress = HttpServerResponse.jsonUnsafe(
   { error: "Unsupported elicitation_mode or connection." },
@@ -236,17 +426,16 @@ export const authenticatedMcp = <E, R>(
     const url = new URL(request.url, auth.origin);
     const address = requestedMcpAddress(url);
     if (address === undefined) return invalidAddress;
+    // The request's tool calls recheck the same token; they reuse its hash (see BearerHashes).
+    const hashes = new Map<string, string>();
     const access = yield* Effect.result(
       auth.authenticate(new Headers(request.headers), address.mode, requestedMcpOrganization(url)),
-    );
-    if (Result.isSuccess(access)) return yield* handle(access.success, address);
-    if (access.failure._tag === "McpUnauthorized")
-      return HttpServerResponse.empty({
-        status: 401,
-        headers: {
-          "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(requestResourceOrigin(auth.resourceOrigins.mcp, request.headers.host), address)}", scope="mcp offline_access"`,
-        },
-      });
+    ).pipe(Effect.provideService(BearerHashes, hashes));
+    if (Result.isSuccess(access))
+      return yield* handle(access.success, address).pipe(
+        Effect.provideService(BearerHashes, hashes),
+      );
+    if (access.failure._tag === "McpUnauthorized") return yield* mcpChallenge;
     // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
     return yield* refusedMcpRequest(access.failure);
   }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));

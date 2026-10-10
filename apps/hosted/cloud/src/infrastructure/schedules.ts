@@ -13,10 +13,10 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Config, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/http";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";
+import { lookupColo } from "./colo.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
@@ -47,15 +47,6 @@ const restoreKey = "restore";
 
 /** Who asked for a wake: a change in a placed request, or the `schedule-wake` job. */
 type WakeSource = "change" | "job";
-
-/** The data center this instance runs in, recorded on its dispatches. */
-const lookupColo = HttpClient.get("https://cloudflare.com/cdn-cgi/trace").pipe(
-  Effect.flatMap((response) => response.text),
-  Effect.map((trace) => /^colo=([A-Z]+)$/m.exec(trace)?.[1] ?? "unknown"),
-  Effect.timeout("5 seconds"),
-  Effect.catchCause(() => Effect.succeed("unknown")),
-  Effect.provide(FetchHttpClient.layer),
-);
 
 const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;

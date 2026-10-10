@@ -6,6 +6,7 @@ import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
 import { StorageHost, type Credentials } from "./storage.ts";
+import { PrefetchHost } from "./profiles.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -45,11 +46,13 @@ export interface ResourceLifecycle {
   /**
    * Recheck the saved subject before any profile-backed execution, including background work,
    * together with the selected accounts `accountsResolving` would check for that subject. Returns
-   * the IDs of the accounts the product still authorizes; the SDK refuses the others.
+   * the IDs of the accounts the product still authorizes; the SDK refuses the others. It receives
+   * each account's ID and owner only: a tool call may run it beside its account read, with the
+   * owner it expects, and uses the result only when the accounts it read match.
    */
   readonly profileResolving?: (
     profile: import("./profiles.ts").Profile,
-    accounts: readonly Account[],
+    accounts: readonly Pick<Account, "id" | "owner">[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
   /**
    * Recheck product authority before acquiring account credentials, and again after any renewal.
@@ -225,6 +228,7 @@ export type Executor = Omit<
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
   readonly [RepositoryHost]: RepositoryHost;
   readonly [StorageHost]: StorageHost;
+  readonly [PrefetchHost]: import("./profiles.ts").PrefetchHost;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -247,6 +251,7 @@ export type PromiseExecutor = Promisify<
     | typeof ProfileHost
     | typeof RepositoryHost
     | typeof StorageHost
+    | typeof PrefetchHost
     | "scheduler"
     | "events"
     | "managedAccounts"

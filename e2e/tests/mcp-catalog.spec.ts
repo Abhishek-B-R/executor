@@ -228,6 +228,33 @@ const deploy = (url: string, cached: boolean, accounts = false, unbound = false)
     return { api, actors, id, path, prefix, profile, call };
   });
 
+/** Connect a `service` account whose requests the fixture answers under `variant`. */
+const connectAccount = (app: Effect.Success<ReturnType<typeof deploy>>, variant: string) =>
+  Effect.gen(function* () {
+    const connection = yield* body(
+      Resource,
+      yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
+        requirement: "service",
+        profile: app.profile.id,
+      }),
+    );
+    const account = yield* body(
+      Resource,
+      yield* app.api.request(
+        app.actors.owner,
+        "POST",
+        `${app.prefix}/connections/${connection.id}/submit`,
+        { method: "key", label: "Synthetic variant", fields: { variant, token: randomUUID() } },
+      ),
+    );
+    yield* Effect.addFinalizer(() =>
+      app.api
+        .request(app.actors.owner, "DELETE", `${app.prefix}/accounts/${account.id}`)
+        .pipe(Effect.orDie),
+    );
+    return account.id;
+  });
+
 layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
   it.effect(scenarios.mcpCatalogCache.title, (context) =>
     withHostedCase(
@@ -238,37 +265,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         yield* control(origin, { count: 3000, delayMs: 3000, resetCounters: true });
         const app = yield* deploy(`${origin}/mcp`, true, true);
         yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, { service: [] });
-        const ids: string[] = [];
-        yield* Effect.addFinalizer(() =>
-          Effect.forEach(ids, (id) =>
-            app.api.request(app.actors.owner, "DELETE", `${app.prefix}/accounts/${id}`),
-          ).pipe(Effect.orDie),
-        );
-        const connect = (variant: string) =>
-          Effect.gen(function* () {
-            const connection = yield* body(
-              Resource,
-              yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
-                requirement: "service",
-                profile: app.profile.id,
-              }),
-            );
-            const account = yield* body(
-              Resource,
-              yield* app.api.request(
-                app.actors.owner,
-                "POST",
-                `${app.prefix}/connections/${connection.id}/submit`,
-                {
-                  method: "key",
-                  label: "Synthetic variant",
-                  fields: { variant, token: randomUUID() },
-                },
-              ),
-            );
-            ids.push(account.id);
-            return account.id;
-          });
+        const connect = (variant: string) => connectAccount(app, variant);
         const alpha = yield* connect("alpha");
         const input = { accountId: alpha, input: {} };
         const measured = (name: string, data: Schema.Json = input) =>
@@ -433,6 +430,74 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             .mcp.reason,
         ).toBe("invalid_input");
         expect((yield* control(origin)).counters).toEqual(before);
+      }),
+    ),
+  );
+  it.effect(scenarios.mcpCatalogAccountsOneCommand.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const origin = yield* fixture();
+        yield* control(origin, { count: 3, delayMs: 0 });
+        const app = yield* deploy(`${origin}/mcp`, true, true);
+        const alpha = yield* connectAccount(app, "alpha");
+        const bravo = yield* connectAccount(app, "bravo");
+        // One app Worker serves both selected accounts; each has its own catalog and revision.
+        yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, {
+          service: [alpha, bravo],
+        });
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        /** Call `name` for `accountId`; return the cache commands its app sent, in order. */
+        const commands = (name: string, accountId: string) =>
+          Effect.gen(function* () {
+            const response = yield* app.call(name, { accountId, input: {} });
+            expect(response.status, name).toBe(200);
+            // Each account's calls reach only its own catalog.
+            const answered = yield* body(
+              Schema.Struct({ structuredContent: Schema.Struct({ variant: Schema.String }) }),
+              response,
+            );
+            expect(answered.structuredContent.variant).toBe(name.split("_")[0]);
+            const request = (yield* evidence.requests)
+              .filter((entry) => entry.path.endsWith("/tools/call"))
+              .at(-1);
+            if (request === undefined) return yield* Effect.fail(new Error("Missing call request"));
+            return yield* telemetry.query(request.traceId).pipe(
+              Effect.flatMap((trace) => {
+                const sent = trace.data
+                  .map(({ span }) => span)
+                  .filter((span) => span.operationName === "app.cache.command")
+                  .sort((left, right) => Date.parse(left.startTime) - Date.parse(right.startTime));
+                return sent.length === 0
+                  ? Effect.fail(new Error(`The cache spans of ${name} have not arrived`))
+                  : Effect.succeed(sent.map((span) => span.tags["cache.operation"]));
+              }),
+              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+            );
+          });
+        // The first call of each account loads its catalog.
+        yield* commands("alpha_fixture_0000", alpha);
+        yield* commands("bravo_fixture_0000", bravo);
+        // The account router looks the name up in each selected account's catalog. A warm call
+        // reads each catalog's manifest and the tool's part in one command, with no separate
+        // `read`, whichever account the call before it used.
+        for (const round of [1, 2])
+          for (const [name, account] of [
+            ["alpha_fixture_0001", alpha],
+            ["bravo_fixture_0001", bravo],
+          ] as const)
+            expect(yield* commands(name, account), `${name}, round ${round}`).toEqual([
+              "acquire",
+              "acquire",
+            ]);
+        // A tool only the other account's catalog has is refused before the server is called.
+        const calls = (yield* control(origin)).counters.call;
+        expect(
+          (yield* app.call("bravo_fixture_0001", { accountId: alpha, input: {} })).status,
+        ).toBe(422);
+        expect((yield* control(origin)).counters.call).toBe(calls);
+        expect((yield* control(origin)).counters.list).toBe(2);
       }),
     ),
   );

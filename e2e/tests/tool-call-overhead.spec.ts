@@ -566,6 +566,88 @@ export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await 
     ),
   );
 
+  it.effect(scenarios.toolCallOverheadOneCacheTrip.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, execute, traced } = yield* fixture;
+        const server = yield* mcpInCallFixture;
+        // `refresh` stores the server's current catalog without resolving a tool through it.
+        const app = yield* deploy(
+          `import { defineApp, object, query, router } from "apps";
+import { mcpRouter } from "apps/mcp";
+export default defineApp({ accounts: {} }, async ({ cache }) => {
+  const options = { url: ${JSON.stringify(server)}, cache };
+  return { tools: router({
+    upstream: await mcpRouter(options),
+    refresh: query({ input: object({}) }, async () => { await mcpRouter({ ...options, revalidate: true }); return true; }),
+  }) };
+});`,
+          { "@modelcontextprotocol/sdk": "1.30.0" },
+        );
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        // The first call loads and stores the server's catalog; the second finds it fresh.
+        yield* execute(
+          "Call an MCP tool twice in one Worker",
+          `await ${tools}.upstream.answer({});
+return await ${tools}.upstream.answer({})`,
+        );
+        // Each call's app spans arrive in their own batch; wait until the warm call's have.
+        const { spans, warm } = yield* traced(app, "one-cache-trip-trace.json", {
+          tool: "answer",
+        }).pipe(
+          Effect.flatMap(({ spans }) => {
+            const calls = spans
+              .filter((span) => span.operationName === "mcp.tool.call")
+              .sort((left, right) => Date.parse(left.startTime) - Date.parse(right.startTime));
+            const warm = calls[1];
+            return calls.length === 2 &&
+              warm !== undefined &&
+              below(spans, warm, "app.cache.get").length > 0
+              ? Effect.succeed({ spans, warm })
+              : Effect.fail(new Error("The warm call's spans have not arrived"));
+          }),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+        );
+        // The warm call reads the catalog's manifest and the called tool's part in one command.
+        const commands = below(spans, warm, "app.cache.command");
+        expect(commands.map((span) => span.tags["cache.operation"])).toEqual(["acquire"]);
+        expect(
+          one(tagged(spans, warm, "app.cache.get", "cache.result", "fresh"), "fresh catalog read"),
+        ).toBeDefined();
+        // Cloud also records the command where it reaches the app's supervisor.
+        if (below(spans, warm, "runtime.cloud.call").length > 0) {
+          const hop = one(below(spans, warm, "runtime.cloud.cache"), "supervisor command");
+          expect(hop.tags["cache.operation"]).toBe("acquire");
+          expect(hop.tags["cache.reads"]).toBe("1");
+          expect(hop.tags["cache.command.index"]).toBe("1");
+          // The cold call before it, in the same request, woke the supervisor if anything did.
+          expect(["true", "false"]).toContain(hop.tags["cache.supervisor.woke"]);
+          expect(hop.tags["cache.supervisor.woke_by"]).toBe(
+            hop.tags["cache.supervisor.woke"] === "true" ? "earlier" : undefined,
+          );
+          expect(hop.tags["cache.supervisor.colo"]).toMatch(/^([A-Z]+|unknown|pending)$/);
+          expect(hop.tags["cache.caller.colo"]).toMatch(/^([A-Z]+|unknown|pending)$/);
+          expect(Number(hop.tags["cache.supervisor.instance_ms"])).toBeGreaterThanOrEqual(0);
+        }
+        // A part read with the manifest is used only when the manifest names the revision it was
+        // read under. Here the Worker last saw the catalog that lists `answer`; the refresh stores
+        // one without it and leaves the Worker's hint behind, so the warm call reads the old
+        // revision's part beside the new manifest. It must find no `answer` tool.
+        const retired = yield* execute(
+          "Call an MCP tool after its catalog dropped it",
+          `await ${tools}.upstream.answer({});
+await ${tools}.upstream.retire({});
+await ${tools}.refresh({});
+try { await ${tools}.upstream.answer({}); return "called"; } catch { return "missing"; }`,
+        );
+        expect(retired.structuredContent).toMatchObject({
+          execution: { ok: true, value: "missing" },
+        });
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
   it.effect(scenarios.toolCallOverheadLoader.title, (context) =>
     withHostedCase(
       context,

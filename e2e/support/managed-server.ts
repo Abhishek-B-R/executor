@@ -453,8 +453,10 @@ const startIsolatedSelfHost = (
   });
 
 /** Start the complete self-host development entry point beside the production test target. */
-export const startDevelopmentServer = (target: typeof Target.Service) =>
-  startIsolatedSelfHost(target, "development");
+export const startDevelopmentServer = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) => startIsolatedSelfHost(target, "development", environment);
 
 /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
 export const startFreshSelfHost = (

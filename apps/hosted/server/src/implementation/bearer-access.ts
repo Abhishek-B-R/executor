@@ -25,7 +25,7 @@ import {
   type GrantTarget,
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
-import { Clock, Effect, Option, Schema } from "effect";
+import { Clock, Context, Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
 import {
@@ -75,7 +75,29 @@ const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Beare
  * the credential (oauth-provider's default `storeTokens: "hashed"`, api-key's default hasher).
  */
 const storedHash = (token: string) =>
-  Effect.tryPromise({ try: () => defaultKeyHasher(token), catch: () => unavailable });
+  Effect.gen(function* () {
+    const hashes = yield* BearerHashes;
+    const known = hashes?.get(token);
+    if (known !== undefined) return known;
+    const hash = yield* Effect.tryPromise({
+      try: () => defaultKeyHasher(token),
+      catch: () => unavailable,
+    });
+    hashes?.set(token, hash);
+    return hash;
+  });
+
+/**
+ * The stored hashes of the bearer tokens one HTTP request has already checked, provided for that
+ * request only. Hashing waits for Web Crypto, so a recheck that hashes again sends its statement
+ * after an event-loop turn, apart from reads issued with it; from a Worker that second write waits
+ * for the first one's acknowledgement, a whole round trip. A hash is a pure function of the
+ * token, so reusing it within the request skips no check.
+ */
+export const BearerHashes = Context.Reference<Map<string, string> | undefined>(
+  "hosted/BearerHashes",
+  { defaultValue: () => undefined },
+);
 
 /**
  * A stored `string[]` (a `jsonb` column), as Better Auth reads it: the driver decodes the

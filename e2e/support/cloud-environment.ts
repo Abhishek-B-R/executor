@@ -239,6 +239,18 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(postgresContainer).pipe(Effect.orDie));
+    // `alchemy dev` keeps this stage's state, including the secrets it mints, in the Cloud
+    // package's local state store. Scenarios that sign with a minted key read it there.
+    yield* fs.writeFileString(
+      `${directory}/alchemy-state.json`,
+      JSON.stringify({
+        directory: path.join(cloud, ".alchemy", "state", "executor-next-hosted", stage),
+      }),
+      { mode: 0o600 },
+    );
+    yield* Effect.addFinalizer(() =>
+      fs.remove(`${directory}/alchemy-state.json`).pipe(Effect.orDie),
+    );
     yield* fs.writeFileString(
       `${directory}/environment.json`,
       JSON.stringify(

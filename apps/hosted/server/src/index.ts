@@ -22,7 +22,14 @@ export {
 } from "./contracts/auth.ts";
 export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
-export { HostedExecutor } from "./contracts/executor.ts";
+export {
+  CallStateCache,
+  ConcurrentStatements,
+  HostedExecutor,
+  StatementBatch,
+  type CallState,
+  type StatementGroups,
+} from "./contracts/executor.ts";
 export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
 export { organizationDefaults } from "./implementation/organization-defaults.ts";
 export { executorDefaultRedeployed } from "./implementation/executor-app-upgrades.ts";
@@ -77,6 +84,7 @@ export {
   mcpSessionKey,
   dispatchHostedMcp,
   authenticatedMcp,
+  mcpChallenge,
   mcpProtectedResource,
   mcpAuthorizationServer,
 } from "./implementation/mcp-http.ts";
