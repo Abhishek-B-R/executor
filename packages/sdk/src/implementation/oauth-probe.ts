@@ -1,6 +1,6 @@
 /** Header-only OAuth discovery for resources that advertise auth on GET or MCP initialization. */
 import { Effect } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+import { FetchHttpClient, HttpBody, HttpClient, HttpClientRequest } from "effect/http";
 import { bearerChallenge } from "./oauth-challenge.ts";
 
 /**
@@ -9,8 +9,14 @@ import { bearerChallenge } from "./oauth-challenge.ts";
  * Never follow redirects or invoke tools. Release streaming bodies and any probe session.
  * An unauthorized response without a Bearer metadata challenge does not imply OAuth.
  */
-export const probeOAuthChallenge = (endpoint: string | URL, client: HttpClient.HttpClient) =>
+export const probeOAuthChallenge = (endpoint: string | URL, egress: HttpClient.HttpClient) =>
   Effect.gen(function* () {
+    // Some firewalls refuse requests without one; Workers do not supply one by default.
+    const client = HttpClient.mapRequest(egress, (request) =>
+      request.headers["user-agent"] === undefined
+        ? HttpClientRequest.setHeader(request, "user-agent", "Executor")
+        : request,
+    );
     const get = yield* Effect.scoped(
       HttpClient.withScope(client)
         .get(endpoint, {

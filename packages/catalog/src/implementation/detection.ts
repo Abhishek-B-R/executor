@@ -19,7 +19,13 @@
  */
 import { Effect, Option, Schema, Stream } from "effect";
 import * as Sse from "effect/encoding/Sse";
-import { FetchHttpClient, HttpBody, HttpClient, type HttpClientResponse } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpBody,
+  HttpClient,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "effect/http";
 import { bearerChallenge, discoverResourceOAuth } from "@executor-js/sdk/core";
 import { ResourceOAuth } from "@executor-js/sdk";
 import type { HostEgress } from "@executor-js/utils/url-policy";
@@ -183,7 +189,15 @@ export const detectMcpAccess = (
   host: CatalogHost,
 ) =>
   Effect.suspend(() => {
-    const egress = host.egress;
+    const egress = {
+      ...host.egress,
+      // Some firewalls refuse requests without one; Workers do not supply one by default.
+      client: HttpClient.mapRequest(host.egress.client, (request) =>
+        request.headers["user-agent"] === undefined
+          ? HttpClientRequest.setHeader(request, "user-agent", "Executor")
+          : request,
+      ),
+    };
     const signals: Array<McpSignal> = [];
     const undetermined = (reason: McpUndeterminedReason) =>
       McpDetection.cases.Undetermined.make({ reason, signals });

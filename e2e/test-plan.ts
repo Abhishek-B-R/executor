@@ -3177,6 +3177,16 @@ export const scenarios = plan({
       local: na("Exercises the shared importer and its error view through hosted pages."),
     },
   },
+  mcpDetectionUserAgent: {
+    fixtures: "actors",
+    file: "mcp-detection-user-agent.spec.ts",
+    title: "MCP quick add and OAuth discovery send a User-Agent to the server",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer and OAuth setup through hosted APIs."),
+    },
+  },
   importApprovals: {
     fixtures: "actors",
     file: "import-approvals.spec.ts",
