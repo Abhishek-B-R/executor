@@ -30,6 +30,19 @@ built. `scripts/e2e-prepare.ts` lists each step's inputs; add a file there when 
 build starts reading one outside them. CI and `--no-cache` build every step. The Node server runs current TypeScript source; the workerd host bundle is prebuilt, so a change to the SDK's app runner needs `bun run e2e:runtime` before a self-host run sees it. `bun run e2e:check` runs the
 boundary check and TypeScript check; the root `check` includes it.
 
+Scenarios on the self-host, local and managed Cloud targets do not install npm
+packages from the internet. Products install them from the run's loopback registry
+(`support/npm-registry.ts`). It serves the staged `apps` package and only the
+versions pinned in `e2e/npm-packages.json`, from archives that `e2e:prepare`
+downloads once and checks against their integrity. It refuses any other package with
+a 404 that names the lock. When a scenario declares a new package, add it to the
+roots in `scripts/e2e-npm-packages.ts`, then run
+`node scripts/e2e-npm-packages.ts --update`. Self-host and local read the
+integrations.sh feed and the public app registry from a loopback copy
+(`support/public-catalogs.ts`), through `EXECUTOR_CATALOG_URL` and
+`EXECUTOR_REGISTRY_URL`. A scenario that checks interoperation with a real
+third-party service, such as `remoteMcpCloudflare`, runs only in Cloud tests on main.
+
 ```sh
 bun run e2e:local
 E2E_ROWS=12 bun run e2e:self-host

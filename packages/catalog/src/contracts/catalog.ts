@@ -99,6 +99,8 @@ export type CatalogUnavailable = typeof CatalogUnavailable.Type;
 export interface CatalogHost {
   readonly egress: HostEgress;
   readonly clientMetadataUrl?: string | undefined;
+  /** Where the integrations.sh feed is read; a mirror or a test fixture may serve it instead. */
+  readonly feedUrl?: string | undefined;
 }
 
 /** Published metadata, replaceable without changing the import workflow. */

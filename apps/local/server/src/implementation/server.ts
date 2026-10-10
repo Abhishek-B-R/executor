@@ -350,6 +350,9 @@ export const localApi = (
         auth,
         egress,
         {
+          catalogFeedUrl: Option.getOrUndefined(
+            yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
+          ),
           managedApp: managed.app,
           managedAccount: managed.account,
         },

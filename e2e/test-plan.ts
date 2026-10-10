@@ -6672,7 +6672,21 @@ export const scenarios = plan({
     title: "a public remote MCP server imports, discovers tools and calls one end to end",
     targets: {
       "self-host": scheduled,
+      cloud: na(
+        "Cloud egress refuses loopback MCP hosts; remoteMcpCloudflare imports a real public server on Cloud.",
+      ),
+      local: na("This scenario tests the hosted custom-import endpoint and organization roles."),
+    },
+  },
+  remoteMcpCloudflare: {
+    fixtures: "actors",
+    file: "hosted-shared.spec.ts",
+    title: "Cloud imports Cloudflare's public docs MCP server, discovers tools and calls one",
+    targets: {
       cloud: scheduled,
+      "self-host": na(
+        "remoteMcp covers the journey on self-host against a loopback server, so pull requests never depend on a third-party service.",
+      ),
       local: na("This scenario tests the hosted custom-import endpoint and organization roles."),
     },
   },

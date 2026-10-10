@@ -1,6 +1,6 @@
 /**
  * Builds what the e2e servers load: the staged `apps` package and its tarball, Motel, the workerd
- * host bundle and the two dashboards. Each step's outputs are cached under a hash of its inputs,
+ * host bundle, the two dashboards and the pinned npm archives the suite's registry serves. Each step's outputs are cached under a hash of its inputs,
  * so a rift that has not changed a step's inputs restores its outputs instead of building them.
  *
  * A step's inputs are the files git sees (tracked, or untracked and not ignored) in its
@@ -83,6 +83,16 @@ const steps: ReadonlyArray<Step> = [
     files: [],
     after: [],
     outputs: ["apps/local/web/dist"],
+  },
+  {
+    // The packages scenarios install, pinned in e2e/npm-packages.json; see support/npm-registry.ts.
+    // The apps manifest names the MCP SDK version its roots include.
+    name: "e2e:npm",
+    command: ["bun", "run", "e2e:npm"],
+    packages: [],
+    files: ["scripts/e2e-npm-packages.ts", "e2e/npm-packages.json", "packages/apps/package.json"],
+    after: [],
+    outputs: [".local/test-runtime/npm"],
   },
 ];
 

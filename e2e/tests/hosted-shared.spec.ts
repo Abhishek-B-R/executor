@@ -11,6 +11,7 @@ import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { docsMcpFixture, docsOrigin, docsSearchTool } from "../support/docs-mcp-fixture.ts";
 
 const files = [
   {
@@ -30,6 +31,92 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
   },
   appsManifest,
 ];
+
+/**
+ * An owner imports a public MCP server that needs no account and shares it, a member discovers its
+ * tools without an account, and an admin calls its read-only search tool and gets structured
+ * results whose pages live at `resultsOrigin`.
+ */
+const remoteMcpJourney = (server: {
+  readonly label: string;
+  readonly url: string;
+  readonly tool: string;
+  readonly resultsOrigin: string;
+}) =>
+  Effect.gen(function* () {
+    const actors = yield* Actors,
+      api = yield* Api,
+      evidence = yield* Evidence;
+    const prefix = `/api/organizations/${actors.organization.id}`,
+      name = `${server.label} ${randomUUID().slice(0, 8)}`;
+    let created: string | undefined;
+    yield* Effect.addFinalizer((exit) =>
+      Effect.gen(function* () {
+        if (!created) return;
+        const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created}`);
+        yield* evidence.json("remote-mcp-cleanup.json", { status: removed.status });
+        if (Exit.isSuccess(exit)) expect(removed.status).toBe(200);
+      }).pipe(Effect.orDie),
+    );
+    yield* evidence.step(
+      "Owner imports a public remote MCP server",
+      Effect.gen(function* () {
+        const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+          source: { kind: "mcp", name, url: server.url },
+        });
+        expect(imported.status).toBe(200);
+        created = (yield* body(App, imported)).id;
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${created}/access`),
+        );
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${created}/access`, {
+            revision: access.revision,
+            audience: { kind: "everyone" },
+          })).status,
+        ).toBe(200);
+      }),
+    );
+    yield* evidence.step(
+      "The live upstream catalog is discoverable without an account",
+      Effect.gen(function* () {
+        const tools = yield* api.request(actors.member, "GET", `${prefix}/apps/${created}/tools`);
+        expect(tools.status).toBe(200);
+        expect(
+          (yield* body(
+            Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+            tools,
+          )).items.map((tool) => tool.name),
+        ).toContain(server.tool);
+      }),
+    );
+    yield* evidence.step(
+      "An admin calls the read-only search tool",
+      Effect.gen(function* () {
+        const invoked = yield* api.request(
+          actors.admin,
+          "POST",
+          `${prefix}/apps/${created}/tools/call`,
+          { tool: server.tool, kind: "query", input: { query: "Workers KV" } },
+        );
+        expect(invoked.status).toBe(200);
+        const result = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            structuredContent: Schema.Struct({
+              results: Schema.Array(Schema.Struct({ url: Schema.String, title: Schema.String })),
+            }),
+          }),
+        )(invoked.body);
+        expect(result.structuredContent.results.length).toBeGreaterThan(0);
+        expect(
+          result.structuredContent.results.some((entry) =>
+            entry.url.startsWith(server.resultsOrigin),
+          ),
+        ).toBe(true);
+      }),
+    );
+  });
 
 layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
   it.effect(scenarios.hosted.title, (context) =>
@@ -229,92 +316,26 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const actors = yield* Actors,
-          api = yield* Api,
-          evidence = yield* Evidence;
-        const prefix = `/api/organizations/${actors.organization.id}`,
-          name = `Cloudflare Docs ${randomUUID().slice(0, 8)}`;
-        let created: string | undefined;
-        yield* Effect.addFinalizer((exit) =>
-          Effect.gen(function* () {
-            if (!created) return;
-            const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created}`);
-            yield* evidence.json("remote-mcp-cleanup.json", { status: removed.status });
-            if (Exit.isSuccess(exit)) expect(removed.status).toBe(200);
-          }).pipe(Effect.orDie),
-        );
-        yield* evidence.step(
-          "Owner imports a public remote MCP server",
-          Effect.gen(function* () {
-            const imported = yield* api.request(actors.owner, "POST", `${prefix}/apps/import`, {
-              source: {
-                kind: "mcp",
-                name,
-                url: "https://docs.mcp.cloudflare.com/mcp",
-              },
-            });
-            expect(imported.status).toBe(200);
-            created = (yield* body(App, imported)).id;
-            const access = yield* body(
-              Schema.Struct({ revision: Schema.String }),
-              yield* api.request(actors.owner, "GET", `${prefix}/apps/${created}/access`),
-            );
-            expect(
-              (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${created}/access`, {
-                revision: access.revision,
-                audience: { kind: "everyone" },
-              })).status,
-            ).toBe(200);
-          }),
-        );
-        yield* evidence.step(
-          "The live upstream catalog is discoverable without an account",
-          Effect.gen(function* () {
-            const tools = yield* api.request(
-              actors.member,
-              "GET",
-              `${prefix}/apps/${created}/tools`,
-            );
-            expect(tools.status).toBe(200);
-            expect(
-              (yield* body(
-                Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
-                tools,
-              )).items.map((tool) => tool.name),
-            ).toContain("search_cloudflare_documentation");
-          }),
-        );
-        yield* evidence.step(
-          "An admin calls the real read-only search tool",
-          Effect.gen(function* () {
-            const invoked = yield* api.request(
-              actors.admin,
-              "POST",
-              `${prefix}/apps/${created}/tools/call`,
-              {
-                tool: "search_cloudflare_documentation",
-                kind: "query",
-                input: { query: "Workers KV" },
-              },
-            );
-            expect(invoked.status).toBe(200);
-            const result = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({
-                structuredContent: Schema.Struct({
-                  results: Schema.Array(
-                    Schema.Struct({ url: Schema.String, title: Schema.String }),
-                  ),
-                }),
-              }),
-            )(invoked.body);
-            expect(result.structuredContent.results.length).toBeGreaterThan(0);
-            expect(
-              result.structuredContent.results.some((entry) =>
-                entry.url.startsWith("https://developers.cloudflare.com/"),
-              ),
-            ).toBe(true);
-          }),
-        );
+        const docs = yield* docsMcpFixture;
+        yield* remoteMcpJourney({
+          label: "Fixture Docs",
+          url: docs.url,
+          tool: docsSearchTool,
+          resultsOrigin: `${docsOrigin}/`,
+        });
+        // The admin's call reached the upstream server with its input.
+        expect(yield* docs.queries).toEqual(["Workers KV"]);
+      }),
+    ),
+  );
+  it.effect(scenarios.remoteMcpCloudflare.title, (context) =>
+    withHostedCase(
+      context,
+      remoteMcpJourney({
+        label: "Cloudflare Docs",
+        url: "https://docs.mcp.cloudflare.com/mcp",
+        tool: "search_cloudflare_documentation",
+        resultsOrigin: "https://developers.cloudflare.com/",
       }),
     ),
   );

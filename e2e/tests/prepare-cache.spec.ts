@@ -15,6 +15,7 @@ const steps = [
   "e2e:apps",
   "hosted:self-host:web:build",
   "web:build",
+  "e2e:npm",
 ] as const;
 
 const outputs: Record<(typeof steps)[number], string> = {
@@ -24,6 +25,7 @@ const outputs: Record<(typeof steps)[number], string> = {
   "e2e:apps": ".local/test-runtime/apps.tgz",
   "hosted:self-host:web:build": "apps/hosted/self-host/web/dist/index.html",
   "web:build": "apps/local/web/dist/index.html",
+  "e2e:npm": ".local/test-runtime/npm/package.tgz",
 };
 
 /**
@@ -83,6 +85,8 @@ const files: Record<string, string> = {
   "playground/demo-apps/live-inbox/index.ts": "\n",
   "scripts/build-test-runtime.ts": "\n",
   "scripts/pack-test-apps.ts": "\n",
+  "scripts/e2e-npm-packages.ts": "\n",
+  "e2e/npm-packages.json": "{}\n",
   "apps/hosted/self-host/package.json": workspace("@fake/self-host"),
   "apps/hosted/self-host/web/package.json": workspace("@fake/self-host-web", ["@fake/ui"]),
   "apps/hosted/self-host/web/index.ts": "\n",
@@ -197,6 +201,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
         ["playground/demo-apps/live-inbox/index.ts", ["apps:build", "e2e:apps"]],
         ["apps/hosted/self-host/package.json", ["hosted:self-host:web:build"]],
         ["scripts/pack-test-apps.ts", ["e2e:apps"]],
+        ["e2e/npm-packages.json", ["e2e:npm"]],
         // A new untracked file in a package is an input.
         ["packages/sdk/new.ts", ["e2e:runtime", "web:build"]],
         ["bun.lock", steps],
@@ -255,6 +260,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cached e2e:prepare", (
         "e2e:apps",
         "hosted:self-host:web:build",
         "web:build",
+        "e2e:npm",
       ]);
     }).pipe(Effect.scoped),
   );

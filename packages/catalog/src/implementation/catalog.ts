@@ -12,7 +12,7 @@ import { catalogSource } from "./source.ts";
  */
 export const createCatalog = (
   host: CatalogHost,
-  source: CatalogSource = catalogSource(host.egress.client),
+  source: CatalogSource = catalogSource(host.egress.client, host.feedUrl),
 ): Catalog => {
   const list = source.list.pipe(
     Effect.map((entries) => entries.map(applyCatalogOverride)),

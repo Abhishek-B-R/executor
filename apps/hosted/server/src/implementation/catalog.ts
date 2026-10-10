@@ -11,13 +11,14 @@ import type { ClientMetadataSetting } from "./oauth-client-metadata.ts";
  * Fetch the public integrations.sh feed on request. Layer construction performs no network I/O.
  * The API document and the Executor app source are only needed to prepare the Executor app, so
  * both load on that request instead of during server startup. The Executor app calls this
- * deployment's API, an OAuth resource, at `apiOrigin`.
+ * deployment's API, an OAuth resource, at `apiOrigin`. `feedUrl` replaces the public feed's address.
  */
 export const catalogLive = (
   document: Effect.Effect<HostedApiDocument>,
   egress: HostEgress,
   clientMetadata: Option.Option<ClientMetadataSetting>,
   apiOrigin: string,
+  feedUrl?: string,
 ) =>
   Layer.effect(
     HostedCatalog,
@@ -26,6 +27,7 @@ export const catalogLive = (
       const published = createCatalog({
         egress,
         clientMetadataUrl: Option.getOrUndefined(Option.map(clientMetadata, ({ url }) => url)),
+        feedUrl,
       });
       const executor = executorCatalogEntry(apiOrigin);
       return HostedCatalog.of({
