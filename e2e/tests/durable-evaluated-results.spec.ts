@@ -267,8 +267,10 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           // background evaluation replaces it. The refresh finishes after the response, so it
           // must still keep its result in the supervisor.
           yield* Effect.sleep("31 seconds");
-          const stale = yield* read("stale-listing", (names) =>
-            names.includes("sdk.tools.listing.evaluate"),
+          // The refresh's spans can arrive before the request's own, which say where it was served.
+          const stale = yield* read(
+            "stale-listing",
+            (names) => evaluates(names) && names.includes("storage.evaluated.write"),
           );
           expect(stale.source).toBe("durable");
           expect(stale.cache).toBe("stale");

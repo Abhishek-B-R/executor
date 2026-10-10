@@ -1792,6 +1792,8 @@ export const scenarios = plan({
   },
   cloudAppFrameworkPin: {
     fixtures: "actors",
+    // The restarted report's first pass must find the organization's Executor app installed.
+    managementProfiles: ["owner"],
     file: "app-framework-pin.spec.ts",
     title: "Cloud reports the framework pin data step from the Worker's cron",
     targets: {

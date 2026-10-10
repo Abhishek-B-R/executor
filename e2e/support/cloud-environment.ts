@@ -12,7 +12,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
-import { serveOtlpCollector } from "./otlp-collector.ts";
+import { serveShardedOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
 import { createV1Database, startCloudPostgres, v1DatabaseReader } from "./cloud-postgres.ts";
@@ -56,6 +56,13 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
  * with other local Clouds starting beside them.
  */
 const readinessDeadline = "10 minutes";
+
+/**
+ * Motels behind this Cloud's collector. Six scenario workers provisioning organizations at once
+ * export about 1,500 spans a second, as much as one Motel stores; four keep up with several times
+ * that and still leave a 16-vCPU runner most of its cores.
+ */
+const collectorShards = 4;
 
 /** A complete local Cloud Worker, real Postgres and hosted emulators; no inherited credentials. */
 export const startCloudEnvironment = (input: {
@@ -129,7 +136,8 @@ export const startCloudEnvironment = (input: {
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
-    const collector = yield* serveOtlpCollector(directory);
+    // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+    const collector = yield* serveShardedOtlpCollector(directory, collectorShards);
     const databasePassword = randomBytes(24).toString("hex");
     const operatorOAuth = OperatorOAuthFixture.make({
       port: yield* freePort,

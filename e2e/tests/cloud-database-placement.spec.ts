@@ -65,7 +65,9 @@ const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]
     Effect.flatMap((trace) => {
       const found = trace.data.find(({ span }) => select(span));
       const chain = found === undefined ? [] : ancestry(trace.data, found.span.spanId);
-      return chain.at(-1)?.parentSpanId === null
+      // Motel answers a span whose parent has not arrived with a placeholder root in its place.
+      return chain.at(-1)?.parentSpanId === null &&
+        !chain.some((span) => span.operationName.startsWith("[missing parent"))
         ? Effect.succeed({ trace: trace.data, chain })
         : Effect.fail(new Error("The span or its ancestors have not all reached Motel"));
     }),

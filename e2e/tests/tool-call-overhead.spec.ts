@@ -64,6 +64,27 @@ const below = (spans: readonly Span[], root: Span, name: string | RegExp) => {
   );
 };
 
+/** Millisecond resolution of a delivered span's ISO start time, at each end of a window. */
+const startResolutionMs = 2;
+
+/** Milliseconds below `root` that a span owned by `owner` covers, read from the spans' windows. */
+const covered = (spans: readonly Span[], root: Span, owner: string) => {
+  const windows = below(spans, root, /./)
+    .filter(({ tags }) => tags["executor.owner"] === owner)
+    .map(({ startTime, durationMs }) => {
+      const start = Date.parse(startTime);
+      return [start, start + durationMs] as const;
+    })
+    .sort(([a], [b]) => a - b);
+  let total = 0;
+  let reached = -Infinity;
+  for (const [start, end] of windows) {
+    if (end > reached) total += end - Math.max(start, reached);
+    reached = Math.max(reached, end);
+  }
+  return total;
+};
+
 const one = <A>(found: readonly A[], what: string) => {
   if (found.length !== 1) throw new Error(`Expected one ${what}, found ${found.length}`);
   return found[0]!;
@@ -306,11 +327,18 @@ layer(HostedLive, { excludeTestServices: true })("Tool-call overhead", (it) => {
           "Call a tool that waits on two requests at once",
           `return await tools[${JSON.stringify(app.slug)}].slow({})`,
         );
-        const timing = accounted(yield* traced(app, "parallel-trace.json"));
+        const trace = yield* traced(app, "parallel-trace.json");
+        const timing = accounted(trace);
         fits(timing);
-        // Two overlapping waits count once.
         expect(timing.app.upstream).toBeGreaterThanOrEqual(slowUpstreamMs);
-        expect(timing.app.upstream).toBeLessThan(2 * slowUpstreamMs);
+        // Two overlapping waits count once: the upstream time is no more than the time the
+        // provider's spans cover, which is less than their durations added up. How long the
+        // fixture takes to answer on a busy machine changes neither side.
+        const requests = below(trace.spans, timing.call, "provider.http.request");
+        expect(requests).toHaveLength(2);
+        const upstreamCovered = covered(trace.spans, timing.call, "upstream");
+        expect(upstreamCovered).toBeLessThan(requests[0]!.durationMs + requests[1]!.durationMs);
+        expect(timing.app.upstream).toBeLessThanOrEqual(upstreamCovered + startResolutionMs);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -463,14 +491,21 @@ export default defineApp({ accounts: {} }, { tools: router({
       context,
       Effect.gen(function* () {
         const { deploy, execute, traced } = yield* fixture;
-        // `stall` waits until its invocation is cancelled, holding no connection open.
+        const upstream = yield* mcpOutcomeFixture;
+        // `stall` says it is running, then waits until its invocation is cancelled, holding no
+        // connection open. `quick` answers only once `stall` runs, so the program cannot finish
+        // and cancel `stall` before its app call starts, however long the host takes to start it.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 export default defineApp({ accounts: {} }, { tools: router({
-  stall: query({ input: object({}), output: string() }, ({ signal }) => new Promise<string>((resolve) => {
-    const timer = setTimeout(() => resolve("late"), 60_000);
-    signal.addEventListener("abort", () => { clearTimeout(timer); resolve("cancelled"); }, { once: true });
-  })),
-  quick: query({ input: object({}), output: string() }, async () => "quick"),
+  stall: query({ input: object({}), output: string() }, async ({ fetch, signal }) => {
+    await (await fetch(${JSON.stringify(`${upstream}/arrived`)})).text();
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("late"), 60_000);
+      signal.addEventListener("abort", () => { clearTimeout(timer); resolve("cancelled"); }, { once: true });
+    });
+  }),
+  quick: query({ input: object({}), output: string() }, async ({ fetch }) =>
+    (await fetch(${JSON.stringify(`${upstream}/after-arrival`)})).text()),
 }) });`);
         // The program finishes while `stall` still waits, and finishing cancels it.
         const result = yield* execute(
@@ -559,8 +594,14 @@ export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await 
         );
         expect(invalidation.tags["executor.owner"]).toBe("executor");
         expect(invalidation.durationMs).toBeGreaterThanOrEqual(slowedMs);
-        // The upstream session holds the invalidation, but the invalidation is Executor's work.
-        expect(timing.app.upstream).toBeLessThan(slowedMs);
+        // The upstream session holds the invalidation, but the invalidation is Executor's work: the
+        // upstream time is no more than the time upstream spans cover less the invalidation inside
+        // them. A fixed bound failed whenever the fixture took longer to connect on a busy machine.
+        expect(timing.app.upstream).toBeLessThanOrEqual(
+          covered(trace.spans, timing.call, "upstream") -
+            invalidation.durationMs +
+            startResolutionMs,
+        );
         expect(timing.app.overhead).toBeGreaterThanOrEqual(invalidation.durationMs);
       }).pipe(Effect.provide(McpClient.layer)),
     ),

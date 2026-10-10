@@ -532,6 +532,14 @@ Saved trace samples are not a full trace archive. The telemetry test checks actu
 server spans, status and the presence of SQL spans; client spans cannot satisfy it. While
 running, `data/diagnostics/collector.json` identifies the collector query URL.
 
+Managed Cloud's collector is four Motels behind one router (`serveShardedOtlpCollector` in
+`support/otlp-collector.ts`). One Motel stores about 1,500 spans a second, and six workers
+provisioning their organizations export more than that; a single Motel refused thousands of
+exports a run, which the product dropped once its three-second export budget ran out. The router
+splits each export by trace ID, sends a trace's reads to its Motel, and merges searches across
+all four. Each Motel keeps its database in `data/diagnostics/motel-<n>` and its log in
+`collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
+
 All runs use synthetic identities. Private run directories and session files are
 ignored by Git. They can still contain session cookies and should not be published.
 
