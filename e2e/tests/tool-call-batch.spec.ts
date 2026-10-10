@@ -136,12 +136,49 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             accounts.push(saved.id);
             return saved.id;
           });
+        // Saving a profile wakes its setup after the response, and setup writes the profile again
+        // when it finishes. A call made before that write reads it as a changed profile and sends
+        // its reads once more, so each change is settled before a call: reconciled at the current
+        // revision, after which nothing writes the profile.
+        const settled = Schema.Struct({
+          revision: Schema.Number,
+          status: Schema.String,
+          reconciledRevision: Schema.NullOr(Schema.Number),
+        });
+        const settling: Record<string, Array<typeof settled.Type>> = {};
+        const settle = (path: string, profile: string, status: "ready" | "disabled") => {
+          const attempts: Array<typeof settled.Type> = [];
+          return Effect.gen(function* () {
+            for (;;) {
+              const reconciled = yield* api.request(
+                actors.owner,
+                "POST",
+                `${path}/profiles/${profile}/reconcile`,
+              );
+              expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
+              const current = yield* body(settled, reconciled);
+              attempts.push(current);
+              if (current.status === status && current.reconciledRevision === current.revision)
+                return;
+              yield* Effect.sleep("100 millis");
+            }
+          }).pipe(
+            Effect.timeout("30 seconds"),
+            Effect.ensuring(
+              Effect.suspend(() => {
+                (settling[profile] ??= []).push(...attempts);
+                return evidence.json("batch-settled.json", settling);
+              }),
+            ),
+          );
+        };
         const select = (path: string, profile: string, account: string) =>
           Effect.gen(function* () {
             expect(
               (yield* selectProfileAccounts(actors.owner, path, profile, { service: account }))
                 .status,
             ).toBe(200);
+            yield* settle(path, profile, "ready");
           });
         const setEnabled = (path: string, profile: string, enabled: boolean) =>
           Effect.gen(function* () {
@@ -156,6 +193,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               { expectedRevision: saved.revision, enabled },
             );
             expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+            yield* settle(path, profile, enabled ? "ready" : "disabled");
           });
 
         const key = yield* deploy("Batch key", keySource);
@@ -202,6 +240,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
           });
         const oauth = yield* oauthApp("Batch OAuth");
         const accountless = yield* deploy("Batch accountless", accountlessSource);
+        yield* settle(accountless.path, accountless.profile.id, "ready");
 
         const token = (name: string) =>
           Effect.gen(function* () {
@@ -318,28 +357,6 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               expect(made.trace.statements, `${label}: statements`).toBe(expected.statements);
           });
 
-        /**
-         * Calls until one sends a single batch: a profile change can be followed by the server's
-         * own update of the profile (its reconcile), which the next call reads as another change.
-         */
-        const warmAgain = (
-          client: Client,
-          target: { readonly app: typeof App.Type; readonly profile: typeof Profile.Type },
-          label: string,
-          value?: string,
-        ) =>
-          Effect.gen(function* () {
-            for (let attempt = 1; attempt <= 3; attempt++) {
-              const made = yield* call(client, target, `${label} (${attempt})`);
-              recorded[`${label} (${attempt})`] = made.trace;
-              if (value === undefined) expect(made.execution.ok, label).toBe(true);
-              else expect(made.execution, label).toEqual({ ok: true, value });
-              if (made.trace.batches === 1) return made.trace;
-              expect(made.trace.batches, label).toBe(2);
-            }
-            return yield* Effect.die(new Error(`${label}: no call sent one batch`));
-          });
-
         yield* evidence.step(
           "A session's first call for a profile reads it, then sends its reads with it; later calls send one batch",
           Effect.gen(function* () {
@@ -388,9 +405,15 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               value: "synthetic-other",
               batches: 2,
             });
-            expect(
-              (yield* warmAgain(first, key, "Warm after a switch", "synthetic-other")).statements,
-            ).toBe(6);
+            yield* expectCall(
+              "key, warm after a switch",
+              yield* call(first, key, "Warm after a switch"),
+              {
+                value: "synthetic-other",
+                batches: 1,
+                statements: 6,
+              },
+            );
           }),
         );
 
@@ -415,7 +438,15 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               value: "synthetic-other",
               batches: 2,
             });
-            yield* warmAgain(first, key, "Warm once enabled", "synthetic-other");
+            yield* expectCall(
+              "key, warm once enabled",
+              yield* call(first, key, "Warm once enabled"),
+              {
+                value: "synthetic-other",
+                batches: 1,
+                statements: 6,
+              },
+            );
           }),
         );
 
@@ -425,8 +456,17 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             // Its grants last 31 s, so each is inside the 30 s renewal window after a second.
             yield* issuer.configure({ refreshTokens: true, expiresIn: 31, refreshedExpiresIn: 31 });
             const renewing = yield* oauthApp("Batch OAuth renewal");
-            // The sibling session is warm: its batch reads the account's grant.
-            yield* warmAgain(second, renewing, "Sibling session, warm");
+            // The sibling session is warm: its batch reads the account's grant. Its first call for
+            // the profile reads it, then sends its reads with it.
+            for (const [label, batches] of [
+              ["Sibling session, first call", 2],
+              ["Sibling session, warm call", 1],
+            ] as const) {
+              const made = yield* call(second, renewing, label);
+              recorded[label] = made.trace;
+              expect(made.execution.ok, label).toBe(true);
+              expect(made.trace.batches, label).toBe(batches);
+            }
             // Hold the next renewal after the service issued its tokens, and let the current grant
             // reach its renewal window.
             yield* issuer.configure({ hold: "refresh-issued" });

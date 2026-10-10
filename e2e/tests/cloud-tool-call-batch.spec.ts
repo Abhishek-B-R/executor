@@ -13,7 +13,7 @@
  * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
  */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
+import { Effect, Fiber, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -226,23 +226,28 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             status: Schema.String,
             reconciledRevision: Schema.NullOr(Schema.Number),
           });
-          const deadline = (yield* Clock.currentTimeMillis) + 30_000;
           const settling: Array<typeof settled.Type> = [];
-          for (;;) {
-            const reconciled = yield* api.request(
-              actors.owner,
-              "POST",
-              `${path}/profiles/${profile.id}/reconcile`,
-            );
-            expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
-            const current = yield* body(settled, reconciled);
-            settling.push(current);
-            if (current.status === "ready" && current.reconciledRevision === current.revision)
-              break;
-            expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(deadline);
-            yield* Effect.sleep("100 millis");
-          }
-          yield* evidence.json("cloud-batch-settled.json", settling);
+          yield* Effect.gen(function* () {
+            for (;;) {
+              const reconciled = yield* api.request(
+                actors.owner,
+                "POST",
+                `${path}/profiles/${profile.id}/reconcile`,
+              );
+              expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
+              const current = yield* body(settled, reconciled);
+              settling.push(current);
+              if (current.status === "ready" && current.reconciledRevision === current.revision)
+                return;
+              yield* Effect.sleep("100 millis");
+            }
+          }).pipe(
+            Effect.timeout("30 seconds"),
+            // `json` serializes when it is built, so it is built once the loop has ended.
+            Effect.ensuring(
+              Effect.suspend(() => evidence.json("cloud-batch-settled.json", settling)),
+            ),
+          );
           // The session's first call reads the profile, then sends its reads with it; every later
           // call sends one batch.
           const cold = yield* run("The session's first call", token, 1);
