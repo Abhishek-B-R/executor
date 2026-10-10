@@ -180,6 +180,42 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
             page.getByRole("dialog").count(),
           ),
         ).toBe(0);
+        const resizeLoop = yield* browser.use("A ResizeObserver loop reaches the page", (page) =>
+          page.evaluate(
+            () =>
+              new Promise<{ message: string; errorIsNull: boolean; lineno: number }>((resolve) => {
+                const box = document.createElement("div");
+                document.body.append(box);
+                let height = 1;
+                const observer = new ResizeObserver(() => {
+                  height += 1;
+                  box.style.height = `${height}px`;
+                });
+                window.addEventListener("error", function listener(event) {
+                  if (!event.message.startsWith("ResizeObserver loop")) return;
+                  window.removeEventListener("error", listener);
+                  observer.disconnect();
+                  box.remove();
+                  resolve({
+                    message: event.message,
+                    errorIsNull: event.error === null,
+                    lineno: event.lineno,
+                  });
+                });
+                observer.observe(box);
+              }),
+          ),
+        );
+        expect(resizeLoop).toEqual({
+          message: "ResizeObserver loop completed with undelivered notifications.",
+          errorIsNull: true,
+          lineno: 0,
+        });
+        expect(
+          yield* browser.use("A ResizeObserver loop is not an app failure", (page) =>
+            page.getByRole("dialog").count(),
+          ),
+        ).toBe(0);
         yield* browser.use("Interrupt the diagnostic upload", (page) =>
           page.route("**/_executor/api/telemetry/traces", (route) => route.abort("failed"), {
             times: 1,
