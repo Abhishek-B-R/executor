@@ -5477,6 +5477,8 @@ export const scenarios = plan({
       local: na("Hosted self-host covers the shared execution driver."),
     },
   },
+  // The held call waits on a loopback gate. Deployed app Workers refuse loopback destinations, so
+  // the call never reaches it there; the local Worker shares the runner's network.
   mcpResumeReasons: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
@@ -5484,7 +5486,7 @@ export const scenarios = plan({
       "Hosted MCP resume reports an approved call's own failure and why a request cannot be answered",
     targets: {
       "self-host": scheduled,
-      cloud: scheduled,
+      cloud: managedCloud,
       local: na("Hosted self-host covers the shared execution manager and SDK resume."),
     },
   },
