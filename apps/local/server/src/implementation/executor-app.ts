@@ -1,10 +1,9 @@
 /** Install the bundled management app using the same deployment and account operations as user apps. */
-import { OwnerId, StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
+import { StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted } from "effect";
 import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
-
-const owner = OwnerId.make("executor-local");
+import { executorAppOwner as owner } from "./owners.ts";
 
 /** Keep the host's bundled source and explicitly configured local API connection ready across restarts. */
 export const installExecutorApp = (executor: Executor, config: ServerConfig) =>

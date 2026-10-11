@@ -2,6 +2,7 @@
 export * from "./contracts/data-steps.ts";
 export * from "./contracts/framework-pin.ts";
 export * from "./contracts/executor-app-redeploy.ts";
+export * from "./contracts/local-owners.ts";
 export { createDataStepJournal, runDataSteps } from "./implementation/data-steps.ts";
 export type { DataStepRunOptions } from "./implementation/data-steps.ts";
 export { frameworkPinStep, pinnedOnly } from "./implementation/framework-pin.ts";
@@ -16,6 +17,8 @@ export {
 } from "./implementation/idle-agent-grants.ts";
 export { executorAppRedeployStep } from "./implementation/executor-app-redeploy.ts";
 export type { ExecutorAppRedeployHost } from "./implementation/executor-app-redeploy.ts";
+export { localOwnersStepName, localOwnersStorage } from "./implementation/local-owners.ts";
+export type { LocalOwnersHost } from "./implementation/local-owners.ts";
 export type { AgentGrantExpiry, AgentGrantHost } from "./implementation/idle-agent-grants.ts";
 export {
   hostDataSteps,

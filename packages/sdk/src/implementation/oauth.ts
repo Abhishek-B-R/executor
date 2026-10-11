@@ -111,13 +111,13 @@ import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics
  * A stored client's encrypted part: its ID and secret, and for a registered client the rest of
  * the registration the service issued. A client entered by a person has no recorded method.
  */
-const StoredClientSecret = Schema.Struct({
+export const StoredClientSecret = Schema.Struct({
   client_id: Schema.NonEmptyString,
   client_secret: Schema.optional(Schema.NonEmptyString),
   token_endpoint_auth_method: Schema.optional(OAuthClientAuth),
   client_secret_expires_at: Schema.optional(Schema.Number),
 });
-type StoredClientSecret = typeof StoredClientSecret.Type;
+export type StoredClientSecret = typeof StoredClientSecret.Type;
 
 /** A row of `storedOAuthClients`, as the client store writes it. */
 interface StoredClientRow {
@@ -135,6 +135,16 @@ interface StoredClientRow {
 
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
   Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new StorageError()));
+
+/**
+ * A stored client's registration as a sign-in reads it: the one the service issued, or none for a
+ * client entered by a person, which authenticates as each sign-in's discovery says. An owner move
+ * reads stored clients with this too, so it refuses exactly the ones a sign-in could not use.
+ */
+export const storedRegistration = (secret: StoredClientSecret) =>
+  secret.token_endpoint_auth_method === undefined
+    ? Effect.succeed(undefined)
+    : decode(OAuthRegistration, secret);
 
 /** Apply the authored output schema after removing host-only token material. */
 const project = (response: JsonObject, fields: unknown) =>
@@ -869,17 +879,14 @@ export const makeOAuth = (
       // Registered clients keep the registration the service issued; entered ones authenticate
       // as this sign-in's discovery says.
       const client =
-        secret.token_endpoint_auth_method === undefined
-          ? yield* enteredClient(
-              {
-                clientId: secret.client_id,
-                ...(secret.client_secret === undefined
-                  ? {}
-                  : { clientSecret: secret.client_secret }),
-              },
-              resolved.discovered,
-            )
-          : yield* decode(OAuthRegistration, secret);
+        (yield* storedRegistration(secret)) ??
+        (yield* enteredClient(
+          {
+            clientId: secret.client_id,
+            ...(secret.client_secret === undefined ? {} : { clientSecret: secret.client_secret }),
+          },
+          resolved.discovered,
+        ));
       const use: OAuthClientUse = {
         id: row.id,
         version: Base64.encode(row.encrypted),

@@ -95,12 +95,13 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
   HttpApiGroup.make("accountConnect")
     .add(
       HttpApiEndpoint.post("issue", "/account-connect/api/requests", {
-        payload: CreateAccountConnection,
+        // The account takes the target app's owner; a caller's owner is ignored.
+        payload: CreateAccountConnection.mapFields(({ owner: _owner, ...fields }) => fields),
         success: AccountConnectionLink,
         error: [...errors, PairingUnauthorized, AppNotFound, AccountSelectionInvalid],
       }).annotate(
         OpenApi.Description,
-        "Create a browser connection link for an app requirement: target { app, profile, requirement }. Completing it saves the account and selects it for that profile. Optional account reconnects that existing account through the app without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
+        "Create a browser connection link for an app requirement: target { app, profile, requirement }. Completing it saves the account under the app's owner and selects it for that profile. Optional account reconnects that existing account through the app without changing its ID. Give the URL to the user to enter credentials or sign in with OAuth in Executor. Never ask for secrets in chat or search files for credentials. Check accountConnections.get after the user finishes.",
       ),
     )
     .add(

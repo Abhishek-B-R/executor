@@ -3520,6 +3520,88 @@ export const scenarios = plan({
       ),
     },
   },
+  localAccountOwners: {
+    file: "local-account-owners.spec.ts",
+    title:
+      "local saves apps and connected accounts under owners it assigns, lists one owner's accounts and providers, refuses a listing without an owner, and manages the account in the dashboard",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local assigns owners; hosted derives them from the organization."),
+      cloud: na("Local assigns owners; hosted derives them from the organization."),
+    },
+  },
+  localReservedOwners: {
+    file: "local-account-owners.spec.ts",
+    title:
+      "local serves no owner removal, so neither its user's owner nor its Executor app's can be deleted",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Local's owners are fixed; hosted removes an organization's owner in process.",
+      ),
+      cloud: na("Local's owners are fixed; hosted removes an organization's owner in process."),
+    },
+  },
+  localOwnerMigration: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "local-owner-migration.spec.ts",
+    title:
+      "upgrading local moves apps, accounts and connections saved under other owners to local, where the dashboard lists them, their app opens and new connections stay local, and running the step again changes nothing",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local assigned owners agents named; hosted owners are organizations."),
+      cloud: na("Only local assigned owners agents named; hosted owners are organizations."),
+    },
+  },
+  localOwnerMigrationCollision: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "local-owner-migration.spec.ts",
+    title:
+      "upgrading local moves nothing while another owner's app shares a local app's name, names both in the log and on the dashboard, and moves everything once one is renamed",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local assigned owners agents named; hosted owners are organizations."),
+      cloud: na("Only local assigned owners agents named; hosted owners are organizations."),
+    },
+  },
+  localOwnerMigrationOAuth: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "local-owner-migration.spec.ts",
+    title:
+      "upgrading local moves an OAuth client, an account signed in with it, a pending sign-in and a pending approval saved under another owner, after which the sign-in completes, the approval runs, the account renews and local holds the client's credentials, and running the step again changes nothing",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local assigned owners agents named; hosted owners are organizations."),
+      cloud: na("Only local assigned owners agents named; hosted owners are organizations."),
+    },
+  },
+  localOwnerMigrationBlocked: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "local-owner-migration.spec.ts",
+    title:
+      "upgrading local moves nothing while a record it has to read does not decrypt, names it in the log and on the dashboard, never completes the step, and moves everything once the record is removed",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local assigned owners agents named; hosted owners are organizations."),
+      cloud: na("Only local assigned owners agents named; hosted owners are organizations."),
+    },
+  },
+  localOwnerMigrationMalformed: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "local-owner-migration.spec.ts",
+    title:
+      "upgrading local moves nothing while a registered client, a pending sign-in, a pending approval or a connection decrypts but would not be read back, names each with what to do in the log and on the dashboard, and changes no product row",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only local assigned owners agents named; hosted owners are organizations."),
+      cloud: na("Only local assigned owners agents named; hosted owners are organizations."),
+    },
+  },
   localAccountDescriptions: {
     file: "local-account-descriptions.spec.ts",
     title:
@@ -6907,6 +6989,17 @@ export const scenarios = plan({
         "Self-host has a single instance organization and does not expose organization deletion.",
       ),
       local: na("Local has no hosted organizations."),
+    },
+  },
+  organizationRemovalWorkflowRefusal: {
+    fixtures: "actors",
+    file: "organization-removal.spec.ts",
+    title:
+      "Cloud refuses to remove an organization while one of its app workflows runs, and removes it once the run is terminated",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations and serves no owner removal."),
     },
   },
   organizationRemovalRecovery: {

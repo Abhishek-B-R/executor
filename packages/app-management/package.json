@@ -11,7 +11,8 @@
     "./data-steps": "./src/data-steps.ts",
     "./source-display": "./src/implementation/source-display.ts",
     "./source-format": "./src/implementation/source-format.ts",
-    "./contracts/source-display": "./src/contracts/source-display.ts"
+    "./contracts/source-display": "./src/contracts/source-display.ts",
+    "./contracts/local-owners": "./src/contracts/local-owners.ts"
   },
   "dependencies": {
     "@executor-js/app-source": "workspace:*",

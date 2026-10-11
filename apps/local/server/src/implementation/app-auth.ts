@@ -1,5 +1,6 @@
 /** Local identity/session adapter for the shared app-origin authentication protocol. */
-import { OwnerId, type Executor } from "@executor-js/sdk/core";
+import { type Executor } from "@executor-js/sdk/core";
+import { localOwner } from "./owners.ts";
 import {
   AppReturnPath,
   AppSignInCallback,
@@ -84,7 +85,7 @@ export const appAuthentication = (
     const dashboardOrigin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
     /** The app must exist and be deployed; the page itself reports a deployment without a UI. */
     const usable = (target: AppSessionTarget) =>
-      executor.apps.get({ app: target.app, owner: OwnerId.make("local") }).pipe(
+      executor.apps.get({ app: target.app, owner: localOwner }).pipe(
         Effect.flatMap((app) =>
           app.activeDeployment === null ? Effect.fail(unavailable()) : Effect.void,
         ),

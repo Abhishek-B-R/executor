@@ -2,7 +2,6 @@ import { McpClient } from "../support/mcp-client.ts";
 /** Profile behavior through the real SDK HTTP surface and embedded workflow engine. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
-import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -115,7 +114,7 @@ layer(TestLive, { excludeTestServices: true })("Profiles", (it) => {
             });
           },
         };
-        const owner = `profiles-${randomUUID()}`;
+        const owner = "local";
         const deployment = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           name: "Profile fixture",
@@ -137,7 +136,6 @@ layer(TestLive, { excludeTestServices: true })("Profiles", (it) => {
         );
         // Saved accounts that no profile of this app selects yet.
         for (const account of yield* connectAccountsThroughOtherApp(agent, {
-          owner,
           provider: fixtureProvider,
           method: "key",
           accounts: ["mail-a", "mail-b", "sink-a", "sink-b"].map((label) => ({

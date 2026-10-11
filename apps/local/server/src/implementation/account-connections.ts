@@ -2,7 +2,13 @@
 import { Effect, Layer, Redacted } from "effect";
 import { Hex } from "effect/encoding";
 import { HttpApiBuilder } from "effect/http-api";
-import { type Executor, CredentialsError, type AccountId, type AppId } from "@executor-js/sdk/core";
+import {
+  type Executor,
+  CredentialsError,
+  type AccountId,
+  type AppId,
+  type CreateAccountConnection,
+} from "@executor-js/sdk/core";
 import {
   AccountConnectApi,
   ConnectionLinkRejected,
@@ -13,6 +19,23 @@ import { OAuthCallbackPath } from "../contracts/dashboard.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, requestOrigin } from "./auth.ts";
 import { connectOptions, connectionClient } from "./oauth-clients.ts";
+import { executorAppOwner, localOwner } from "./owners.ts";
+
+/**
+ * A connected account belongs to the owner local gives the app it is connected for: `local`, or
+ * `executor-local` for the server's own Executor app. Neither the caller's owner nor the app's
+ * stored one is trusted; an app stored under another owner is not found.
+ */
+export const connectForApp = (
+  executor: Executor,
+  managedApp: AppId | undefined,
+  input: Omit<typeof CreateAccountConnection.Type, "owner">,
+) => {
+  const owner = input.target.app === managedApp ? executorAppOwner : localOwner;
+  return executor.apps
+    .get({ app: input.target.app, owner })
+    .pipe(Effect.andThen(executor.accountConnections.create({ ...input, owner })));
+};
 
 /** Sign only this purpose and connection ID. Existing links survive server restarts with the same key. */
 export const accountConnectHandlers = (
@@ -65,7 +88,7 @@ export const accountConnectHandlers = (
                 return yield* new PairingUnauthorized();
               if (payload.account === managed.account || payload.target.app === managed.app)
                 return yield* new ConnectionLinkRejected();
-              const connection = yield* executor.accountConnections.create(payload);
+              const connection = yield* connectForApp(executor, managed.app, payload);
               const signed = yield* Effect.tryPromise({
                 try: () => crypto.subtle.sign("HMAC", key, message(connection.id)),
                 catch: () => new CredentialsError(),

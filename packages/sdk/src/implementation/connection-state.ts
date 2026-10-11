@@ -13,7 +13,8 @@ import { StoredConnectionState, StoredConnectionTarget } from "../contracts/stor
 import { applyConnectionTarget } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const StoredState = Schema.toCodecJson(StoredConnectionState);
+/** A stored connection's state, as `readConnection` reads it with the stored target. */
+export const StoredState = Schema.toCodecJson(StoredConnectionState);
 const encodeState = Schema.encodeSync(StoredState);
 const RecordedFailure = Schema.toCodecJson(AccountConnectionFailure);
 const encodeFailure = Schema.encodeSync(RecordedFailure);

@@ -575,8 +575,8 @@ export const storedOAuthClientIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_client_credentials_owner ON executor_stored_oauth_client_credentials (owner)",
 ] as const;
 
-/** Current ORM layout. Profiles own account selections; apps declare requirements. */
-export const storageSchema = schema({
+/** The 4.0.10 layout. Profiles own account selections; apps declare requirements. */
+export const version4010Schema = schema({
   version: "4.0.10",
   tables: version4010Tables,
   up: ({ auto }) =>
@@ -595,3 +595,14 @@ export const storageSchema = schema({
     }),
   },
 });
+
+/**
+ * Indexes added in 4.0.11 for reads scoped to one owner or one app code, which scanned the whole
+ * table before. In the order the account removal path writes these tables: accounts, then
+ * profiles; deployments last.
+ */
+export const boundedReadIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_accounts_owner_id ON executor_accounts (owner, id)",
+  "CREATE INDEX IF NOT EXISTS executor_installations_owner_app ON executor_installations (owner, app)",
+  "CREATE INDEX IF NOT EXISTS executor_deployments_code_created ON executor_deployments (code, created_at)",
+] as const;

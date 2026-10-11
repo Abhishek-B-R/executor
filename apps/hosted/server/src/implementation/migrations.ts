@@ -91,14 +91,19 @@ export const migrateHostedDatabase = (
         yield* sql`set local lock_timeout = '5s'`;
         yield* sql`set local statement_timeout = '60s'`;
         yield* sql`select pg_advisory_xact_lock(641028113)`;
-        yield* migrateHostedSchemas(options);
-        yield* additional;
+        yield* migrateHostedSchemas(options, additional);
       }),
     );
   });
 
-/** Run both migrators; the caller holds exclusive startup/job access. */
-export const migrateHostedSchemas = (options: BetterAuthOptions) =>
+/**
+ * Run both migrators, then the caller's additional product steps; the caller holds exclusive
+ * startup/job access.
+ */
+export const migrateHostedSchemas = (
+  options: BetterAuthOptions,
+  additional: Effect.Effect<void, HostedMigrationFailed, SqlClient.SqlClient> = Effect.void,
+) =>
   Effect.gen(function* () {
     const storage = yield* makeExecutorStorage({ provider: "postgresql" });
     // Check compatibility before Better Auth's independent pool can commit DDL.
@@ -117,8 +122,15 @@ export const migrateHostedSchemas = (options: BetterAuthOptions) =>
       try: () => migrations.runMigrations(),
       catch: () => new HostedMigrationFailed({ stage: "auth" }),
     });
-    yield* storage.migrate.pipe(
+    yield* storage.migrateTables.pipe(
       Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
     );
     yield* hostedProductMigrations;
+    yield* additional;
+    // Index builds block writes to their tables until the enclosing transaction commits, and
+    // runtime writers set no lock timeout. Build them last so they hold that lock only for
+    // themselves, the version update and the commit.
+    yield* storage.migrate.pipe(
+      Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
+    );
   });

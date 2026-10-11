@@ -363,7 +363,7 @@ Send the actual source string in `files[].content`.
 const executor = tools.executor.profiles["<management-profile-id>"];
 return await executor.apps.deploy({
   body: {
-    owner: "my-project",
+    owner: "local",
     name: "Hello",
     files: [
       { path: "index.ts", content: "<contents of index.ts>" },
@@ -373,9 +373,10 @@ return await executor.apps.deploy({
 });
 ```
 
-The response contains `app` and `deployment`. Creating an app with the same
-`owner` and `name` again fails with `AppNameTaken`. To deploy an existing app,
-use `body: { owner, app: app.id, files }` or `body: { owner, app: app.id, commit }`.
+The response contains `app` and `deployment`. Local creates every app under the
+`local` owner, whatever owner you send. Creating an app with the same name again
+fails with `AppNameTaken`. To deploy an existing app, use
+`body: { owner: app.owner, app: app.id, files }` or `body: { owner: app.owner, app: app.id, commit }`.
 Deployment activates the new build after it succeeds and does not save working
 source. Use relative file paths such as `index.ts` and `lib/client.ts`.
 

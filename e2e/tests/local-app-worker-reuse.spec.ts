@@ -63,7 +63,7 @@ const localApp = (resource: string) =>
           expect((yield* api.request(agent, "DELETE", `/v1/accounts/${account}`)).status).toBe(200);
       }).pipe(Effect.orDie),
     );
-    const owner = "worker-reuse-e2e",
+    const owner = "local",
       name = `Worker reuse ${randomUUID().slice(0, 8)}`;
     const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
       owner,
@@ -90,7 +90,6 @@ const localApp = (resource: string) =>
     /** Save an account for the profile's requirement, or replace the given account's key. */
     const connectAccount = (input: { profile: string; token: string; account?: string }) =>
       connectLocalAccount(agent, {
-        owner,
         app: app.id,
         profile: input.profile,
         requirement: "service",

@@ -272,7 +272,7 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
         });
       },
     };
-    const owner = "worker-budget-e2e";
+    const owner = "local";
     const selections: Selection[] = [];
     for (let index = 0; index < apps; index++) {
       const name = `Worker budget ${index} ${randomUUID().slice(0, 8)}`;
@@ -307,7 +307,6 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
         });
         // Connecting the account for the profile selects it there.
         const connected = yield* connectLocalAccount(agent, {
-          owner,
           app: app.id,
           profile: profile.id,
           requirement: "service",

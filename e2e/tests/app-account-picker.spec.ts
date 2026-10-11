@@ -561,6 +561,34 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
           ),
         ).toEqual([0, 0, 0]);
         yield* browser.checkpoint("Accounts without permission to use the app");
+
+        // Deleting an account a profile still selects drops it from the profile, whether the
+        // profile names it in a single slot or within a collection.
+        const [first, second] = accounts;
+        const { revision } = yield* body(
+          Schema.Struct({ revision: Schema.Number }),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+          ),
+        );
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "PATCH",
+            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
+            { expectedRevision: revision, accounts: { primary: first, mailboxes: [second] } },
+          )).status,
+        ).toBe(200);
+        expect(
+          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${second}`)).status,
+        ).toBe(200);
+        expect(yield* bindings).toEqual({ primary: first });
+        expect(
+          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${first}`)).status,
+        ).toBe(200);
+        expect(yield* bindings).toEqual({});
       }),
     ),
   );

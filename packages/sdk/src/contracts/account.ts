@@ -212,8 +212,10 @@ export const AccountInputs = {
     owner: Schema.optional(OwnerId),
     bindings: Schema.optional(Schema.Literals(["keep", "clear"])),
   }),
-  providers: Schema.Struct({ owner: Schema.optional(OwnerId) }),
-  list: Schema.Struct({ provider: Schema.optional(ProviderId), owner: Schema.optional(OwnerId) }),
+  /** The owner bounds the read: provider definitions are shared, so only those its accounts use. */
+  providers: Schema.Struct({ owner: OwnerId }),
+  /** The owner bounds the read to one partition; there is no listing across owners. */
+  list: Schema.Struct({ provider: Schema.optional(ProviderId), owner: OwnerId }),
   /** Change only the supplied fields. A null description removes it. */
   update: Schema.Struct({
     account: AccountId,
@@ -379,7 +381,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: StorageError,
     }).annotate(
       OpenApi.Description,
-      "List saved account metadata, optionally filtered by owner or provider. Credentials are never returned.",
+      "List one owner's saved account metadata, optionally filtered by provider. Credentials are never returned.",
     ),
   )
   .add(
@@ -398,8 +400,5 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       query: AccountInputs.providers.fields,
       success: Schema.Array(Provider),
       error: StorageError,
-    }).annotate(
-      OpenApi.Description,
-      "Provider definitions known to this executor, optionally limited to those with saved accounts for an owner.",
-    ),
+    }).annotate(OpenApi.Description, "Provider definitions of an owner's saved accounts."),
   );

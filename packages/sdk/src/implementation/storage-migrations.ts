@@ -1,13 +1,15 @@
 /** Current baseline and the additive repair required by existing version 4 databases. */
 import { fumadb } from "fumadb-effect";
-import { Effect } from "effect";
-import { schema, type CustomMigrationFn } from "fumadb-effect/schema";
+import { Effect, Schema } from "effect";
+import { generateMigrationFromSchema } from "fumadb-effect/migration";
+import { schema, type AnySchema, type CustomMigrationFn } from "fumadb-effect/schema";
 import {
+  boundedReadIndexes,
   eventIndexes,
-  storageSchema,
   toolSearchIndexes,
   version408Schema,
   version409Schema,
+  version4010Schema,
   version402Tables,
   version403Tables,
   version404Tables,
@@ -34,7 +36,70 @@ export const currentIndexes = [
   ...eventIndexes,
   ...toolSearchIndexes,
   ...storedOAuthClientIndexes,
+  ...boundedReadIndexes,
 ] as const;
+
+/** Versions built by {@link indexOnlyVersion}. */
+const indexOnlyVersions = new WeakSet<AnySchema>();
+
+/**
+ * A version that only builds indexes: it reuses `previous`'s tables and relations and runs
+ * `indexes`, so it cannot express a table change. `trailingIndexVersions` checks that `previous`
+ * is the version before it.
+ */
+export const indexOnlyVersion = <Version extends string, Previous extends AnySchema>(
+  previous: Previous,
+  version: Version,
+  indexes: ReadonlyArray<string>,
+) => {
+  const entry = schema({
+    version,
+    tables: previous.tables as Previous["tables"],
+    up: () => Effect.succeed(indexes.map((sql) => ({ type: "custom" as const, sql }))),
+  });
+  indexOnlyVersions.add(entry);
+  return entry;
+};
+
+/** An index-only version whose tables differ from the version before it, or that has none. */
+export class IndexOnlyVersionChangesTables extends Schema.TaggedError<IndexOnlyVersionChangesTables>()(
+  "IndexOnlyVersionChangesTables",
+  { version: Schema.String },
+) {
+  override get message() {
+    return `Storage version ${this.version} is index-only, but its tables differ from the version before it. Build it with indexOnlyVersion from that version.`;
+  }
+}
+
+/**
+ * The index-only versions after the last version that changes tables. `CREATE INDEX` blocks writes
+ * to its table until the enclosing transaction commits, so a host that does more work in that
+ * transaction runs these at its end (`migrateTables`, then `migrate`). Every table exists before
+ * them, so that work sees the current layout. Throws `IndexOnlyVersionChangesTables` when an
+ * index-only version's tables are not exactly its predecessor's: deferring it would run that work
+ * before its tables exist.
+ */
+export const trailingIndexVersions = (schemas: ReadonlyArray<AnySchema>): ReadonlySet<string> => {
+  schemas.forEach((entry, index) => {
+    if (!indexOnlyVersions.has(entry)) return;
+    const previous = schemas[index - 1];
+    const changes =
+      previous === undefined
+        ? undefined
+        : generateMigrationFromSchema(previous, entry, {
+            provider: "postgresql",
+            dropUnusedTables: true,
+            dropUnusedColumns: true,
+          });
+    if (changes === undefined || changes.length > 0)
+      throw new IndexOnlyVersionChangesTables({ version: entry.version });
+  });
+  return new Set(
+    schemas
+      .slice(schemas.findLastIndex((entry) => !indexOnlyVersions.has(entry)) + 1)
+      .map((entry) => entry.version),
+  );
+};
 
 /** A shipped version 4 layout, with the same foreign keys as the current schema. */
 const version4 = <Version extends string>(version: Version, up?: CustomMigrationFn) =>
@@ -152,8 +217,13 @@ export const storageSchemas = [
   // Additive: a stored OAuth clients table and its indexes, which the running server never names.
   // The old saved-client table stays, so the running server keeps using it; a data step moves its
   // clients (see `6_stored_oauth_clients`).
-  storageSchema,
+  version4010Schema,
+  // Additive: three indexes; the running server's queries are unchanged.
+  indexOnlyVersion(version4010Schema, "4.0.11", boundedReadIndexes),
 ] as const;
+
+/** Checked when this module loads, so a misbuilt index-only version fails every host's start. */
+export const trailingStorageIndexVersions = trailingIndexVersions(storageSchemas);
 
 /** Versioned persistence factory; constructing it does not touch a database. */
 export const executorDatabase = fumadb({

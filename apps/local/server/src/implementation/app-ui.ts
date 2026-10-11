@@ -7,7 +7,6 @@ import {
   credentialsRejected,
   profileAccountProblems,
   OAuthReconnectRequired,
-  OwnerId,
   type App,
   type AppId,
   type ExecutorDatabase,
@@ -28,6 +27,7 @@ import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Effect, Option, Result, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
+import { localOwner } from "./owners.ts";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appSessionCookie } from "../contracts/app-ui.ts";
 import type { ServerConfig } from "../contracts/config.ts";
@@ -55,15 +55,13 @@ export const appUi = (
 ) => {
   const native = runtime;
   const current = (id: AppId) =>
-    executor.apps
-      .get({ app: id, owner: OwnerId.make("local") })
-      .pipe(Effect.mapError(() => failed()));
+    executor.apps.get({ app: id, owner: localOwner }).pipe(Effect.mapError(() => failed()));
   const deployment = (app: Effect.Success<ReturnType<typeof current>>, id = app.activeDeployment) =>
     Effect.gen(function* () {
       if (id === null) return yield* failed();
       const metadata = yield* executor.apps.deployment({
         app: app.id,
-        owner: OwnerId.make("local"),
+        owner: localOwner,
         deployment: id,
       });
       return UiBuild.make({ id: metadata.id, build: metadata.build });

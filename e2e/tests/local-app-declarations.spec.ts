@@ -53,8 +53,7 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
               });
             },
           };
-          const owner = "declarations-e2e",
-            accountOwner = "declarations-accounts-e2e";
+          const owner = "local";
           const resources: { apps: string[]; accounts: string[] } = { apps: [], accounts: [] };
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
@@ -76,7 +75,6 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const profile = yield* createProfile(agent, path, { owner, subject: "local" });
           const connect = (token: string, account?: string) =>
             connectLocalAccount(agent, {
-              owner: accountOwner,
               app: app.id,
               profile: profile.id,
               requirement: "service",

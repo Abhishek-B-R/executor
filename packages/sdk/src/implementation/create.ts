@@ -22,7 +22,9 @@ import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
 import { makeAccounts, storedAccount } from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
+import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
+import { OwnerMovesHost } from "../contracts/owner.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeProfiles } from "./profiles.ts";
 import { makeApps } from "./apps.ts";
@@ -222,6 +224,7 @@ export const createExecutor = (
       },
       [PrefetchHost]: { invocation: tools.prefetchInvocation },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, options.hooks),
+      [OwnerMovesHost]: makeOwnerMoves(db, credentials),
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,

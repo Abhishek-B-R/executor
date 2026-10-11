@@ -19,7 +19,8 @@ import {
   frameworkRoutes,
   gitRoutes,
 } from "@executor-js/app-management";
-import { OwnerId, type App, type AppId, type Executor } from "@executor-js/sdk/core";
+import { type App, type AppId, type Executor } from "@executor-js/sdk/core";
+import { localOwner } from "./owners.ts";
 import { HttpRouter, HttpServerRequest } from "effect/http";
 import { Effect, Layer, Redacted } from "effect";
 import { Base64 } from "effect/encoding";
@@ -51,7 +52,7 @@ export const localAppManagement = (
           authorize(
             response.pipe(
               Effect.provideService(AppIdentity, {
-                owner: OwnerId.make("local"),
+                owner: localOwner,
                 readOwner: null,
                 scope: "local",
                 namespace: null,
@@ -83,7 +84,7 @@ export const localAppManagement = (
                 return yield* new AppAccessDenied({ reason: "authentication" });
             }
             return {
-              owner: OwnerId.make("local"),
+              owner: localOwner,
               readOwner: null,
               scope: "local",
               namespace: null,

@@ -81,7 +81,6 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
             const account = yield* connectLocalAccount(
               agent,
               {
-                owner: app.owner,
                 app: app.id,
                 profile: profile.id,
                 requirement: "service",

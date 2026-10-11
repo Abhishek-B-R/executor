@@ -7,6 +7,29 @@ import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
 import { LocalFeedbackApi } from "./feedback.ts";
 
+/**
+ * The SDK routes local serves: every group but the owner lifecycle. Local's owners are fixed,
+ * `local` for the user's records and `executor-local` for the server's own Executor app, so
+ * removing an owner would only ever delete all of the user's data or that app. Hosted removes an
+ * organization's owner in process, never through these routes.
+ */
+export const LocalExecutorApi = HttpApi.make("executor").add(
+  ExecutorApi.groups.accounts,
+  ExecutorApi.groups.accountConnections,
+  ExecutorApi.groups.oauthClients,
+  ExecutorApi.groups.apps,
+  ExecutorApi.groups.appProfiles,
+  ExecutorApi.groups.skills,
+  ExecutorApi.groups.tools,
+  ExecutorApi.groups.schedules,
+  ExecutorApi.groups.appData,
+  ExecutorApi.groups.webhooks,
+  ExecutorApi.groups.appWorkflows,
+  ExecutorApi.groups.appWorkflowRuns,
+  ExecutorApi.groups.publications,
+  ExecutorApi.groups.registry,
+);
+
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
   .add(ExecutorApi.groups.appProfiles)

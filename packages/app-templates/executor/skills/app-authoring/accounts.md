@@ -467,17 +467,20 @@ Deploy the source, create a profile, then request a connection for its account r
 The management examples below use the **local** API. For hosted calls, use
 `profiles.create` and `accounts.connect` with `path.organization`, as shown in
 [deploy.md](deploy.md). Hosted calls derive owner and subject from the caller.
-Discover the management profile path with `tools.search` before calling it:
+Local assigns owners itself: apps you create belong to `local`, whatever owner
+you send, and a connected account belongs to its app's owner, so a connection
+request takes no owner. Discover the management profile path with `tools.search`
+before calling it:
 
 ```js
 const executor = tools.executor.profiles["<management-profile-id>"];
 const app = await executor.apps.get({ path: { app: "<vercel-app-id>" } });
 const profile = await executor.appProfiles.create({
   path: { app: app.id },
-  body: { owner: "alice", subject: "alice", accounts: {}, idempotencyKey: "vercel-setup" },
+  body: { owner: "local", subject: "local", accounts: {}, idempotencyKey: "vercel-setup" },
 });
 return await executor.accountConnect.issue({
-  body: { owner: "alice", target: { app: app.id, profile: profile.id, requirement: "vercel" } },
+  body: { target: { app: app.id, profile: profile.id, requirement: "vercel" } },
 });
 ```
 
@@ -510,7 +513,6 @@ add `account` beside `target`. The account keeps its ID, name and selections:
 ```js
 return await tools.executor.profiles["<management-profile-id>"].accountConnect.issue({
   body: {
-    owner: "alice",
     target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" },
     account: "<account-id>",
   },
@@ -520,8 +522,8 @@ return await tools.executor.profiles["<management-profile-id>"].accountConnect.i
 Requests expire after thirty minutes. Cancelled or expired requests need a new link. Do not wait or busy-poll
 inside execute.
 
-Use `accounts.list({ query: { provider } })` to find compatible saved accounts first when
-appropriate. `appProfiles.update({ path: { app, profile }, body: { expectedRevision, accounts } })`
+Use `accounts.list({ query: { owner: "local", provider } })` to find compatible saved accounts
+first when appropriate. `owner` is required; listing never spans owners. `appProfiles.update({ path: { app, profile }, body: { expectedRevision, accounts } })`
 replaces the whole profile selection map. Include every slot you want to keep.
 A missing required slot prevents tool discovery and calls for that profile.
 Account-dependent apps without profiles expose no direct MCP tools.
@@ -530,9 +532,8 @@ Connect the account, then start a new execution to discover or call its profile.
 An account has `id`, `method`, and typed `fields` inside app code. It exists
 independently of the app and can be selected by several apps with the same
 normalized provider definition. Changing that definition can change its provider
-ID and account compatibility. Account owners and app owners can differ. Owner
-values are lookup metadata, not access control; the current local bearer key
-allows access to the entire local instance.
+ID and account compatibility. Owner values are lookup metadata, not access
+control; the current local bearer key allows access to the entire local instance.
 
 ## Two accounts and multiple tools
 
@@ -543,8 +544,8 @@ const executor = tools.executor.profiles["<management-profile-id>"];
 return await executor.appProfiles.create({
   path: { app: "<vercel-app-id>" },
   body: {
-    owner: "alice",
-    subject: "alice",
+    owner: "local",
+    subject: "local",
     name: "Personal Vercel",
     idempotencyKey: "vercel-personal",
     accounts: { vercel: "<second-compatible-account-id>" },

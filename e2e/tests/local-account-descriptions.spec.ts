@@ -130,7 +130,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           Schema.Array(Account),
           yield* agent.send(
             "GET",
-            `/v1/accounts?provider=${encodeURIComponent(app.requirements.accounts.service.provider)}`,
+            `/v1/accounts?owner=local&provider=${encodeURIComponent(app.requirements.accounts.service.provider)}`,
           ),
         );
         expect(listed.map(({ id, description }) => ({ id, description }))).toEqual(

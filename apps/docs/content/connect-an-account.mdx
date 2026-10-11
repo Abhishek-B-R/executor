@@ -84,7 +84,7 @@ return await tools.executor.profiles["<management-profile-id>"].accounts.connect
 
 ```js Local
 return await tools.executor.profiles["<management-profile-id>"].accountConnect.issue({
-  body: { owner: "alice", target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" } },
+  body: { target: { app: "<app-id>", profile: "<profile-id>", requirement: "vercel" } },
 });
 ```
 
@@ -92,7 +92,8 @@ return await tools.executor.profiles["<management-profile-id>"].accountConnect.i
 
 Create a profile first, or use the ID of your existing profile. Hosted uses
 `profiles.create`; local uses `appProfiles.create`. Read their discovered schemas
-for the required fields.
+for the required fields. Neither request names an account owner: hosted saves the
+account under your organization and local under the app's owner.
 
 Every request names the profile requirement it fills. To replace the credentials of an
 account the app already uses, add its ID as `account` in the same body. The account keeps its ID, name and every app's selection.

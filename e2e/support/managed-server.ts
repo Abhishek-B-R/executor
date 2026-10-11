@@ -479,7 +479,11 @@ export const startManagedServer = (
           );
           // Hold the lifecycle gate so no product generation can open the database meanwhile.
           const rows = yield* gate.withPermits(1)(
-            stop.pipe(Effect.andThen(applyLegacyStatements(database, body.statements))),
+            stop.pipe(
+              Effect.andThen(
+                applyLegacyStatements(database, body.statements, env.EXECUTOR_ENCRYPTION_KEY),
+              ),
+            ),
           );
           return HttpServerResponse.text(
             yield* Schema.encodeEffect(Schema.fromJsonString(LegacyResults))(rows),

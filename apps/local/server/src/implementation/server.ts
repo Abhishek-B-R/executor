@@ -18,12 +18,15 @@ import { makeLocalMcpOAuth, type LocalMcpOAuth } from "./mcp-oauth.ts";
 import { localEventAuthority } from "./events.ts";
 import { localMcpConnectionHandlers } from "./mcp-connections.ts";
 import { localAppManagement } from "./app-management.ts";
-import { expireIdleAgentGrants, runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import {
+  expireIdleAgentGrants,
+  runStartupDataSteps,
+  type LocalOwnerMigration,
+} from "@executor-js/app-management/data-steps";
 import { SqlClient } from "effect/sql";
 
 /** Local host composition. The SDK owns operations; this package owns local resources and access. */
 import {
-  ExecutorApi,
   WorkflowHost,
   RepositoryHost,
   type Executor,
@@ -47,6 +50,7 @@ import {
   Option,
   Path,
   Redacted,
+  Ref,
   Result,
   Deferred,
   Schedule,
@@ -66,7 +70,8 @@ import { dashboard } from "./dashboard.ts";
 import { makeLocalAuth, authHandlers, type LocalAuth } from "./auth.ts";
 import { LocalWebhookSetupApi } from "../contracts/webhook-setup.ts";
 import { localWebhookSetupHandlers } from "./webhook-setup.ts";
-import { accountConnectHandlers } from "./account-connections.ts";
+import { accountConnectHandlers, connectForApp } from "./account-connections.ts";
+import { localOwner, localOwners } from "./owners.ts";
 import { appUi } from "./app-ui.ts";
 import { appAuthentication, appRequest } from "./app-auth.ts";
 import { appFromHost } from "../contracts/app-ui.ts";
@@ -79,7 +84,7 @@ import { browserTelemetry } from "./telemetry.ts";
 import { webFiles } from "./web.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { layerBuildHeader } from "@executor-js/dashboard-start/build-header";
-import { localManagementDocument } from "../contracts/management.ts";
+import { LocalExecutorApi, localManagementDocument } from "../contracts/management.ts";
 import { nativeRepositories } from "@executor-js/app-source/node";
 import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 import { LocalFeedbackApi } from "../contracts/feedback.ts";
@@ -175,8 +180,20 @@ export const localApi = (
       // Data steps revoke idle OAuth grants, so the provider exists before they run.
       const oauth = yield* makeLocalMcpOAuth(config, auth, crypto);
       // Before background work, the Executor app's regeneration and serving; the data lock is held.
+      // Data step 7 records why it did not move other owners' records; the dashboard shows it.
+      const ownerMigration = yield* Ref.make<LocalOwnerMigration | null>(null);
       yield* runStartupDataSteps(
-        { executor, blobs, agentGrants: oauth.agentGrants },
+        {
+          executor,
+          blobs,
+          agentGrants: oauth.agentGrants,
+          localOwners: {
+            owner: localOwner,
+            kept: localOwners,
+            storage: storage.version,
+            status: (status) => Ref.set(ownerMigration, status),
+          },
+        },
         "private_local",
       ).pipe(Effect.provideService(SqlClient.SqlClient, sql), startupPhase("data-steps"));
       // Once the idle grant step has applied, revoke grants that became idle since, daily.
@@ -255,7 +272,7 @@ export const localApi = (
           "/openapi.json",
           HttpServerResponse.jsonUnsafe(localManagementDocument()),
         ),
-        HttpApiBuilder.layer(ExecutorApi).pipe(
+        HttpApiBuilder.layer(LocalExecutorApi).pipe(
           Layer.provide(
             executorHandlers({
               ...api,
@@ -264,6 +281,21 @@ export const localApi = (
                 ...api.skills,
                 read: (input) => api.skills.read(input).pipe(Effect.tap(annotateSkillRead)),
               },
+              // Local assigns owners itself: new apps and OAuth clients belong to the local user,
+              // and connected accounts to their app's owner, whatever owner the caller names.
+              apps: {
+                ...api.apps,
+                create: (input) => api.apps.create({ ...input, owner: localOwner }),
+                copy: (input) => api.apps.copy({ ...input, owner: localOwner }),
+                deploy: (input) =>
+                  api.apps.deploy(
+                    input.app === undefined ? { ...input, owner: localOwner } : input,
+                  ),
+              },
+              oauthClients: {
+                ...api.oauthClients,
+                register: (input) => api.oauthClients.register({ ...input, owner: localOwner }),
+              },
               accountConnections: {
                 ...api.accountConnections,
                 create: (input) => {
@@ -271,7 +303,7 @@ export const localApi = (
                     return Effect.fail(new AccountNotFound({ account: input.account }));
                   if (input.target.app === managed.app)
                     return Effect.fail(new AppNotFound({ app: input.target.app }));
-                  return executor.accountConnections.create(input);
+                  return connectForApp(executor, managed.app, input);
                 },
               },
             }),
@@ -355,6 +387,7 @@ export const localApi = (
           ),
           managedApp: managed.app,
           managedAccount: managed.account,
+          ownerMigration: Ref.get(ownerMigration),
         },
       );
       const web = options.web ?? (yield* webFiles);

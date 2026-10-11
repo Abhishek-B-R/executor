@@ -20,7 +20,8 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const Payload = Schema.Struct({
+/** A pending call as its encrypted record holds it, read again on resume. */
+export const ApprovalPayload = Schema.Struct({
   invocation: ToolInvocation.pipe(
     Schema.encodeKeys({
       profile: "installation",
@@ -80,7 +81,7 @@ export function makeToolApprovals(
       .decrypt(row.id, row.encrypted)
       .pipe(
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(Payload)(Redacted.value(value)).pipe(
+          Schema.decodeUnknownEffect(ApprovalPayload)(Redacted.value(value)).pipe(
             Effect.mapError(() => new StorageError()),
           ),
         ),
@@ -115,7 +116,7 @@ export function makeToolApprovals(
         const expiresAt = new Date(
           (yield* Clock.currentTimeMillis) + defaultToolApprovalLimits.ttlMs,
         );
-        const payload = yield* Schema.encodeEffect(Payload)({
+        const payload = yield* Schema.encodeEffect(ApprovalPayload)({
           invocation,
           originalInput,
           ...(issuer === undefined ? {} : { issuer }),

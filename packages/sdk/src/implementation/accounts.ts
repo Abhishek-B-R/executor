@@ -40,19 +40,20 @@ const fingerprint = (bytes: Uint8Array) =>
 /** Drop one account from every profile selection of its owner; affected profiles become pending. */
 const clearBindings = (tx: Query, owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
+    // Only profiles whose selections name the account, as a slot value or within a collection.
     const rows = yield* query(() =>
       tx.findMany("profiles", {
-        where: (b) => b.and(b("owner", "=", owner), b("status", "!=", "removed")),
+        where: (b) =>
+          b.and(
+            b("owner", "=", owner),
+            b("status", "!=", "removed"),
+            b("accounts", "json contains", account),
+          ),
         orderBy: ["app", "asc"],
       }),
     );
-    const references = (value: unknown) =>
-      value === account || (Array.isArray(value) && value.includes(account));
     const affected = rows.filter(
-      (row) =>
-        row.accounts !== null &&
-        typeof row.accounts === "object" &&
-        Object.values(row.accounts as Record<string, unknown>).some(references),
+      (row) => row.accounts !== null && typeof row.accounts === "object",
     );
     // Match the SDK app lock order before editing any profile of that app. Removing an app
     // deletes its profiles with it, so an app removed meanwhile leaves nothing here to clear.
@@ -307,14 +308,14 @@ export const makeAccounts = (
       // Keep selected IDs as unresolved references. An app must never silently switch accounts or run a partial collection.
       return { account: input.account };
     }).pipe(Effect.withSpan("sdk.accounts.remove")),
-  list: (input: NonNullable<Parameters<Executor["accounts"]["list"]>[0]> = {}) =>
+  list: (input: Parameters<Executor["accounts"]["list"]>[0]) =>
     Effect.gen(function* () {
       const rows = yield* query(() =>
         db.findMany("accounts", {
           select: ["id", "provider", "method", "label", "description", "owner", "createdAt"],
           where: (b) =>
             b.and(
-              input.owner === undefined ? true : b("owner", "=", input.owner),
+              b("owner", "=", input.owner),
               input.provider === undefined ? true : b("provider", "=", input.provider),
             ),
           orderBy: ["id", "asc"],
@@ -324,23 +325,20 @@ export const makeAccounts = (
         Effect.mapError(() => new StorageError()),
       );
     }).pipe(Effect.withSpan("sdk.accounts.list")),
-  providers: (input: NonNullable<Parameters<Executor["accounts"]["providers"]>[0]> = {}) =>
+  providers: (input: Parameters<Executor["accounts"]["providers"]>[0]) =>
     Effect.gen(function* () {
-      const owner = input.owner;
-      const used =
-        owner === undefined
-          ? undefined
-          : new Set(
-              (yield* query(() =>
-                db.findMany("accounts", {
-                  select: ["provider"],
-                  where: (b) => b("owner", "=", owner),
-                }),
-              )).map((row) => row.provider),
-            );
+      const used = new Set(
+        (yield* query(() =>
+          db.findMany("accounts", {
+            select: ["provider"],
+            where: (b) => b("owner", "=", input.owner),
+          }),
+        )).map((row) => row.provider),
+      );
+      if (used.size === 0) return [];
       const rows = yield* query(() =>
         db.findMany("providers", {
-          where: (b) => (used === undefined ? true : b("id", "in", [...used])),
+          where: (b) => b("id", "in", [...used]),
           orderBy: ["id", "asc"],
         }),
       );

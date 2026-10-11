@@ -83,18 +83,17 @@ export const connectLocalAccount = (
     readonly fields: Record<string, unknown>;
     readonly label?: string;
     readonly account?: string;
-    readonly owner?: string;
   },
   headers?: Record<string, string>,
 ) =>
   Effect.gen(function* () {
     const api = yield* Api;
+    // Local saves the account under `local`; the request names no owner.
     const issued = yield* api.request(
       actor,
       "POST",
       "/account-connect/api/requests",
       {
-        owner: input.owner ?? "local",
         target: { app: input.app, profile: input.profile, requirement: input.requirement },
         ...(input.account === undefined ? {} : { account: input.account }),
       },
@@ -136,13 +135,12 @@ export const connectAccountsThroughOtherApp = (
       readonly label: string;
       readonly fields: Record<string, unknown>;
     }>;
-    readonly owner?: string;
   },
   headers?: Record<string, string>,
 ) =>
   Effect.gen(function* () {
     const api = yield* Api;
-    const owner = input.owner ?? "local";
+    const owner = "local";
     const deployed = yield* api.request(
       actor,
       "POST",
@@ -178,7 +176,6 @@ export default defineApp({ accounts: { service: service.many() } }, async () => 
       connectLocalAccount(
         actor,
         {
-          owner,
           app: app.id,
           profile: profile.id,
           requirement: "service",

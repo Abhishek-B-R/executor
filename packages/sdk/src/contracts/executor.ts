@@ -8,6 +8,7 @@ import type { ExecutorApi } from "./http.ts";
 import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./profiles.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
+import { OwnerMovesHost } from "./owner.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -269,6 +270,7 @@ export type Executor = Omit<
   readonly [StorageHost]: StorageHost;
   readonly [PrefetchHost]: import("./profiles.ts").PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
+  readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -293,6 +295,7 @@ export type PromiseExecutor = Promisify<
     | typeof StorageHost
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
+    | typeof OwnerMovesHost
     | "scheduler"
     | "events"
     | "managedAccounts"

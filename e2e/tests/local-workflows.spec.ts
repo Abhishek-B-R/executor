@@ -45,8 +45,8 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             });
           },
         };
-        const owner = "workflow-e2e",
-          accountOwner = "workflow-accounts-e2e",
+        // Local saves the app and its accounts under the one owner it assigns.
+        const owner = "local",
           name = `Workflow ${randomUUID().slice(0, 8)}`;
         const resources: {
           apps: string[];
@@ -82,7 +82,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         /** Connect an account for the profile, which selects it, or replace one's key. */
         const connect = (token: string, account?: string) =>
           connectLocalAccount(agent, {
-            owner: accountOwner,
             app: app.id,
             profile: profile.id,
             requirement: "service",
@@ -177,18 +176,14 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
           yield* Effect.sleep("100 millis");
         }
-        const blockedAppOwner = yield* api.request(agent, "DELETE", `/v1/owners/${owner}`);
-        expect(blockedAppOwner.status).toBe(409);
-        expect(blockedAppOwner.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
-        const blockedAccountOwner = yield* api.request(
-          agent,
-          "DELETE",
-          `/v1/owners/${accountOwner}`,
-        );
-        expect(blockedAccountOwner.status).toBe(409);
-        expect(blockedAccountOwner.body).toMatchObject({ _tag: "AccountWorkflowsActive", account });
-        expect((yield* api.request(agent, "DELETE", path)).status).toBe(409);
-        expect((yield* api.request(agent, "DELETE", `/v1/accounts/${account}`)).status).toBe(409);
+        // Local's owners are shared by every scenario on this server, so the run blocks removing
+        // its own app and account rather than a whole owner.
+        const blockedApp = yield* api.request(agent, "DELETE", path);
+        expect(blockedApp.status).toBe(409);
+        expect(blockedApp.body).toMatchObject({ _tag: "AppWorkflowsActive", app: app.id });
+        const blockedAccount = yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
+        expect(blockedAccount.status).toBe(409);
+        expect(blockedAccount.body).toMatchObject({ _tag: "AccountWorkflowsActive", account });
         // Reconnecting replaces the key while the run holds the account.
         expect((yield* connect("synthetic-refreshed", account)).id).toBe(account);
         const second = yield* addAccount("synthetic-other");
@@ -246,15 +241,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         ).toBe(200);
         expect((yield* wait(slow.id, "terminated")).status).toBe("terminated");
         expect((yield* rows()).some((row) => row.label === "cancel:after")).toBe(false);
-        const purgedApp = yield* api.request(agent, "DELETE", `/v1/owners/${owner}`);
-        expect(purgedApp.status).toBe(200);
-        expect(purgedApp.body).toMatchObject({ apps: 1, accounts: 0 });
-        resources.apps.length = 0;
-        resources.runs.length = 0;
-        const purgedAccounts = yield* api.request(agent, "DELETE", `/v1/owners/${accountOwner}`);
-        expect(purgedAccounts.status).toBe(200);
-        expect(purgedAccounts.body).toMatchObject({ apps: 0, accounts: 2 });
-        resources.accounts.length = 0;
       }),
     ),
   );
