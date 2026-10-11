@@ -8,6 +8,7 @@ import {
   Context,
   type Crypto,
   Effect,
+  Exit,
   Fiber,
   JsonSchema,
   Match,
@@ -2135,6 +2136,14 @@ export const makeOAuth = (
             : yield* refreshOf(protocol, grant);
         if (renewal === undefined) return yield* reconnect("not_renewable");
         const claim = `refresh_${yield* nextId}`;
+        /**
+         * What this renewal attempt records about its claim, as plain values set while it holds
+         * the claim: when it won the claim, and what the service answered if the claim was gone
+         * before the result was saved (taken over, replaced by a reconnect, or removed). They are
+         * recorded only after the attempt releases the claim, so recording adds nothing to the
+         * time the grant is held.
+         */
+        const recorded: { claimedAt?: Date; lost?: "tokens" | OAuthFailureCause } = {};
         /** Renew under the claim and save the outcome; undefined when the claim was lost. */
         const settle = Effect.gen(function* () {
           const result = yield* renewal.pipe(
@@ -2213,7 +2222,10 @@ export const makeOAuth = (
               );
               if (settled) return yield* reconnect("scope_exceeded", cause);
             }
-            if (!settled) return undefined;
+            if (!settled) {
+              recorded.lost = exceeded === undefined ? cause : "tokens";
+              return undefined;
+            }
             if (outcome === "reconnect")
               return yield* reconnect(abandoned ? "renewal_interrupted" : "renewal_refused", cause);
             // The grant is kept, and a renewal ahead of expiry leaves its token valid. Callers
@@ -2311,7 +2323,10 @@ export const makeOAuth = (
               return true;
             }),
           );
-          if (!committed) return undefined;
+          if (!committed) {
+            recorded.lost = "tokens";
+            return undefined;
+          }
           yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", "renewed");
           return held(fields);
         });
@@ -2335,6 +2350,7 @@ export const makeOAuth = (
             );
             if (current?.status !== claim) return undefined;
             heldClaims.add(claim);
+            recorded.claimedAt = claimedAt;
             // How long a claim this renewal took over went unconfirmed tells a process that died
             // from one whose confirmations stopped while it kept running. Only the caller that won
             // the claim records it.
@@ -2393,6 +2409,81 @@ export const makeOAuth = (
               ),
             );
           }),
+        ).pipe(
+          // Each attempt that won the claim has its own span, emitted after it released the claim,
+          // so a resolve that loses its claim and renews again records each attempt separately.
+          // It names the grant the attempt held and when it took it, and whether it took over
+          // another holder's claim, so a later reconnect of the same grant can be matched to the
+          // takeover. Recording never changes the result: any failure, defects included, is
+          // discarded.
+          Effect.onExit((exit) =>
+            Effect.gen(function* () {
+              const { claimedAt, lost } = recorded;
+              if (claimedAt === undefined) return;
+              const releasedAt = yield* Clock.currentTimeMillis;
+              const unconfirmed = now - row.updatedAt.getTime();
+              // A reconnect this attempt decided is its result. The failure states every reason a
+              // renewal can reach except `renewal_refused`.
+              const reconnected =
+                Exit.isSuccess(exit) && Schema.is(OAuthReconnectRequired)(exit.value)
+                  ? exit.value
+                  : undefined;
+              // Whether the service rotated a refresh token that this attempt then discarded:
+              // tokens, `invalid_grant`, or any other failure.
+              const lostResult =
+                lost === undefined
+                  ? undefined
+                  : lost === "tokens"
+                    ? lost
+                    : lost.providerError === "invalid_grant"
+                      ? "invalid_grant"
+                      : "error";
+              yield* (
+                lostResult === undefined
+                  ? Effect.void
+                  : Effect.logWarning("OAuth renewal lost its claim before saving the result").pipe(
+                      Effect.annotateLogs({
+                        "oauth.provider.id": account.provider,
+                        "oauth.renewal.lost_claim_result": lostResult,
+                      }),
+                    )
+              ).pipe(
+                Effect.withSpan("oauth.renewal", {
+                  attributes: {
+                    "oauth.provider.id": account.provider,
+                    "executor.account.id": account.id,
+                    // A grant from a sign-in stores its generation. A client-credentials grant, or
+                    // one saved before grants stored it, uses the account's, read with the account,
+                    // which a concurrent reconnect can leave stale.
+                    "executor.account.credential_generation":
+                      grant.generation ?? account.credentialGeneration,
+                    "executor.account.credential_generation_source":
+                      grant.generation === undefined ? "account" : "grant",
+                    "oauth.renewal.claimed_at_ms": claimedAt.getTime(),
+                    "oauth.renewal.takeover": abandoned,
+                    ...(abandoned
+                      ? {
+                          "oauth.renewal.abandoned_claim_age_ms": unconfirmed,
+                          "oauth.renewal.takeover_expired_ms": unconfirmed - renewalLease,
+                        }
+                      : {}),
+                    ...(lostResult === undefined
+                      ? {}
+                      : { "oauth.renewal.lost_claim_result": lostResult }),
+                    ...(reconnected === undefined
+                      ? {}
+                      : {
+                          "oauth.reconnect.reason": reconnected.reason ?? "renewal_refused",
+                          "oauth.reconnect.at_ms": releasedAt,
+                          ...(reconnected.cause === undefined
+                            ? {}
+                            : causeAttributes(reconnected.cause)),
+                        }),
+                  },
+                }),
+              );
+            }).pipe(Effect.catchCause(() => Effect.void)),
+          ),
         );
         if (renewed === undefined) {
           // Another resolve claimed or settled this revision first; read its result.

@@ -74,6 +74,63 @@ const restartAfterKill = Effect.gen(function* () {
   }
 });
 
+/**
+ * The `oauth.resolve` spans in the traces of the last `count` calls, each with the `oauth.renewal`
+ * spans of the renewal attempts it made, once each of those traces has delivered its resolve.
+ */
+const resolveSpans = (count: number) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence,
+      telemetry = yield* Telemetry;
+    const traces = (yield* evidence.requests).slice(-count).map(({ traceId }) => traceId);
+    const resolves = yield* Effect.forEach(traces, (traceId) =>
+      telemetry.query(traceId).pipe(
+        Effect.map((result) => {
+          const spans = result.data.map(({ span }) => span);
+          return spans.flatMap((resolve) =>
+            resolve.operationName === "oauth.resolve"
+              ? [
+                  {
+                    resolve,
+                    renewals: spans.filter(
+                      (span) =>
+                        span.operationName === "oauth.renewal" &&
+                        span.parentSpanId === resolve.spanId,
+                    ),
+                  },
+                ]
+              : [],
+          );
+        }),
+        Effect.filterOrFail(
+          (resolves) => resolves.length > 0,
+          () => new Error("Call trace has not arrived"),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+      ),
+    );
+    return resolves.flat();
+  });
+
+/**
+ * The time an attribute records, in epoch milliseconds, checked to fall within the resolve that
+ * made the attempt: the event's own time, which can be long after the resolve started.
+ */
+const recordedAt = (
+  renewal: { tags: Record<string, string> },
+  resolve: { startTime: string; durationMs: number },
+  attribute: string,
+  context: string,
+) => {
+  const at = Number(renewal.tags[attribute]);
+  const start = Date.parse(resolve.startTime);
+  expect(at, `${context}: ${attribute}`).toBeGreaterThanOrEqual(start);
+  expect(at, `${context}: ${attribute}`).toBeLessThanOrEqual(
+    start + Math.ceil(resolve.durationMs) + 1,
+  );
+  return at;
+};
+
 /** One rotating OAuth account selected by one app profile, with a tool that uses its token. */
 const rotatingAccount = (replacedRefreshTokens: "refused" | "accepted") =>
   Effect.gen(function* () {
@@ -295,6 +352,47 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
     for (const { response, elapsed } of calls)
       expect(elapsed, `${point}: ${JSON.stringify(response.body)}`).toBeLessThan(executeDeadline);
     const responses = calls.map(({ response }) => response);
+    // Exactly one caller renews, in one attempt with its own span. Unless the dead process had
+    // saved its renewal, that caller took over the claim the process left, and records how long
+    // it went unconfirmed: longer than the lease, since the process never confirmed it again. It
+    // records the grant it renewed, as the account and the first credential generation, which the
+    // sign-in stored with the grant, and when it claimed it, so a reconnect of that grant can be
+    // matched to the takeover. The process that held the claim is gone, so no renewal finds its
+    // claim lost.
+    const resolves = yield* resolveSpans(callers);
+    const attempts = resolves.flatMap(({ resolve, renewals }) =>
+      renewals.map((renewal) => ({ resolve, renewal })),
+    );
+    expect(attempts.length, point).toBe(1);
+    const [attempt] = attempts;
+    if (attempt === undefined) return yield* Effect.die(`${point}: no renewal attempt`);
+    const renewal = attempt.renewal.tags;
+    expect(renewal, point).toMatchObject({
+      "executor.account.id": account.id,
+      "executor.account.credential_generation": "0",
+      "executor.account.credential_generation_source": "grant",
+    });
+    const claimedAt = recordedAt(
+      attempt.renewal,
+      attempt.resolve,
+      "oauth.renewal.claimed_at_ms",
+      point,
+    );
+    expect(renewal["oauth.renewal.lost_claim_result"], point).toBeUndefined();
+    if (point === "after Executor saves the renewal")
+      expect(renewal, point).toMatchObject({ "oauth.renewal.takeover": "false" });
+    else {
+      expect(renewal, point).toMatchObject({ "oauth.renewal.takeover": "true" });
+      const unconfirmed = Number(renewal["oauth.renewal.abandoned_claim_age_ms"]);
+      expect(unconfirmed, point).toBeGreaterThan(20_000);
+      expect(Number(renewal["oauth.renewal.takeover_expired_ms"]), point).toBe(
+        unconfirmed - 20_000,
+      );
+      // The resolve span still records the unconfirmed age, as before attempts had spans.
+      expect(attempt.resolve.tags["oauth.renewal.abandoned_claim_age_ms"], point).toBe(
+        renewal["oauth.renewal.abandoned_claim_age_ms"],
+      );
+    }
 
     if (
       point === "after the service rotates the token, before Executor saves it" &&
@@ -327,31 +425,25 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
           cause: { stage: "refresh", status: 400, providerError: "invalid_grant" },
         },
       ]);
-      // The caller that took over the dead process's claim records how long it went unconfirmed:
-      // longer than the lease, since the process never confirmed it again.
-      const evidence = yield* Evidence,
-        telemetry = yield* Telemetry;
-      const callTraces = (yield* evidence.requests).slice(-callers).map(({ traceId }) => traceId);
-      const takeovers = yield* Effect.forEach(callTraces, (traceId) =>
-        telemetry.query(traceId).pipe(
-          Effect.flatMap((result) =>
-            result.data.some(({ span }) => span.operationName === "oauth.resolve")
-              ? Effect.succeed(result)
-              : Effect.fail(new Error("Call trace has not arrived")),
-          ),
-          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-          Effect.map((result) =>
-            result.data.flatMap(({ span }) => {
-              const age = span.tags["oauth.renewal.abandoned_claim_age_ms"];
-              return span.operationName === "oauth.resolve" && age !== undefined
-                ? [Number(age)]
-                : [];
-            }),
-          ),
-        ),
-      ).pipe(Effect.map((ages) => ages.flat()));
-      expect(takeovers.length, point).toBe(1);
-      expect(takeovers[0], point).toBeGreaterThan(20_000);
+      // The takeover itself ended in the refusal that marked the grant for reconnecting, after it
+      // claimed the grant. Its attempt span names the grant and when it found the reconnect beside
+      // its reason, so a query can match the reconnect to the takeover. Every call's resolve span
+      // records the reconnect as before; the calls that waited for the takeover find the grant
+      // already marked.
+      expect(attempt.resolve.tags, point).toMatchObject({
+        "oauth.renewal.outcome": "reconnect",
+        "oauth.reconnect.reason": "renewal_interrupted",
+      });
+      expect(renewal, point).toMatchObject({
+        "oauth.reconnect.reason": "renewal_interrupted",
+        "oauth.error.provider_code": "invalid_grant",
+      });
+      expect(
+        recordedAt(attempt.renewal, attempt.resolve, "oauth.reconnect.at_ms", point),
+        point,
+      ).toBeGreaterThanOrEqual(claimedAt);
+      for (const { resolve } of resolves)
+        expect(resolve.tags, point).toMatchObject({ "oauth.resolve.outcome": "reconnect" });
       // Later calls are refused without presenting the refused token again.
       const again = yield* read;
       expect(again.status, JSON.stringify(again.body)).toBe(409);
@@ -360,6 +452,8 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
     }
 
     // Every other kill point recovers without a new sign-in, with one renewal for all callers.
+    expect(attempt.resolve.tags, point).toMatchObject({ "oauth.renewal.outcome": "renewed" });
+    expect(renewal["oauth.reconnect.reason"], point).toBeUndefined();
     const tokens = yield* Effect.forEach(responses, renewed(point));
     expect(new Set(tokens).size, point).toBe(1);
     expect(settled.refreshesIssued - after.refreshesIssued, point).toBe(1);
@@ -372,7 +466,7 @@ const killedAndRestarted = (point: KillPoint, replacedRefreshTokens: "refused" |
  */
 const slowLiveRenewal = Effect.gen(function* () {
   const context = "slow live renewal";
-  const { issuer, metrics, read, renewed, heldBeyond, newestTokenSaved } =
+  const { issuer, metrics, read, renewed, heldBeyond, newestTokenSaved, account } =
     yield* rotatingAccount("refused");
   yield* issuer.configure({ hold: "refresh-issued" });
   const before = yield* metrics;
@@ -392,6 +486,28 @@ const slowLiveRenewal = Effect.gen(function* () {
   const tokens = yield* Effect.forEach(responses, renewed(context));
   expect(new Set(tokens).size, context).toBe(1);
   expect((yield* metrics).refreshesIssued - before.refreshesIssued, context).toBe(1);
+  // Only the holder claimed the grant, in one attempt, and as a fresh claim rather than a
+  // takeover. It kept the claim through the slow response, so it never found the claim lost.
+  const resolves = yield* resolveSpans(callers + 1);
+  const attempts = resolves.flatMap(({ resolve, renewals }) =>
+    renewals.map((renewal) => ({ resolve, renewal })),
+  );
+  expect(
+    attempts.map(({ renewal }) => renewal.tags),
+    context,
+  ).toEqual([
+    expect.objectContaining({
+      "executor.account.id": account.id,
+      "executor.account.credential_generation": "0",
+      "executor.account.credential_generation_source": "grant",
+      "oauth.renewal.takeover": "false",
+    }),
+  ]);
+  for (const { resolve, renewal } of attempts) {
+    expect(resolve.tags, context).toMatchObject({ "oauth.renewal.outcome": "renewed" });
+    expect(renewal.tags["oauth.renewal.lost_claim_result"], context).toBeUndefined();
+    recordedAt(renewal, resolve, "oauth.renewal.claimed_at_ms", context);
+  }
   yield* newestTokenSaved(context, tokens[0] ?? null);
 });
 

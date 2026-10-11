@@ -16,6 +16,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
+import { Telemetry } from "../support/evidence.ts";
 import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
 import { oauthSetupIssuer, oauthSetupIssuerOn } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
@@ -1508,9 +1509,54 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         );
         expect(reconnected.status, JSON.stringify(reconnected.body)).toBe(200);
         yield* issuer.release;
-        // The call that lost its renewal reads the reconnected grant.
+        // The call that lost its renewal reads the reconnected grant. Its renewal attempt's span,
+        // under its resolve, records that the service had issued tokens for a claim the reconnect
+        // replaced, on the grant it renewed: the account's first credential generation, which the
+        // sign-in stored with the grant and the reconnect ended, claimed while the call ran.
         const lost = yield* Fiber.join(running);
         expect(lost.status, JSON.stringify(lost.body)).toBe(200);
+        const telemetry = yield* Telemetry;
+        const lostClaims = yield* telemetry
+          .search("oauth.renewal", { "executor.account.id": raced })
+          .pipe(
+            Effect.map((found) =>
+              found.data.filter(
+                ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
+              ),
+            ),
+            Effect.filterOrFail(
+              (found) => found.length > 0,
+              () => new Error("The lost renewal's span has not arrived"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+          );
+        expect(lostClaims.map(({ span }) => span.tags)).toEqual([
+          expect.objectContaining({
+            "executor.account.credential_generation": "0",
+            "executor.account.credential_generation_source": "grant",
+            "oauth.renewal.takeover": "false",
+            "oauth.renewal.lost_claim_result": "tokens",
+          }),
+        ]);
+        for (const { traceId, span } of lostClaims) {
+          const resolve = yield* telemetry.query(traceId).pipe(
+            Effect.map((result) =>
+              result.data.find(
+                ({ span: parent }) =>
+                  parent.spanId === span.parentSpanId && parent.operationName === "oauth.resolve",
+              ),
+            ),
+            Effect.filterOrFail(
+              (found) => found !== undefined,
+              () => new Error("The lost renewal's resolve span has not arrived"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+          );
+          const claimedAt = Number(span.tags["oauth.renewal.claimed_at_ms"]);
+          const start = Date.parse(resolve.span.startTime);
+          expect(claimedAt).toBeGreaterThanOrEqual(start);
+          expect(claimedAt).toBeLessThanOrEqual(start + Math.ceil(resolve.span.durationMs) + 1);
+        }
         const revokedRefreshes = yield* issuer.metrics.pipe(
           Effect.map((metrics) => metrics.revokedRefreshTokens),
           Effect.filterOrFail(
