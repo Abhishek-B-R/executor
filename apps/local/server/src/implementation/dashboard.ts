@@ -1,4 +1,5 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { localResourceHandlers } from "./resources.ts";
 import { localProfileHandlers } from "./profiles.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
@@ -217,6 +218,10 @@ export const dashboard = (
         .pipe(Effect.catchTag("ProviderNotFound", () => new StorageError()));
       const apps = yield* executor.apps.list({ account: account.id });
       const health = yield* executor.accounts.health({ account: account.id });
+      // An unreadable grant is unreadable storage to this view.
+      const { revocation } = yield* executor.accounts
+        .revocation({ account: account.id })
+        .pipe(Effect.catchTag("CredentialsError", () => new StorageError()));
       return {
         account: {
           ...account,
@@ -227,6 +232,7 @@ export const dashboard = (
         provider,
         apps,
         health,
+        revocation,
         canManage: account.id !== managedAccount,
       };
     });
@@ -462,7 +468,7 @@ export const dashboard = (
           const request = yield* localRequest(config.port, config.browserOrigin).pipe(
             Effect.mapError(() => new DashboardForbidden()),
           );
-          return yield* executor.accountConnections.oauthSetup({
+          return yield* connectOptions(executor, {
             ...payload,
             owner,
             redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
@@ -486,11 +492,12 @@ export const dashboard = (
             Effect.mapError(() => new DashboardForbidden()),
           );
           const connection = yield* appConnection(params.app, target);
+          const chosen = yield* connectionClient(connection, { method, client });
           const signIn = yield* executor.accountConnections.startOAuth({
             connection: connection.id,
             method,
             ...(label === undefined ? {} : { label }),
-            ...(client === undefined ? {} : { client }),
+            ...(chosen === undefined ? {} : { client: chosen }),
             redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
           });
           return { ...signIn, connection: connection.id };

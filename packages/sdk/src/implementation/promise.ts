@@ -1,4 +1,5 @@
 import { CheckOAuthSetup } from "../contracts/oauth.ts";
+import { OAuthClientInputs } from "../contracts/oauth-clients.ts";
 import { ProfileInputs } from "../contracts/profiles.ts";
 import {
   StartWorkflow,
@@ -87,6 +88,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       signIn: (input) => run(AccountInputs.get, input, executor.accounts.signIn),
       providers: (input = {}) => run(AccountInputs.providers, input, executor.accounts.providers),
       health: (input) => run(AccountInputs.get, input, executor.accounts.health),
+      revocation: (input) => run(AccountInputs.get, input, executor.accounts.revocation),
       listHealth: (input = {}) =>
         run(AccountInputs.listHealth, input, executor.accounts.listHealth),
       check: (input) => run(AccountInputs.check, input, executor.accounts.check),
@@ -102,6 +104,13 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       findOAuth: (input) => run(FindConnectionOAuth, input, executor.accountConnections.findOAuth),
       completeOAuth: (input) =>
         run(CompleteConnectionOAuth, input, executor.accountConnections.completeOAuth),
+    },
+    oauthClients: {
+      register: (input) => run(OAuthClientInputs.register, input, executor.oauthClients.register),
+      list: (input) => run(OAuthClientInputs.list, input, executor.oauthClients.list),
+      get: (input) => run(OAuthClientInputs.get, input, executor.oauthClients.get),
+      update: (input) => run(OAuthClientInputs.update, input, executor.oauthClients.update),
+      remove: (input) => run(OAuthClientInputs.remove, input, executor.oauthClients.remove),
     },
     owners: {
       check: (input) => run(OwnerInputs.check, input, executor.owners.check),

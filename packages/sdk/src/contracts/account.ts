@@ -230,6 +230,17 @@ export const AccountInputs = {
   }),
 };
 const accountParams = { account: AccountInputs.get.fields.account };
+
+/**
+ * What deleting an account does at its service. `automatic`: Executor asks the service to revoke
+ * the account's grant (RFC 7009) once the deletion commits, best effort. `manual`: the service
+ * offers no revocation Executor can use, or the account has no OAuth grant, so access ends only
+ * when the person removes it at the service.
+ */
+export const AccountRevocation = Schema.Struct({
+  revocation: Schema.Literals(["automatic", "manual"]),
+});
+export type AccountRevocation = typeof AccountRevocation.Type;
 const ownerQuery = { owner: AccountInputs.get.fields.owner };
 
 /**
@@ -295,7 +306,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete a saved account and its local credentials. Inspect affected profile selections and confirm the intended account first. Does not revoke access at the provider. To stop using the account in only one app, update that profile selection instead.",
+      "Delete a saved account and its local credentials. Inspect affected profile selections and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, update that profile selection instead.",
     ),
   )
   .add(
@@ -326,6 +337,17 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
     }).annotate(
       OpenApi.Description,
       "Read each selecting app's latest check of an account and the identity the checks reported. Does not run a check.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("revocation", "/v1/accounts/:account/revocation", {
+      params: accountParams,
+      query: ownerQuery,
+      success: AccountRevocation,
+      error: [StorageError, CredentialsError, AccountNotFound],
+    }).annotate(
+      OpenApi.Description,
+      "Report whether deleting an account also asks its service to revoke access, so a person can be told before they delete it. Does not contact the service.",
     ),
   )
   .add(

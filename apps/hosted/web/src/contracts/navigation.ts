@@ -23,12 +23,19 @@ export function parseConnectionSearch(search: Record<string, unknown>): {
   };
 }
 
-/** The account list marks a linked account, which has no page of its own. */
+/**
+ * The account list marks a linked account, which has no page of its own, and keeps the OAuth
+ * client manager open on refresh.
+ */
 export function parseAccountsSearch(search: Record<string, unknown>): {
   readonly account?: AccountId | undefined;
+  readonly manage?: "oauth-clients" | undefined;
 } {
   return {
     account: Option.getOrUndefined(Schema.decodeUnknownOption(AccountId)(search.account)),
+    manage: Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.Literal("oauth-clients"))(search.manage),
+    ),
   };
 }
 

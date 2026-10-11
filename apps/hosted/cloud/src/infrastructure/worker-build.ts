@@ -28,7 +28,7 @@ export type WorkerName =
  * MCP sessions to `mcp-server`.
  */
 const uploadBudgets: Record<WorkerName, number> = {
-  api: 5_400_000,
+  api: 5_450_000,
   "app-pages": 2_500_000,
   "mcp-server": 3_400_000,
   dashboard: 3_900_000,

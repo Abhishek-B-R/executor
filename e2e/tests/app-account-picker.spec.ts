@@ -13,6 +13,7 @@ import { Target } from "../support/platform.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
 
 layer(HostedLive, { excludeTestServices: true })("App accounts", (it) => {
   it.effect(scenarios.appAccountPicker.title, (context) =>
@@ -640,6 +641,14 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               .count(),
           ),
         ).toBe(0);
+        // Without a registered client, administrators are offered registration before entering one.
+        yield* browser.use("Administrators are offered client registration", (page) =>
+          page
+            .getByRole("dialog")
+            .getByRole("button", { name: "Register OAuth client", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Enter client details instead", enterClientDetails);
         expect(
           yield* browser.use("Required client fields are present before submission", (page) =>
             page.getByRole("textbox", { name: "Client ID", exact: true }).count(),
@@ -756,6 +765,13 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
           profile: expect.any(String),
         });
 
+        yield* browser.use("The next attempt again offers registration first", (page) =>
+          page
+            .getByRole("dialog")
+            .getByRole("button", { name: "Register OAuth client", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Enter client details for the next attempt", enterClientDetails);
         yield* browser.use("The next attempt retains its Connect action", (page) =>
           page
             .getByRole("dialog")

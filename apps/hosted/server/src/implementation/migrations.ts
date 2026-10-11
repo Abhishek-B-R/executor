@@ -9,6 +9,7 @@ import * as Migrator from "effect/sql/Migrator";
 import { migrateProvisioning } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
 import { migrateResourceAccess } from "./resource-schema.ts";
+import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
@@ -69,6 +70,8 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
     const sql = yield* SqlClient.SqlClient;
     yield* sql`alter table hosted_connection_access alter column target set not null`;
   }),
+  // Additive: who may use each stored OAuth client; the running server never reads it.
+  "8_oauth_client_access": migrateOAuthClientAccess,
 });
 
 /**

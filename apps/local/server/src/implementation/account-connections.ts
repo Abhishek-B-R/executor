@@ -12,6 +12,7 @@ import { AuthForbidden, PairingUnauthorized } from "../contracts/auth.ts";
 import { OAuthCallbackPath } from "../contracts/dashboard.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, requestOrigin } from "./auth.ts";
+import { connectOptions, connectionClient } from "./oauth-clients.ts";
 
 /** Sign only this purpose and connection ID. Existing links survive server restarts with the same key. */
 export const accountConnectHandlers = (
@@ -94,7 +95,7 @@ export const accountConnectHandlers = (
             Effect.gen(function* () {
               const request = yield* authorize(payload);
               const connection = yield* executor.accountConnections.get(payload);
-              return yield* executor.accountConnections.oauthSetup({
+              return yield* connectOptions(executor, {
                 owner: connection.owner,
                 provider: connection.provider.id,
                 method: payload.method,
@@ -105,8 +106,15 @@ export const accountConnectHandlers = (
           .handle("startOAuth", ({ payload }) =>
             Effect.gen(function* () {
               const request = yield* authorize(payload);
+              const connection = yield* executor.accountConnections.get(payload);
+              const { client: selected, ...rest } = payload;
+              const client = yield* connectionClient(connection, {
+                method: payload.method,
+                client: selected,
+              });
               return yield* executor.accountConnections.startOAuth({
-                ...payload,
+                ...rest,
+                ...(client === undefined ? {} : { client }),
                 redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
               });
             }),

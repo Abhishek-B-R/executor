@@ -124,4 +124,13 @@ export interface Credentials {
       | import("./events.ts").StoredEventId,
     bytes: Redacted.Redacted<Uint8Array>,
   ) => Effect.Effect<Redacted.Redacted<JsonObject>, CredentialsError>;
+  /**
+   * A keyed digest of a secret value under the host's key, so stored data can find it again
+   * without holding it or a digest anyone without the key could guess. Equal for equal `purpose`
+   * and `value`; never equal across purposes.
+   */
+  readonly fingerprint: (
+    purpose: string,
+    value: Redacted.Redacted<string>,
+  ) => Effect.Effect<string, CredentialsError>;
 }

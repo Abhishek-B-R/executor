@@ -184,6 +184,13 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
         yield* query(() =>
           tx.deleteMany("toolApprovals", { where: (b) => b("owner", "=", owner) }),
         );
+        // Grants keep their own copy of a client, so other owners' accounts keep renewing.
+        yield* query(() =>
+          tx.deleteMany("storedOAuthClients", { where: (b) => b("owner", "=", owner) }),
+        );
+        yield* query(() =>
+          tx.deleteMany("storedOAuthClientCredentials", { where: (b) => b("owner", "=", owner) }),
+        );
         // Apps reference their active deployment, so retained code is removed last.
         const deployments = yield* query(() =>
           tx.findMany("deployments", { select: ["id"], where: (b) => b("owner", "=", owner) }),

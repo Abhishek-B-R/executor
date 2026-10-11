@@ -7,6 +7,7 @@ import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
 import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./profiles.ts";
+import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -75,6 +76,22 @@ export interface ResourceLifecycle {
   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting credentials in the same transaction. */
   readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
+  /**
+   * Called once for a newly stored OAuth client, registered by a person or automatically, before
+   * its transaction commits. A product that decides who may use clients records that here.
+   */
+  readonly oauthClientCreated?: (
+    client: import("./oauth-clients.ts").OAuthClient,
+  ) => Effect.Effect<void, StorageError>;
+  /**
+   * Recheck product authority before a stored client's credentials are used: whenever a sign-in
+   * resolves one, whether the connection named it, a reconnect kept its account's client or the
+   * automatic choice found it, and again before the sign-in's authorization code is exchanged.
+   * Returns whether the product still lets the caller use it; the SDK refuses it otherwise.
+   */
+  readonly oauthClientResolving?: (
+    client: import("./oauth-clients.ts").OAuthClient,
+  ) => Effect.Effect<boolean, StorageError>;
 }
 
 /** Evaluated declarations and tool listings: where they are kept and how long they are trusted. */
@@ -251,6 +268,7 @@ export type Executor = Omit<
   readonly [RepositoryHost]: RepositoryHost;
   readonly [StorageHost]: StorageHost;
   readonly [PrefetchHost]: import("./profiles.ts").PrefetchHost;
+  readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -274,6 +292,7 @@ export type PromiseExecutor = Promisify<
     | typeof RepositoryHost
     | typeof StorageHost
     | typeof PrefetchHost
+    | typeof SavedOAuthClientsHost
     | "scheduler"
     | "events"
     | "managedAccounts"

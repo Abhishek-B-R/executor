@@ -18,6 +18,7 @@ import { createProfile, Profile } from "../support/profiles.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
 
 const AppProvider = Schema.Struct({
   id: Schema.String,
@@ -194,6 +195,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           mode: "client-required",
           scopes: ["openid", "read"],
           grant: "authorization_code",
+          clients: [],
         });
         // Executor never reads ID tokens, so sign-in and refresh succeed even though these name
         // the sign-in host rather than the derived issuer.
@@ -345,7 +347,10 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           page.goto(`/org/${actors.organization.slug}/apps/${formApp.id}?view=accounts`),
         );
         yield* browser.use("Open the account form", (page) =>
-          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+          page
+            .getByRole("button", { name: "Connect new account", exact: true })
+            .click()
+            .then(() => enterClientDetails(page)),
         );
         yield* browser.use("The client secret is offered as optional", (page) => {
           const dialog = page.getByRole("dialog");
@@ -429,6 +434,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           mode: "client-required",
           scopes: ["read"],
           grant: "authorization_code",
+          clients: [],
         });
         const signInWith = (
           client: { readonly clientId: string; readonly clientSecret?: string },

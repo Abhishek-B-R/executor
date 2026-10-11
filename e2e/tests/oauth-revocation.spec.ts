@@ -5,6 +5,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
@@ -13,6 +14,7 @@ import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
+const Detail = Schema.Struct({ revocation: Schema.Literals(["automatic", "manual"]) });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
   it.effect(scenarios.oauthRevocation.title, (context) =>
@@ -21,7 +23,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
       Effect.gen(function* () {
         const api = yield* Api,
           actors = yield* Actors,
-          http = yield* HttpClient.HttpClient;
+          http = yield* HttpClient.HttpClient,
+          browser = yield* Browser;
         const issuer = yield* oauthSetupIssuer;
         const prefix = `/api/organizations/${actors.organization.id}`;
         yield* issuer.configure({ refreshTokens: true, revocation: "recorded" });
@@ -95,8 +98,59 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
             ).toBe(200);
             return yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           });
+
+        /** The delete dialog tells the person what deleting does at the service. */
+        const deleteNotice = (label: string, revocation: "automatic" | "manual") =>
+          Effect.gen(function* () {
+            yield* browser.use(`Open deleting ${label}`, (page) =>
+              page
+                .goto(`/org/${actors.organization.slug}/accounts`)
+                .then(() =>
+                  page.getByRole("button", { name: `Manage ${label}`, exact: true }).click(),
+                )
+                .then(() =>
+                  page.getByRole("menuitem", { name: "Delete account", exact: true }).click(),
+                ),
+            );
+            const notice = yield* browser.use(`Read what deleting ${label} does`, (page) =>
+              page
+                .getByRole("dialog")
+                .getByText(/^This deletes the saved credentials from Executor/)
+                .textContent(),
+            );
+            expect(notice).toContain(
+              revocation === "automatic"
+                ? `asks ${name} to revoke its access.`
+                : `does not revoke access at ${name}. To end access, revoke it there too.`,
+            );
+            yield* browser.use("Let the menu close and the dialog finish opening", (page) =>
+              page.waitForFunction(() =>
+                document.getAnimations().every((animation) => animation.playState !== "running"),
+              ),
+            );
+            yield* browser.checkpoint(
+              revocation === "automatic" ? "Delete revokes access" : "Delete without revocation",
+            );
+            yield* browser.use(`Keep ${label}`, (page) =>
+              page
+                .getByRole("dialog")
+                .getByRole("button", { name: "Close", exact: true })
+                .click()
+                .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
+            );
+          });
+        const revocationOf = (account: string) =>
+          api
+            .request(actors.owner, "GET", `${prefix}/accounts/${account}`)
+            .pipe(Effect.flatMap((response) => body(Detail, response)));
+        yield* browser.omitNetworkTrace;
+        yield* browser.login(actors.owner);
+
         // A successful deletion revokes the refresh token with the grant's own client.
         const revoked = yield* connect("Revoked account");
+        // The person is told so before deleting.
+        expect(yield* revocationOf(revoked.id)).toEqual({ revocation: "automatic" });
+        yield* deleteNotice("Revoked account", "automatic");
         const deleted = yield* remove(revoked.id);
         expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
         // Hosted access checks refuse an account that no longer exists.
@@ -120,6 +174,16 @@ layer(HostedLive, { excludeTestServices: true })("OAuth revocation", (it) => {
           hint: "refresh_token",
           clientAuthenticated: true,
         });
+
+        // A service without a revocation endpoint is never asked, and the person is told to
+        // revoke access there themselves.
+        yield* issuer.configure({ revocation: "none" });
+        const unrevocable = yield* connect("No revocation");
+        expect(yield* revocationOf(unrevocable.id)).toEqual({ revocation: "manual" });
+        yield* deleteNotice("No revocation", "manual");
+        const unrevoked = yield* remove(unrevocable.id);
+        expect(unrevoked.status, JSON.stringify(unrevoked.body)).toBe(200);
+        expect((yield* issuer.metrics).revocations).toHaveLength(2);
       }),
     ),
   );

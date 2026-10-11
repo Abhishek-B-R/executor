@@ -12,6 +12,7 @@ import {
 } from "./idle-agent-grants.ts";
 import { executorAppRedeployStep, type ExecutorAppRedeployHost } from "./executor-app-redeploy.ts";
 import { executorAppRedeployStepName } from "../contracts/executor-app-redeploy.ts";
+import { storedOAuthClientsStep, type StoredOAuthClientsHost } from "./stored-oauth-clients.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -19,7 +20,8 @@ import type { DataStep } from "../contracts/data-steps.ts";
 export type DataStepHost = FrameworkPinHost &
   BuildFrameworkHost &
   AgentGrantHost &
-  ExecutorAppRedeployHost;
+  ExecutorAppRedeployHost &
+  StoredOAuthClientsHost;
 
 /** Append new steps; never rename, reorder or change one that has shipped. */
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> => [
@@ -34,6 +36,8 @@ export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlCli
   // One-off: redeploy Executor apps built on an apps release before beta.10, whose background
   // cache refreshes aborted with the invocation, with only their apps pin moved to this host's.
   executorAppRedeployStep(host, executorAppRedeployStepName),
+  // One-off: move saved OAuth clients into stored clients, under the owner whose accounts used them.
+  storedOAuthClientsStep(host),
 ];
 
 /**

@@ -20,7 +20,9 @@ import { AppId, CredentialsError, NotImplemented, StorageError } from "../contra
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import { makeAccounts } from "./accounts.ts";
+import { makeAccounts, storedAccount } from "./accounts.ts";
+import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
+import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeProfiles } from "./profiles.ts";
 import { makeApps } from "./apps.ts";
@@ -219,10 +221,19 @@ export const createExecutor = (
           ),
       },
       [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, options.hooks),
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,
-      accounts: { ...accountOperations, ...accountHealth },
+      accounts: {
+        ...accountOperations,
+        ...accountHealth,
+        revocation: (input) =>
+          storedAccount(db, input.account, input.owner).pipe(
+            Effect.flatMap((account) => oauth.revocation(account.id)),
+            Effect.withSpan("sdk.accounts.revocation"),
+          ),
+      },
       managedAccounts: { add, replaceCredentials },
       accountConnections: {
         ...connections,
@@ -232,6 +243,7 @@ export const createExecutor = (
             Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
           ),
       },
+      oauthClients: oauth.clients,
       apps: {
         ...apps,
         deploy: (input) =>

@@ -292,6 +292,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message("Sign-in method unavailable", "Choose another sign-in method for this account."),
     OAuthClientUnavailable: () =>
       message("OAuth client required", "Enter your OAuth client details to connect this account."),
+    OAuthClientNotFound: () =>
+      message("OAuth client unavailable", "Choose another OAuth client, or enter its details."),
     AuthForbidden: () =>
       message("Request not allowed", "Open the dashboard from this local server’s address."),
     AuthStorageError: () =>

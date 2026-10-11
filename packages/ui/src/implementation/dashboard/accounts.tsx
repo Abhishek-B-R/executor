@@ -18,9 +18,12 @@ import { Button } from "../components/button.tsx";
 export function AccountsPage<E>({
   query,
   Failure,
+  action,
   ...props
 }: QueryProps<Inventory, E> & {
   readonly filters?: ReactNode;
+  /** A page action beside the title, such as managing OAuth clients; hidden while there are none. */
+  readonly action?: ReactNode;
   readonly empty?: ReactNode;
   readonly accountActions?: (account: AccountSummary) => ReactNode;
   readonly accountMeta?: (account: AccountSummary) => ReactNode;
@@ -35,7 +38,9 @@ export function AccountsPage<E>({
         title="Accounts"
         description="Saved sign-ins, available to your apps."
         {...(Option.isSome(data) ? { count: data.value.accounts.length } : {})}
-      />
+      >
+        {(!Option.isSome(data) || data.value.accounts.length > 0) && action}
+      </PageHeader>
       <div className="list-toolbar mb-4 flex flex-wrap items-center gap-[10px_16px]">
         {(!Option.isSome(data) || data.value.accounts.length > 0 || search.length > 0) && (
           <SearchInput value={search} onChange={setSearch} placeholder="Search accounts…" />

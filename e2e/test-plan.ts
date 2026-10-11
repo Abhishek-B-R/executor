@@ -2385,7 +2385,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-saved-client-rejection.spec.ts",
     title:
-      "A rejected client Executor registered is discarded only in the version the sign-in used, and entered clients are kept",
+      "A rejected client Executor registered is discarded only in the version the sign-in used, and administrator-registered clients are kept",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer with controlled wire responses."),
@@ -3099,7 +3099,8 @@ export const scenarios = plan({
   oauthRevocation: {
     fixtures: "actors",
     file: "oauth-revocation.spec.ts",
-    title: "OAuth account deletion revokes the refresh token and succeeds when revocation fails",
+    title:
+      "OAuth account deletion revokes the refresh token, succeeds when revocation fails, and the delete dialog says beforehand whether it will",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer that records revocation requests."),
@@ -3866,6 +3867,105 @@ export const scenarios = plan({
         "Managed Cloud leaves the setting unset like self-host; one host proves the default.",
       ),
       local: na("Local's loopback callback has no public document; it registers dynamically."),
+    },
+  },
+  oauthClientRegistration: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Administrators register unnamed OAuth clients, usable by everyone by default, that members connect personal accounts with, and removal keeps connected accounts but withdraws the client's details from reconnects",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientMissing: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Without an OAuth client for a service, administrators are told Executor provides none and register one from the connect form, and members enter their own details",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientAudience: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Members are offered and may use only OAuth clients in the audience chosen at registration or later, and are never told a client is ready that they cannot use",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientEdit: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Administrators edit a registered OAuth client's details and audience in one save, new connections use them, secrets are never returned, and automatic clients are not edited",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientAudienceRecheck: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Narrowing an OAuth client's audience refuses a reconnect that would keep it and a sign-in pending with it, before any code is exchanged",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientRemovedPending: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "Removing an automatic OAuth client refuses a sign-in pending with it before any code is exchanged, and the next sign-in registers a new client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client removal."),
+    },
+  },
+  oauthClientEditRevision: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "An OAuth client edit made from a stale access revision is refused and changes nothing, in the API and the client manager, and every saved change advances the revision",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientCredentialIdentity: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "An OAuth client's details are that client after an edit, so a reconnect or entry with its old details stays under its audience, the same details are never registered twice, and clients sharing a client ID are told apart",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted organization roles and client audiences."),
+    },
+  },
+  oauthClientCredentialsIsolation: {
+    fixtures: "actors",
+    file: "oauth-clients.spec.ts",
+    title:
+      "A new client credentials connection asks for its own credentials and machine clients are never shared",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback token service."),
+      local: na("Hosted organization connections."),
     },
   },
   oauthClientSetup: {

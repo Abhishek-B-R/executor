@@ -6,6 +6,7 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { accessBeforeConnect, formOrder } from "../support/oauth-client-form.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -397,7 +398,9 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           }
           yield* browser.checkpoint(`OAuth-registration-${name}-desktop`);
         }
-        // Without registration, client entry is the only way to connect, and nothing failed.
+        // Without registration, client entry is the only way to connect, and nothing failed. An
+        // administrator is offered registering a client first; entering one for this account is
+        // under Advanced.
         const steps =
           "Create an OAuth app there with this redirect URL, then enter its client ID and secret.";
         yield* issuer.configure({ registration: false, registrationStatus: 201 });
@@ -408,6 +411,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           page
             .getByRole("button", { name: "Connect new account", exact: true })
             .click()
+            .then(() => enterClientDetails(page))
             .then(() => page.getByLabel("Client secret", { exact: true }).waitFor()),
         );
         const required = yield* browser.use("Read the client-required form", (page) => {

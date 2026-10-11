@@ -1,5 +1,13 @@
 /** One authoritative policy for hosted reads, management, credential use, and resumed work. */
-import { AccountId, AppId, StorageError, type Account, type App } from "@executor-js/sdk/core";
+import {
+  AccountId,
+  AppId,
+  OAuthClientId,
+  StorageError,
+  type Account,
+  type App,
+} from "@executor-js/sdk/core";
+import type { OAuthClientAccess } from "../contracts/oauth-clients.ts";
 import { Effect, Schema } from "effect";
 import { GroupDatabase, GroupId, GroupMemberId } from "../contracts/groups.ts";
 import { CurrentUserId, Principal } from "../contracts/auth.ts";
@@ -269,6 +277,61 @@ export const accountAccesses = (accounts: readonly AccountId[], actor: ResourceA
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
+
+const OAuthClientPolicy = Schema.Struct({
+  client: OAuthClientId,
+  creator: Schema.NullOr(Principal.fields.userId),
+  audience: Schema.Literals(["private", "groups", "everyone"]),
+  revision: AccessRevision,
+  groups: Schema.Array(GroupId),
+  granted: Schema.Boolean,
+});
+/** Resolve OAuth client policies in one read; only administrators manage clients. */
+export const oauthClientAccesses = (clients: readonly OAuthClientId[], actor: ResourceAuthority) =>
+  Effect.gen(function* () {
+    if (clients.length === 0) return [];
+    const sql = yield* policyDatabase;
+    const rows =
+      yield* sql`select p.client_id as client, p.creator_id as creator, p.audience, p.revision,
+    array(select g.group_id from hosted_oauth_client_groups g where g.client_id = p.client_id order by g.group_id) as groups,
+    exists(select 1 from hosted_oauth_client_groups g join hosted_group_members m on m.group_id = g.group_id
+      where g.client_id = p.client_id and m.member_id = ${actor.member}) as granted
+    from hosted_oauth_client_access p
+    where ${sql.in("p.client_id", clients)} and p.organization_id = ${actor.organization}`;
+    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(OAuthClientPolicy))(rows);
+    return policies.map((found) => {
+      const audience: typeof AppAudience.Type =
+        found.audience === "groups"
+          ? { kind: "groups", groups: found.groups }
+          : { kind: found.audience };
+      return {
+        client: found.client,
+        creator: found.creator,
+        audience,
+        revision: found.revision,
+        canManage: actor.role !== "member",
+        canUse:
+          found.audience === "private"
+            ? found.creator === actor.user
+            : found.audience === "everyone" || found.granted,
+      } satisfies OAuthClientAccess;
+    });
+  }).pipe(
+    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+
+/** Check OAuth client access for an actor already resolved in this operation. */
+export const requireOAuthClientAccessAs = (
+  actor: ResourceAuthority,
+  client: OAuthClientId,
+  action: "manage" | "use",
+) =>
+  Effect.gen(function* () {
+    const access = (yield* oauthClientAccesses([client], actor))[0];
+    if (access === undefined || !(action === "use" ? access.canUse : access.canManage))
+      return yield* new OrganizationForbidden();
+    return access;
+  });
 
 /** Resolve one account's policy; missing policies deny access. */
 export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>

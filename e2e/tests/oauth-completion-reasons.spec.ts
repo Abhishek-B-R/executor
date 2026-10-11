@@ -18,6 +18,7 @@ import { createProfile } from "../support/profiles.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
 const Redirect = Schema.Struct({
@@ -215,6 +216,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           return page
             .getByRole("button", { name: "Connect new account", exact: true })
             .click()
+            .then(() => enterClientDetails(page))
             .then(() => dialog.getByLabel("Client ID", { exact: true }).fill(client.clientId))
             .then(() => dialog.getByLabel(/^Client secret/).fill(client.clientSecret))
             .then(() =>

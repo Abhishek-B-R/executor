@@ -39,6 +39,9 @@ const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => 
   {
     sql: `DROP TABLE executor_tool_search, executor_tool_search_definitions, executor_tool_search_listings`,
   },
+  {
+    sql: `DROP TABLE executor_stored_oauth_client_credentials, executor_stored_oauth_clients`,
+  },
   { sql: `UPDATE private_executor_settings SET value = '4.0.7' WHERE key = 'version'` },
   {
     sql: `INSERT INTO executor_oauth_attempts (id, encrypted, expires_at, status)
@@ -119,7 +122,7 @@ const expectUpgraded = (
   ids: Ids,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.9" }]);
+  expect(version).toEqual([{ value: "4.0.10" }]);
   // Only the connection with a target is left, and only the sign-in no connection pointed at.
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
@@ -227,6 +230,9 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
         const ids = legacyIds();
         const legacy = [ids.pending, ids.reconnect, ids.defaulted];
         yield* legacyStorage([
+          // Before step 8 no client had an audience, whose rows name stored clients.
+          { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
+          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 8` },
           ...legacyRows(connection, ids),
           // Before step 7 the product's access rows could have no target either.
           { sql: `ALTER TABLE hosted_connection_access ALTER COLUMN target DROP NOT NULL` },

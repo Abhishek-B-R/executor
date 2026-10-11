@@ -7,6 +7,7 @@ import {
 import { HostedAppManagementApi, HostedFrameworkApi } from "../contracts/app-management.ts";
 import { hostedAppAccess } from "../app-management.ts";
 import { hostedResourceAccessHandlers } from "./resource-access.ts";
+import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
 import { hostedScheduleHandlers } from "./schedules.ts";
 /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
 import { Effect, Layer } from "effect";
@@ -74,6 +75,7 @@ export const hostedHandlers = Layer.mergeAll(
   hostedOrganizationHandlers,
   hostedGroupHandlers,
   hostedResourceAccessHandlers,
+  hostedOAuthClientHandlers,
   hostedWebhookSetupHandlers,
   hostedWebhookHandlers,
   hostedWorkflowHandlers,

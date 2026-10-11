@@ -22,7 +22,7 @@ import {
   type AccountId,
   type AccountFieldsInput,
   type SelectedAccounts,
-  type OAuthClientInput,
+  type OAuthClientSelection,
   type ToolName,
   type Json,
   type ApprovalRequestId,
@@ -263,7 +263,7 @@ export function appConnectionAtoms(key: {
         }),
     ),
     startOAuth: HostedClient.runtime.fn(
-      (payload: { method: string; client?: OAuthClientInput }, get) =>
+      (payload: { method: string; client?: OAuthClientSelection }, get) =>
         Effect.gen(function* () {
           const pending = yield* connection(get);
           const client = yield* HostedClient;
@@ -347,7 +347,7 @@ const startOAuth = Atom.family((key: ConnectionKey) =>
     (
       payload: {
         readonly method: string;
-        readonly client?: OAuthClientInput;
+        readonly client?: OAuthClientSelection;
       },
       get,
     ) =>

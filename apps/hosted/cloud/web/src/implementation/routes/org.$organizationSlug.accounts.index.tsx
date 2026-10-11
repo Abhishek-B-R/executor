@@ -9,6 +9,20 @@ export const Route = createFileRoute("/org/$organizationSlug/accounts/")({
 });
 
 function Page() {
-  const { account } = Route.useSearch();
-  return <AccountsPage highlight={account} />;
+  const { account, manage } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  return (
+    <AccountsPage
+      highlight={account}
+      oauthClients={{
+        open: manage === "oauth-clients",
+        onOpenChange: (open) => {
+          void navigate({
+            search: (current) => ({ ...current, manage: open ? "oauth-clients" : undefined }),
+            replace: true,
+          });
+        },
+      }}
+    />
+  );
 }

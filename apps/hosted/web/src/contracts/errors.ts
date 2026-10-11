@@ -103,6 +103,10 @@ const errorMessage = Match.type<HostedError>().pipe(
     OAuthRenewalFailed: (error) => `${error.description} ${error.recovery.action}`,
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",
+    OAuthClientNotFound: (error) => `${error.description} ${error.recovery.action}`,
+    OAuthClientNotEditable: (error) => `${error.description} ${error.recovery.action}`,
+    OAuthClientExists: (error) => `${error.description} ${error.recovery.action}`,
+    OAuthClientsUnsupported: (error) => `${error.description} ${error.recovery.action}`,
     OAuthSetupFailed: (error) => `${error.description} ${error.recovery.action}`,
     OAuthCompletionFailed: (error) => `${error.description} ${error.recovery.action}`,
     InputInvalid: () => "The input does not match this tool’s schema.",

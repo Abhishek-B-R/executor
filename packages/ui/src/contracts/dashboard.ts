@@ -47,6 +47,8 @@ export interface AccountDetail {
   readonly apps: readonly App[];
   /** Each listed app's latest check, when the host exposes checks. */
   readonly health?: AccountHealth;
+  /** `automatic`: deleting the account asks its service to revoke access; `manual`: it does not. */
+  readonly revocation: "automatic" | "manual";
   readonly canManage: boolean;
 }
 /** The common inventory contains no product permission or organization fields. */

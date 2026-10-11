@@ -12,7 +12,7 @@ import { Context, Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { OrganizationId } from "../contracts/organization.ts";
-import { ConnectionDestination } from "../contracts/resource-access.ts";
+import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
 
 import { requireGroupSharing } from "./group-sharing.ts";
 
@@ -39,6 +39,23 @@ export const personalAccountCreation =
   (user: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(Effect.provideService(AccountCreation, { kind: "attributed-personal", user }));
+
+/**
+ * Who may use a stored OAuth client: the audience an administrator chose when registering it, or
+ * everyone for a client Executor registered automatically or a data step moved, which has no
+ * creator.
+ */
+type OAuthClientCreation =
+  | { readonly kind: "member"; readonly audience: typeof AppAudience.Type }
+  | { readonly kind: "system" };
+const OAuthClientCreation = Context.Reference<OAuthClientCreation>("hosted/OAuthClientCreation", {
+  defaultValue: () => ({ kind: "system" }),
+});
+/** The audience is recorded with the client's access record, in the client's transaction. */
+export const oauthClientAudience =
+  (audience: typeof AppAudience.Type) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.provideService(OAuthClientCreation, { kind: "member", audience }));
 
 const organizationOf = (owner: OwnerId) =>
   owner.startsWith("organization:")
@@ -234,6 +251,43 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           OrganizationForbidden: () => new StorageError(),
         }),
       ),
+    oauthClientCreated: (client) =>
+      Effect.gen(function* () {
+        const organization = yield* organizationOf(client.owner);
+        const intent = yield* OAuthClientCreation;
+        const creator =
+          intent.kind === "system" ? null : yield* member(organization, yield* CurrentUserId);
+        const audience: typeof AppAudience.Type =
+          intent.kind === "system" ? { kind: "everyone" } : intent.audience;
+        const groups = audience.kind === "groups" ? audience.groups : [];
+        yield* requireGroupSharing(sql, organization, creator ?? undefined, groups);
+        yield* sql`insert into hosted_oauth_client_access (client_id, organization_id, creator_id, audience)
+        values (${client.id}, ${organization}, ${creator}, ${audience.kind})`;
+        for (const group of groups)
+          yield* sql`insert into hosted_oauth_client_groups (organization_id, client_id, group_id) values (${organization}, ${client.id}, ${group})`;
+      }).pipe(
+        Effect.catchTags({
+          SqlError: () => new StorageError(),
+          SchemaError: () => new StorageError(),
+          OrganizationForbidden: () => new StorageError(),
+        }),
+      ),
+    // Whichever way a sign-in resolved the client, the caller must be in its audience now. A client
+    // without an access record, or a caller who is no longer a member, is refused.
+    oauthClientResolving: (client) =>
+      Effect.gen(function* () {
+        const user = yield* CurrentUserId;
+        if (user === undefined || !client.owner.startsWith("organization:")) return false;
+        const organization = client.owner.slice("organization:".length);
+        const rows = yield* sql`select p.client_id from hosted_oauth_client_access p
+        join member m on m."organizationId" = p.organization_id and m."userId" = ${user}
+        where p.client_id = ${client.id} and p.organization_id = ${organization}
+        and ((p.audience = 'private' and p.creator_id = ${user}) or p.audience = 'everyone'
+          or (p.audience = 'groups' and exists(select 1 from hosted_oauth_client_groups g
+            join hosted_group_members gm on gm.group_id = g.group_id
+            where g.client_id = p.client_id and gm.member_id = m.id)))`;
+        return rows.length === 1;
+      }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
     accountRemoving: (account) =>
       Effect.gen(function* () {
         const organization = yield* organizationOf(account.owner);

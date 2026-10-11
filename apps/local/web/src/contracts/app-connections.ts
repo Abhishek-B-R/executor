@@ -9,7 +9,7 @@ import type {
   AccountFieldsInput,
   AccountId,
   AppId,
-  OAuthClientInput,
+  OAuthClientSelection,
   ProfileId,
   SelectedAccounts,
 } from "@executor-js/sdk";
@@ -74,7 +74,7 @@ export function appConnectionAtoms(key: {
         input: {
           readonly method: string;
           readonly label?: string;
-          readonly client?: OAuthClientInput;
+          readonly client?: OAuthClientSelection;
         },
         get,
       ) =>

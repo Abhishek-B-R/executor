@@ -1,14 +1,21 @@
 import type { HostedError } from "../../contracts/errors.ts";
 import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contracts/credentials";
-import { useAtomSet } from "@effect/atom-react";
-import { oauthClientEntryReasons, type Account, type AppId, type Provider } from "@executor-js/sdk";
+import { RegistryContext, useAtomSet } from "@effect/atom-react";
+import {
+  OAuthClientInput,
+  oauthClientEntryReasons,
+  type Account,
+  type AppId,
+  type Provider,
+} from "@executor-js/sdk";
 import type {
   HostedAccountConnection,
   HostedOAuthSignIn,
   HostedOAuthStartResult,
 } from "@executor-js/hosted-server";
 import { Link } from "@tanstack/react-router";
-import { Cause, Match, Option, Exit } from "effect";
+import { useContext, useState } from "react";
+import { Cause, Match, Option, Exit, Schema } from "effect";
 import { Button } from "@executor-js/ui/components/button";
 import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
@@ -20,7 +27,8 @@ import {
   submitConnectionAtom,
   PendingOAuth,
 } from "../../contracts/apps.ts";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+import { RegisterServiceClient } from "./oauth-clients.tsx";
 
 /** Retain only the return context; OAuth state and credentials remain owned by the server. */
 export function openAccountOAuth(pending: typeof PendingOAuth.Type, authorizationUrl: string) {
@@ -130,17 +138,37 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const { organization } = useOrganizationRoute();
   const requestName = useAtomSet(accountToNameAtom);
   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
+  // Only administrators register clients, so members are told to enter their own details.
+  const role = useOrganizationDetails()?.role;
+  const admin = role !== undefined && role !== "member";
+  const registry = useContext(RegistryContext);
+  // Registering replaces the account form, since it is a form itself, then returns to the method.
+  const [registering, setRegistering] = useState<string>();
+  const [method, setMethod] = useState(initialMethod);
   // Reconnects keep their name; a new account is named once saved.
   const saved = (value: Account) => {
     if (!account)
       requestName({ organization, account: value.id, saved: { account: value, provider } });
     onSaved(value);
   };
+  if (registering !== undefined)
+    return (
+      <RegisterServiceClient
+        provider={{ id: provider.id, name: provider.definition.name }}
+        onDone={() => {
+          registry.refresh(
+            oauthSetupAtom({ organization, provider: provider.id, method: registering }),
+          );
+          setMethod(registering);
+          setRegistering(undefined);
+        }}
+      />
+    );
   return (
     <AccountForm
       provider={provider}
       {...(account ? { account } : {})}
-      initialMethod={initialMethod}
+      initialMethod={method}
       Failure={HostedFailure}
       submitLabel={account ? "Save credentials" : "Connect account"}
       submit={submit}
@@ -166,6 +194,19 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
               {...(account ? { account } : {})}
               redirectUri={redirectUri}
               onPendingChange={onPendingChange}
+              {...(admin
+                ? {
+                    missingClient: (
+                      <Button
+                        type="button"
+                        className="w-full"
+                        onClick={() => setRegistering(method)}
+                      >
+                        Register OAuth client
+                      </Button>
+                    ),
+                  }
+                : {})}
               requiresClient={(cause) => {
                 const required = Option.exists(Cause.findErrorOption(cause), (error) =>
                   Match.value(error).pipe(
@@ -183,7 +224,9 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                 start({ method, ...input }).then((exit) =>
                   Exit.map(exit, (value) => ({
                     ...value,
-                    manualClient: input.client !== undefined,
+                    // Entered details reopen after a failed return; chosen clients do not.
+                    manualClient:
+                      input.client !== undefined && Schema.is(OAuthClientInput)(input.client),
                   })),
                 )
               }

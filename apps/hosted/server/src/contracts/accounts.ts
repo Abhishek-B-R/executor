@@ -10,6 +10,7 @@ import {
   Provider,
   Account,
   AccountHealth,
+  AccountRevocation,
   CredentialCheck,
   AccountId,
   AccountNotFound,
@@ -25,9 +26,10 @@ import {
   AppNotFound,
   AuthMethodInvalid,
   CredentialsError,
-  OAuthClientInput,
+  OAuthClientNotFound,
+  OAuthClientSelection,
   OAuthClientUnavailable,
-  OAuthClientSetup,
+  OAuthConnectOptions,
   ProviderId,
   AuthMethodName,
   OAuthCompletionFailed,
@@ -104,6 +106,8 @@ export const HostedAccountDetail = Schema.Struct({
   apps: Schema.Array(App),
   /** Checks by the apps in `apps` only; reading it never runs a check. */
   health: AccountHealth,
+  /** Whether deleting the account also asks its service to revoke access. */
+  revocation: AccountRevocation.fields.revocation,
   canManage: Schema.Boolean,
 });
 /** Credentials travel directly to the authorized host and never appear in successful responses. */
@@ -170,13 +174,13 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.get("oauthSetup", `${prefix}/providers/:provider/oauth/:method/setup`, {
       params: { ...params, provider: ProviderId, method: AuthMethodName },
-      success: OAuthClientSetup,
+      success: OAuthConnectOptions,
       error: [...connectionErrors, AuthMethodInvalid, CredentialsError, OAuthSetupFailed],
     })
       .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
-        "Check how an OAuth method will connect before the user signs in. scopes are the permissions sign-in will ask the provider for, and userScopes the ones Slack's user_scope asks for the user's own token; the connection form lists them too. Tell the user what will be requested before giving them the connection link. Without declared scopes, an MCP sign-in asks for the scopes the server's challenge names, which can be narrower than the ones it advertises. For other access, declare scopes on the app's provider and deploy it, then connect without account: declaring scopes changes the provider, so this creates a new account and selects it for the profile. The old account keeps its credentials and stays selected wherever else it is used. Pass account only to replace credentials for an unchanged provider.",
+        "Check how an OAuth method will connect before the user signs in. scopes are the permissions sign-in will ask the provider for, and userScopes the ones Slack's user_scope asks for the user's own token; the connection form lists them too. Tell the user what will be requested before giving them the connection link. Without declared scopes, an MCP sign-in asks for the scopes the server's challenge names, which can be narrower than the ones it advertises. For other access, declare scopes on the app's provider and deploy it, then connect without account: declaring scopes changes the provider, so this creates a new account and selects it for the profile. The old account keeps its credentials and stays selected wherever else it is used. Pass account only to replace credentials for an unchanged provider. clients lists the registered OAuth clients the caller may connect with; clients outside the caller's audience are not listed.",
       ),
   )
   .add(
@@ -228,10 +232,21 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       payload: Schema.Struct({
         method: Schema.NonEmptyString,
         label: Schema.optional(Schema.NonEmptyString),
-        client: Schema.optional(OAuthClientInput),
+        /**
+         * A registered client the caller may use, the organization's automatic client, or one
+         * entered for this account alone. Omitted, a new account uses the automatic client and a
+         * reconnect keeps the client its account signed in with.
+         */
+        client: Schema.optional(OAuthClientSelection),
       }),
       success: HostedOAuthStartResult,
-      error: [...completionErrors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
+      error: [
+        ...completionErrors,
+        AuthMethodInvalid,
+        OAuthClientUnavailable,
+        OAuthClientNotFound,
+        OAuthSetupFailed,
+      ],
     }).annotate(RequiredAction, "manage"),
   )
   .add(

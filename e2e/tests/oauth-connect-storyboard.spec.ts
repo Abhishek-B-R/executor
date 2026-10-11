@@ -90,6 +90,13 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           browser.use(`Wait for ${name}`, (page) =>
             page.getByRole("button", { name, exact: true }).waitFor({ state: "visible" }),
           );
+        const chooseClient = (name: string) =>
+          browser.use(`Choose ${name}`, (page) =>
+            page
+              .getByRole("combobox", { name: "OAuth client" })
+              .click()
+              .then(() => page.getByRole("option", { name, exact: true }).click()),
+          );
         const click = (name: string) =>
           browser.use(`Click ${name}`, (page) =>
             page.getByRole("button", { name, exact: true }).click(),
@@ -374,14 +381,17 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           ),
         ).toBe(0);
         yield* capture("Replace-account-entry");
-        yield* browser.use("Open saved-client options", (page) =>
+        yield* browser.use("Open client options", (page) =>
           page.getByText("Advanced", { exact: true }).click(),
         );
-        yield* browser.use("Wait for the saved OAuth client", (page) =>
-          page.getByText("Using a saved client", { exact: true }).waitFor(),
+        yield* browser.use("A new account signs in with the automatic client", (page) =>
+          page
+            .getByRole("combobox", { name: "OAuth client" })
+            .filter({ hasText: "Automatic" })
+            .waitFor(),
         );
-        yield* capture("New-account-with-saved-client");
-        yield* click("Change OAuth client");
+        yield* capture("New-account-client-options");
+        yield* chooseClient("Enter client details");
         yield* capture("Manual-client-dialog");
         yield* click("Close");
         const accountId = (yield* body(
@@ -459,14 +469,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         ).toBe(0);
         yield* browser.use("Reopen the same connection link", (page) => page.goto(connectionUrl));
         yield* ready("Reconnect Sample service");
-        yield* browser.use("Open saved-client reconnect options", (page) =>
-          page.getByText("Advanced", { exact: true }).click(),
+        yield* browser.use("A reconnect keeps its account's client", (page) =>
+          page
+            .getByRole("combobox", { name: "OAuth client" })
+            .filter({ hasText: "Current client" })
+            .waitFor(),
         );
-        yield* browser.use("Wait for saved-client setup", (page) =>
-          page.getByText("Using a saved client", { exact: true }).waitFor(),
-        );
-        yield* capture("Reconnect-saved-client");
-        yield* click("Change OAuth client");
+        yield* capture("Reconnect-current-client");
+        yield* chooseClient("Enter client details");
         yield* capture("Manual-client-details");
         yield* browser.use("Show the form on mobile", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
@@ -543,8 +553,12 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),
         );
         yield* click("Connect new account");
-        yield* browser.use("Wait for mandatory manual setup", (page) =>
-          page.getByLabel("Client secret", { exact: true }).waitFor(),
+        // No client is registered, so the administrator is told so and offered registration.
+        yield* browser.use("Wait for the missing client notice", (page) =>
+          page
+            .getByRole("dialog")
+            .getByRole("button", { name: "Register OAuth client", exact: true })
+            .waitFor(),
         );
         yield* capture("Client-required-first-connection");
         yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);

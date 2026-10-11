@@ -1,5 +1,6 @@
 import { HostedProfiles } from "./profiles.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
+import { HostedOAuthClients } from "./oauth-clients.ts";
 import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
@@ -175,6 +176,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedOrganization,
     HostedGroups,
     HostedResourceAccess,
+    HostedOAuthClients,
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,

@@ -16,6 +16,7 @@ import {
   ToolName,
 } from "../contracts/shared.ts";
 import { AccountConnectionId, ApprovalRequestId } from "../contracts/shared.ts";
+import { OAuthClientId, OAuthClientSource } from "../contracts/oauth.ts";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { Effect, Schema } from "effect";
 
@@ -144,6 +145,10 @@ export const version4Tables = {
   })
     .unique("executor_apps_owner_name", ["owner", "name"])
     .unique("executor_apps_owner_slug", ["owner", "slug"]),
+  /**
+   * Saved clients of versions before 4.0.10, keyed by a digest of the sign-in settings. No longer
+   * read or written once `executor_stored_oauth_clients` replaces it; a later release drops it.
+   */
   oauthClients: table("executor_oauth_clients", {
     id: idColumn("id", Schema.String, { type: "varchar(255)" }),
     encrypted: column("encrypted", Schema.Uint8Array),
@@ -482,8 +487,8 @@ export const toolSearchIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_tool_search_definitions_listing ON executor_tool_search_definitions (listing)",
 ] as const;
 
-/** Current ORM layout. Profiles own account selections; apps declare requirements. */
-export const storageSchema = schema({
+/** The 4.0.9 layout. Profiles own account selections; apps declare requirements. */
+export const version409Schema = schema({
   version: "4.0.9",
   tables: version409Tables,
   up: ({ auto }) =>
@@ -491,6 +496,94 @@ export const storageSchema = schema({
       Effect.map((operations) => [
         ...operations,
         ...toolSearchIndexes.map((sql) => ({ type: "custom" as const, sql })),
+      ]),
+    ),
+  relations: {
+    accounts: ({ one }) => ({
+      providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+    }),
+    apps: ({ one }) => ({
+      deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+    }),
+  },
+});
+
+/**
+ * Version 4.0.10 stores OAuth clients as resources of an owner, named by the connections that use
+ * them. A registered client is found again by its owner and `automatic_key`, a digest of the
+ * sign-in settings, callback included, it was registered for. A client entered by a person has
+ * none, unless it was moved from an earlier version's saved clients, whose keys were the same
+ * digest. The secret, and a registered client's full registration, are encrypted under the
+ * client's ID.
+ */
+/** Why a stored client no longer holds its credentials; see `executor_stored_oauth_client_credentials`. */
+export const CredentialsWithdrawal = Schema.Literals(["removed", "expired", "rejected"]);
+
+const storedOAuthClients = table("executor_stored_oauth_clients", {
+  id: idColumn("id", OAuthClientId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  provider: column("provider", ProviderId, { type: "varchar(255)" }),
+  clientId: column("client_id", Schema.String),
+  source: column("source", OAuthClientSource, { type: "varchar(32)" }),
+  hasSecret: column("has_secret", Schema.Boolean),
+  automaticKey: column("automatic_key", Schema.NullOr(Schema.String), {
+    type: "varchar(255)",
+  }).default(null),
+  /** A sign-in has completed with this client, so a later rejection means it was revoked. */
+  confirmed: column("confirmed", Schema.Boolean).default(false),
+  encrypted: column("encrypted", Schema.Uint8Array),
+  createdAt: column("created_at", Schema.Date),
+});
+
+/**
+ * Every set of credentials a stored client holds or held, so credentials are one client wherever
+ * they are read from: a grant's copy, an entry in a connect form, or an attempt. The ID is a keyed
+ * digest (`Credentials.fingerprint`) of owner, provider, client ID and secret, so it is unique per
+ * owner and provider and two clients can never hold the same credentials. Editing a client's
+ * details adds a row and keeps the old one, so credentials it held before still resolve to it.
+ * Removing a client keeps its rows: credentials of a removed client are withdrawn, never unowned.
+ * Removing the owner removes them.
+ *
+ * `withdrawal` says why the client holding them is gone, and is null while one holds them. A
+ * sign-in pending with a client that is gone fails closed without an exchange. When the service
+ * itself refused that client (`rejected`) it reports that refusal, `registered_client_rejected`;
+ * a person removing it (`removed`), Executor discarding an expired registration (`expired`), or a
+ * row naming no reason, report `client_unavailable`.
+ */
+const storedOAuthClientCredentials = table("executor_stored_oauth_client_credentials", {
+  id: idColumn("id", Schema.String, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  provider: column("provider", ProviderId, { type: "varchar(255)" }),
+  client: column("client", OAuthClientId, { type: "varchar(255)" }),
+  withdrawal: column("withdrawal", Schema.NullOr(CredentialsWithdrawal), {
+    type: "varchar(32)",
+  }).default(null),
+  createdAt: column("created_at", Schema.Date),
+});
+
+/** Tables of the 4.0.10 layout. */
+export const version4010Tables = {
+  ...version409Tables,
+  storedOAuthClients,
+  storedOAuthClientCredentials,
+};
+
+/** Indexes added with stored OAuth clients in 4.0.10, created in the same step as their tables. */
+export const storedOAuthClientIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_provider ON executor_stored_oauth_clients (owner, provider)",
+  "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_key ON executor_stored_oauth_clients (owner, automatic_key)",
+  "CREATE INDEX IF NOT EXISTS executor_stored_oauth_client_credentials_owner ON executor_stored_oauth_client_credentials (owner)",
+] as const;
+
+/** Current ORM layout. Profiles own account selections; apps declare requirements. */
+export const storageSchema = schema({
+  version: "4.0.10",
+  tables: version4010Tables,
+  up: ({ auto }) =>
+    auto.pipe(
+      Effect.map((operations) => [
+        ...operations,
+        ...storedOAuthClientIndexes.map((sql) => ({ type: "custom" as const, sql })),
       ]),
     ),
   relations: {

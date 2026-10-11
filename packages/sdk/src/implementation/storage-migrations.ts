@@ -7,6 +7,7 @@ import {
   storageSchema,
   toolSearchIndexes,
   version408Schema,
+  version409Schema,
   version402Tables,
   version403Tables,
   version404Tables,
@@ -14,6 +15,7 @@ import {
   version406Tables,
   version407Tables,
   version4Tables,
+  storedOAuthClientIndexes,
 } from "./storage-schema.ts";
 
 /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
@@ -27,7 +29,12 @@ export const storageIndexes = [
 ] as const;
 
 /** Every index of the current layout, for a new database. Upgrades add each in its own step. */
-export const currentIndexes = [...storageIndexes, ...eventIndexes, ...toolSearchIndexes] as const;
+export const currentIndexes = [
+  ...storageIndexes,
+  ...eventIndexes,
+  ...toolSearchIndexes,
+  ...storedOAuthClientIndexes,
+] as const;
 
 /** A shipped version 4 layout, with the same foreign keys as the current schema. */
 const version4 = <Version extends string>(version: Version, up?: CustomMigrationFn) =>
@@ -141,6 +148,10 @@ export const storageSchemas = [
   // target on every connection since #2135 and reads the column as nullable, so it is unaffected.
   version408Schema,
   // Additive: three tool search tables and their indexes, which the running server never names.
+  version409Schema,
+  // Additive: a stored OAuth clients table and its indexes, which the running server never names.
+  // The old saved-client table stays, so the running server keeps using it; a data step moves its
+  // clients (see `6_stored_oauth_clients`).
   storageSchema,
 ] as const;
 

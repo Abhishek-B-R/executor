@@ -265,7 +265,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         const existing = yield* deployApp(issuer.origin, "Existing client");
         yield* finishSignIn(yield* startSignIn(existing));
         expect((yield* issuer.metrics).registrations).toHaveLength(1);
-        expect(yield* setupMode(existing)).toBe("saved");
+        expect(yield* setupMode(existing)).toBe("automatic");
 
         // The operator turns the setting on, as Cloud's deploy does.
         yield* serverControl("stop");
@@ -275,14 +275,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
 
         // A server without document support keeps the client registered before.
         yield* issuer.configure({ documents: false });
-        expect(yield* setupMode(existing), "the registered client is still saved").toBe("saved");
+        expect(yield* setupMode(existing), "the registered client is still used").toBe("automatic");
         const kept = yield* startSignIn(existing);
         expect(kept.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(kept);
 
-        // A saved client is used before the document, also where the server accepts documents.
+        // A registered client is used before the document, also where the server accepts documents.
         yield* issuer.configure({ documents: true });
-        expect(yield* setupMode(existing)).toBe("saved");
+        expect(yield* setupMode(existing)).toBe("automatic");
         const preferred = yield* startSignIn(existing);
         expect(preferred.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(preferred);

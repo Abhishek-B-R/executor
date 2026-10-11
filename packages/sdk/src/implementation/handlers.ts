@@ -63,6 +63,9 @@ export const executorHandlers = (executor: Executor) =>
         .handle("providers", ({ query }) => executor.accounts.providers(query))
         .handle("get", ({ params, query }) => executor.accounts.get({ ...params, ...query }))
         .handle("health", ({ params, query }) => executor.accounts.health({ ...params, ...query }))
+        .handle("revocation", ({ params, query }) =>
+          executor.accounts.revocation({ ...params, ...query }),
+        )
         .handle("listHealth", ({ query }) => executor.accounts.listHealth(query))
         .handle("check", ({ params, query, payload }) =>
           executor.accounts.check({ ...params, ...query, ...payload }),
@@ -84,6 +87,18 @@ export const executorHandlers = (executor: Executor) =>
         .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))
         .handle("completeOAuth", ({ payload }) =>
           executor.accountConnections.completeOAuth(payload),
+        ),
+    ),
+    HttpApiBuilder.group(ExecutorApi, "oauthClients", (handlers) =>
+      handlers
+        .handle("register", ({ payload }) => executor.oauthClients.register(payload))
+        .handle("list", ({ query }) => executor.oauthClients.list(query))
+        .handle("get", ({ params, query }) => executor.oauthClients.get({ ...params, ...query }))
+        .handle("update", ({ params, payload }) =>
+          executor.oauthClients.update({ ...params, ...payload }),
+        )
+        .handle("remove", ({ params, query }) =>
+          executor.oauthClients.remove({ ...params, ...query }),
         ),
     ),
     HttpApiBuilder.group(ExecutorApi, "apps", (handlers) =>

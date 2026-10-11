@@ -1,6 +1,7 @@
 /** The single HTTP contract, composed from each area and projected into Executor. */
 import { HttpApi } from "effect/http-api";
 import { AccountConnectionsGroup } from "./account-connection.ts";
+import { OAuthClientsGroup } from "./oauth-clients.ts";
 import { AppProfilesGroup } from "./profiles.ts";
 import { AccountsGroup } from "./account.ts";
 import { AppsGroup } from "./apps.ts";
@@ -17,6 +18,7 @@ import { PublicationsGroup, RegistryGroup } from "./publications.ts";
 export const ExecutorApi = HttpApi.make("executor")
   .add(AccountsGroup)
   .add(AccountConnectionsGroup)
+  .add(OAuthClientsGroup)
   .add(AppsGroup)
   .add(AppProfilesGroup)
   .add(AppSkillsGroup)

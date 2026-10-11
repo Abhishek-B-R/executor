@@ -242,8 +242,10 @@ function DeleteUnusedAccount<E, A>({
           from an app keeps it saved. No app uses this account now.
         </DialogDescription>
         <p className="text-sm text-muted-foreground">
-          Delete it if you no longer need it. This removes the saved credentials from Executor but
-          does not revoke access at {provider}.
+          Delete it if you no longer need it.{" "}
+          {data.revocation === "automatic"
+            ? `This removes the saved credentials from Executor and asks ${provider} to revoke its access.`
+            : `This removes the saved credentials from Executor but does not revoke access at ${provider}. To end access, revoke it there too.`}
         </p>
         {AsyncResult.isFailure(result) && <Failure cause={result.cause} />}
         <DialogFooter>

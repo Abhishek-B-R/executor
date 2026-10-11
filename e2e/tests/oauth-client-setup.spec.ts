@@ -18,7 +18,10 @@ const AppProvider = Schema.Struct({
     accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
   }),
 });
-const Setup = Schema.Struct({ mode: Schema.Literals(["automatic", "saved", "client-required"]) });
+const Setup = Schema.Struct({
+  mode: Schema.Literals(["automatic", "client-required"]),
+  clients: Schema.Array(Schema.Unknown),
+});
 
 layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
   it.effect(scenarios.oauthClientSetup.title, (context) =>
@@ -60,8 +63,11 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             expect(response.status).toBe(200);
             expect(
               Object.keys(yield* body(Schema.Record(Schema.String, Schema.Unknown), response)),
-            ).toEqual(["mode", "scopes", "grant", "tokenEndpointAuthMethod"]);
-            return yield* body(Setup, response);
+            ).toEqual(["mode", "scopes", "grant", "tokenEndpointAuthMethod", "clients"]);
+            const setup = yield* body(Setup, response);
+            // No one registered a client for this provider, so none is offered.
+            expect(setup.clients).toEqual([]);
+            return setup;
           });
         expect((yield* inspect(provider)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(0);
@@ -86,7 +92,8 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* start(app)).status).toBe(200);
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ registration: false });
-        expect((yield* inspect(provider)).mode).toBe("saved");
+        // The organization's automatic client still signs in without registering again.
+        expect((yield* inspect(provider)).mode).toBe("automatic");
         expect((yield* issuer.metrics).registrations).toBe(1);
         yield* issuer.configure({ scopes: ["write"] });
         expect((yield* inspect(provider)).mode).toBe("client-required");

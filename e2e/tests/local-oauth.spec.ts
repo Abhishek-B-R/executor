@@ -26,6 +26,8 @@ const Setup = Schema.Struct({
   grant: Schema.Literal("client_credentials"),
   tokenEndpointAuthMethod: Schema.Literal("client_secret_basic"),
   scopes: Schema.Array(Schema.String),
+  // Client credentials are each account's own, so no stored client is offered.
+  clients: Schema.Tuple([]),
 });
 const Completed = Schema.Struct({
   state: Schema.Struct({
@@ -197,9 +199,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         ).toBe(0);
         expect((yield* issuer.metrics).generation).toBe(1);
         yield* browser.checkpoint("Local client-credentials connection completed");
-        // A saved client the service no longer accepts, as after a rotated secret, opens
-        // client entry with that error's own explanation. No registration was attempted and
-        // the method has no redirect URL, so neither is mentioned.
+        // Client credentials are the account's own and never stored, so a reconnect keeps the
+        // client its grant holds. One the service no longer accepts, as after a rotated secret,
+        // opens client entry with that error's own explanation. No registration was attempted
+        // and the method has no redirect URL, so neither is mentioned.
         yield* issuer.configure({ rejected: true });
         const rotated = yield* body(
           Link,
@@ -209,15 +212,18 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             {
               owner: "local",
               target: { app: app.id, profile: profile.id, requirement: "service" },
+              account: saved,
             },
             headers,
           ),
         );
-        yield* browser.use("Connect again with the saved client", (page) =>
+        yield* browser.use("Reconnect with the account's client", (page) =>
           page
             .goto(rotated.url)
             .then(() =>
-              page.getByRole("button", { name: "Connect Local reporting", exact: true }).waitFor(),
+              page
+                .getByRole("button", { name: "Reconnect Local reporting", exact: true })
+                .waitFor(),
             )
             .then(() =>
               page
@@ -226,11 +232,11 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 .then((fields) => expect(fields).toBe(0)),
             )
             .then(() =>
-              page.getByRole("button", { name: "Connect Local reporting", exact: true }).click(),
+              page.getByRole("button", { name: "Reconnect Local reporting", exact: true }).click(),
             )
             .then(() => page.getByLabel("Client secret", { exact: true }).waitFor()),
         );
-        const notAccepted = yield* browser.use("Read the rejected saved client", (page) =>
+        const notAccepted = yield* browser.use("Read the rejected client", (page) =>
           Promise.all([
             page.getByRole("alert", { name: "OAuth client not accepted", exact: true }).innerText(),
             page.getByRole("button", { name: "Copy redirect URL" }).count(),
@@ -239,7 +245,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               notice: page.getByRole("alert", { name: "OAuth client not accepted", exact: true }),
               clientId: page.getByLabel("Client ID", { exact: true }),
               clientSecret: page.getByLabel("Client secret", { exact: true }),
-              connect: page.getByRole("button", { name: "Connect Local reporting", exact: true }),
+              connect: page.getByRole("button", { name: "Reconnect Local reporting", exact: true }),
             }),
           ]),
         );

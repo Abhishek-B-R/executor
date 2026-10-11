@@ -20,8 +20,9 @@ import {
   AccountFieldsInput,
   AccountFieldsInvalid,
   AuthMethodInvalid,
-  OAuthClientInput,
-  OAuthClientSetup,
+  OAuthClientSelection,
+  OAuthClientNotFound,
+  OAuthConnectOptions,
   OAuthStartResult,
   OAuthClientUnavailable,
   OAuthSetupFailed,
@@ -69,12 +70,12 @@ export const ConnectionSubmission = Schema.Struct({
   label: Schema.optional(Schema.NonEmptyString),
   fields: AccountFieldsInput,
 });
-/** Provider consent started from the link's form, optionally with a user-supplied client. */
+/** Provider consent started from the link's form, optionally with the client the person chose. */
 export const ConnectionOAuthStart = Schema.Struct({
   ...ConnectionGrant.fields,
   method: Schema.NonEmptyString,
   label: Schema.optional(Schema.NonEmptyString),
-  client: Schema.optional(OAuthClientInput),
+  client: Schema.optional(OAuthClientSelection),
 });
 
 const errors = [
@@ -126,7 +127,7 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
     .add(
       HttpApiEndpoint.post("oauthSetup", "/account-connect/api/oauth/setup", {
         payload: Schema.Struct({ ...ConnectionGrant.fields, method: Schema.NonEmptyString }),
-        success: OAuthClientSetup,
+        success: OAuthConnectOptions,
         error: [...errors, AuthMethodInvalid, OAuthSetupFailed],
       }),
     )
@@ -134,7 +135,13 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
       HttpApiEndpoint.post("startOAuth", "/account-connect/api/oauth/start", {
         payload: ConnectionOAuthStart,
         success: OAuthStartResult,
-        error: [...errors, AuthMethodInvalid, OAuthClientUnavailable, OAuthSetupFailed],
+        error: [
+          ...errors,
+          AuthMethodInvalid,
+          OAuthClientUnavailable,
+          OAuthClientNotFound,
+          OAuthSetupFailed,
+        ],
       }),
     )
     .add(

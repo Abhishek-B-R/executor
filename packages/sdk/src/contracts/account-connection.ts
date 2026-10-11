@@ -22,9 +22,9 @@ import {
   CheckOAuthSetup,
   OAuthCompletionFailed,
   OAuthStartResult,
-  OAuthClientInput,
   OAuthSetupFailed,
 } from "./oauth.ts";
+import { OAuthClientChoice, OAuthClientNotFound } from "./oauth-clients.ts";
 
 /**
  * Why the connection's latest sign-in ended without an account: the same typed error its starter
@@ -94,13 +94,16 @@ export const SubmitAccountConnection = Schema.Struct({
 /**
  * OAuth setup is bound to the connection's owner and provider. Without a label, the account is
  * named when it is created, after sign-in, so it can be renamed once its identity is known.
+ * The connection names a stored client of its owner, the owner's automatic client, or a client
+ * entered for it. Without one it signs in automatically; a reconnect keeps the stored client its
+ * account signed in with while that client exists.
  */
 export const StartConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
   method: AuthMethodName,
   label: Schema.optional(Schema.NonEmptyString),
   redirectUri: Schema.optional(HttpUrl),
-  client: Schema.optional(OAuthClientInput),
+  client: Schema.optional(OAuthClientChoice),
 });
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({
@@ -249,7 +252,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       ],
     }).annotate(
       OpenApi.Description,
-      "Inspect OAuth client availability without registering a client, creating a connection, or starting authorization. Hosts must authorize access to the owner and provider.",
+      "Inspect a sign-in method's grant, scopes and whether a client can be created automatically, without registering a client, creating a connection, or starting authorization. Stored clients are listed by oauthClients.list. Hosts must authorize access to the owner and provider.",
     ),
   )
   .add(
@@ -263,6 +266,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         CredentialsError,
         AuthMethodInvalid,
         OAuthClientUnavailable,
+        OAuthClientNotFound,
         OAuthSetupFailed,
       ],
     }),
