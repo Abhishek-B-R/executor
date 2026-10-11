@@ -340,9 +340,11 @@ export default Alchemy.Stack(
           }).pipe(retain());
 
     /**
-     * The export branch on the public repository only ever receives fast-forward snapshot
-     * commits from the export workflow. Block deletion and force pushes; no pull request
-     * or status check rules, because nothing merges there.
+     * The export branch on the public repository receives fast-forward snapshot commits from
+     * the export workflow. An export commit can have more parents: the heads of public pull
+     * requests that main ports (see notes/ci.md), which GitHub then shows as merged. So the
+     * ruleset must not require linear history. Block deletion and force pushes; no pull request
+     * or status check rules, because nothing merges through GitHub's merge button there.
      */
     const publicRuleset = yield* GitHub.Ruleset("PublicExport", {
       owner,
