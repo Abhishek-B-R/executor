@@ -318,12 +318,40 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                 : yield* write(inlineBytes(file));
             entries.push(`100644 ${oid}\t${file.path}\0`);
           }
+          // These repositories are bare and never checked out here, so the checkout guards for
+          // NTFS and HFS names do not apply. Git for Windows would otherwise skip names such as
+          // ones holding control characters, which the source contract and other hosts accept.
           yield* run(
-            ["--git-dir", repo, "update-index", "-z", "--index-info"],
+            [
+              "-c",
+              "core.protectNTFS=false",
+              "-c",
+              "core.protectHFS=false",
+              "--git-dir",
+              repo,
+              "update-index",
+              "-z",
+              "--index-info",
+            ],
             bytes(entries.join("")),
             environment,
           );
           const tree = yield* text(["--git-dir", repo, "write-tree"], undefined, environment);
+          // `update-index` skips a path it refuses, such as a `.git` segment, and still exits 0.
+          // Refuse the save instead of committing a tree without that file.
+          // Not `text`: it trims trailing whitespace, which a last path may end with.
+          const listed = yield* run([
+            "--git-dir",
+            repo,
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            tree,
+          ]);
+          const written = new Set((yield* decode(listed)).split("\0"));
+          if (files.some((file) => !written.has(file.path)))
+            return yield* new SourceError({ reason: "invalid-source" });
           const commit = yield* text(
             [
               "--git-dir",
