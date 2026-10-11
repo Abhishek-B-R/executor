@@ -6821,6 +6821,62 @@ export const scenarios = plan({
       ),
     },
   },
+  savedOAuthClientsAmbiguous: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "saved-oauth-clients-ambiguous.spec.ts",
+    title:
+      "The saved OAuth client data step reports why a client several providers hold is ambiguous, and whether its key names one holder",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Local has one owner; the step's ambiguity reading is shared with self-host."),
+    },
+  },
+  oauthClientSharedIssuer: {
+    fixtures: "actors",
+    file: "oauth-clients-by-issuer.spec.ts",
+    title:
+      "One OAuth client registered for an authorization server is offered to and signs in every app that signs in there, whatever its provider definition, and an app that signs in at another server is neither offered it nor can name it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted client registration; local shares the SDK's client lookup."),
+    },
+  },
+  oauthClientIssuerMigration: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "oauth-client-issuer-migration.spec.ts",
+    title:
+      "Upgrading OAuth clients stored per provider records each one's authorization server, merges an organization's clients holding the same details for one server into one with the union of their audiences, and leaves a client whose server is unknown offered to no sign-in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Hosted audiences; the SDK step is shared with self-host."),
+    },
+  },
+  savedOAuthClientsByIssuer: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "saved-oauth-clients-by-issuer.spec.ts",
+    title:
+      "Saved OAuth clients move by owner and authorization server: one owner's records for several providers collapse into one client, a record several owners hold goes to the owner its key names, and a record no key names stays",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Local has one owner; the step's owner resolution is shared with self-host."),
+    },
+  },
   legacyTargetlessHostedConnections: {
     fixtures: "actors",
     legacyStorage: true,

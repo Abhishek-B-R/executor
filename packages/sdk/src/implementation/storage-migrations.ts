@@ -18,6 +18,8 @@ import {
   version407Tables,
   version4Tables,
   storedOAuthClientIndexes,
+  storedOAuthClientIssuerIndexes,
+  storageSchema,
 } from "./storage-schema.ts";
 
 /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
@@ -37,6 +39,7 @@ export const currentIndexes = [
   ...toolSearchIndexes,
   ...storedOAuthClientIndexes,
   ...boundedReadIndexes,
+  ...storedOAuthClientIssuerIndexes,
 ] as const;
 
 /** Versions built by {@link indexOnlyVersion}. */
@@ -220,6 +223,12 @@ export const storageSchemas = [
   version4010Schema,
   // Additive: three indexes; the running server's queries are unchanged.
   indexOnlyVersion(version4010Schema, "4.0.11", boundedReadIndexes),
+  // Additive for the running server: a nullable `issuer` on stored clients and its index, and
+  // `provider` made nullable on stored clients and their credentials. The running server writes a
+  // provider on every row and never names `issuer`. The new server's data step
+  // `8_oauth_clients_by_issuer` records each existing client's issuer; until then those clients
+  // keep working through their pre-4.0.12 credentials identity, and are offered to no sign-in.
+  storageSchema,
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

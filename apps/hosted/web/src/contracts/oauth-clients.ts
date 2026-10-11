@@ -4,13 +4,13 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 import { Data, Effect, type Redacted } from "effect";
 import { Atom } from "effect/reactivity";
-import type { OAuthClientId, ProviderId } from "@executor-js/sdk";
+import type { HttpUrl, OAuthClientId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type { AppAudience, AccessRevision } from "@executor-js/hosted-server/resource-access";
 import { HostedClient } from "./api.ts";
 import { groupsAtom } from "./groups.ts";
 
-/** Every client with its policy, and the providers a new one can be registered for. */
+/** Every client with its policy, and the servers a new one can be registered for. */
 export const oauthClientsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("oauthClients", "list", hydrated({ params: { organization } })).pipe(
     revalidated,
@@ -23,7 +23,7 @@ export const registerOAuthClientAtom = Atom.family((organization: OrganizationRe
   HostedClient.runtime.fn(
     (
       payload: {
-        readonly provider: ProviderId;
+        readonly issuer: typeof HttpUrl.Type;
         readonly clientId: string;
         readonly clientSecret?: Redacted.Redacted<string>;
         readonly audience: typeof AppAudience.Type;

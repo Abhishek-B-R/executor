@@ -599,7 +599,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               ],
             }),
           );
-          const provider = app.requirements.accounts.service.provider;
           const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
             owner: "local",
             subject: "local",
@@ -615,7 +614,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               OAuthClient,
               yield* agent.send("POST", "/v1/oauth-clients", {
                 owner: "local",
-                provider,
+                issuer: issuer.origin,
                 ...credentials,
               }),
             )).id,
@@ -766,7 +765,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           // `local` holds the client's credentials: registering them again names the moved client.
           const again = yield* agent.send("POST", "/v1/oauth-clients", {
             owner: "local",
-            provider,
+            issuer: issuer.origin,
             ...credentials,
           });
           expect(again.status, JSON.stringify(again.body)).toBe(409);
@@ -820,7 +819,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             OAuthClient,
             yield* agent.send("POST", "/v1/oauth-clients", {
               owner: "local",
-              provider: app.requirements.accounts.service.provider,
+              issuer: issuer.origin,
               clientId: `synthetic-unread-${suffix}`,
               clientSecret: `synthetic-secret-${suffix}`,
             }),

@@ -23,12 +23,27 @@ export const LegacySealed = Schema.Struct({
   }),
 });
 
+/**
+ * A keyed digest only the product's key can make, as it identifies stored credentials: the hex
+ * HMAC-SHA256 of JSON `[purpose, value]` under a key derived from its encryption key.
+ */
+export const LegacyFingerprint = Schema.Struct({
+  fingerprint: Schema.Struct({ purpose: Schema.NonEmptyString, value: Schema.String }),
+});
+
 /** One parameterized statement against the product's actual tables. */
 export const LegacyStatement = Schema.Struct({
   sql: Schema.NonEmptyString,
   params: Schema.optional(
     Schema.Array(
-      Schema.Union([Schema.String, Schema.Number, Schema.Boolean, Schema.Null, LegacySealed]),
+      Schema.Union([
+        Schema.String,
+        Schema.Number,
+        Schema.Boolean,
+        Schema.Null,
+        LegacySealed,
+        LegacyFingerprint,
+      ]),
     ),
   ),
 });
@@ -76,9 +91,56 @@ const seal = (key: string, { id, value }: typeof LegacySealed.Type.sealed, index
     return envelope;
   });
 
+/** Runner side: the product's credential fingerprint of one value, made with `key`, the hex key. */
+const fingerprint = (
+  key: string,
+  { purpose, value }: typeof LegacyFingerprint.Type.fingerprint,
+  index: number,
+) =>
+  Effect.gen(function* () {
+    const failed = () =>
+      new LegacyStatementFailed({ index, message: "Fingerprinting a value failed" });
+    const root = yield* Effect.tryPromise({
+      try: () =>
+        crypto.subtle.importKey(
+          "raw",
+          Uint8Array.from(Buffer.from(key, "hex")),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        ),
+      catch: failed,
+    });
+    const derived = yield* Effect.tryPromise({
+      try: () =>
+        crypto.subtle.sign(
+          "HMAC",
+          root,
+          new TextEncoder().encode("executor credential fingerprints"),
+        ),
+      catch: failed,
+    });
+    const hmac = yield* Effect.tryPromise({
+      try: () =>
+        crypto.subtle.importKey("raw", derived, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+      catch: failed,
+    });
+    const signature = yield* Effect.tryPromise({
+      try: () =>
+        crypto.subtle.sign(
+          "HMAC",
+          hmac,
+          new TextEncoder().encode(JSON.stringify([purpose, value])),
+        ),
+      catch: failed,
+    });
+    return Buffer.from(signature).toString("hex");
+  });
+
 /**
  * Runner side: apply statements in one transaction. The caller guarantees the product is stopped.
- * `key` is the encryption key the runner gave the product, for sealed parameters.
+ * `key` is the encryption key the runner gave the product, for sealed and fingerprinted
+ * parameters.
  */
 export const applyLegacyStatements = (
   database: string,
@@ -103,9 +165,11 @@ export const applyLegacyStatements = (
                 Uint8Array | string | number | boolean | null,
                 LegacyStatementFailed
               > =>
-                typeof param === "object" && param !== null
-                  ? seal(key, param.sealed, index)
-                  : Effect.succeed(param),
+                typeof param !== "object" || param === null
+                  ? Effect.succeed(param)
+                  : "fingerprint" in param
+                    ? fingerprint(key, param.fingerprint, index)
+                    : seal(key, param.sealed, index),
             ).pipe(
               Effect.flatMap((params) =>
                 Effect.tryPromise({

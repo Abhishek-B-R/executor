@@ -12,7 +12,7 @@ import {
 } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 
-/** The method's setup and the entered clients kept for its provider. */
+/** The method's setup and the entered clients kept for the server it signs in at. */
 export const connectOptions = (
   executor: Executor,
   input: Parameters<Executor["accountConnections"]["oauthSetup"]>[0],
@@ -25,7 +25,7 @@ export const connectOptions = (
         ? []
         : (yield* executor.oauthClients.list({
             owner: input.owner,
-            provider: input.provider,
+            issuer: setup.issuer,
           })).filter((client) => client.source === "manual");
     return { ...setup, clients };
   });

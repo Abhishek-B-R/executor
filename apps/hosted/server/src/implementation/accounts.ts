@@ -136,12 +136,7 @@ export const oauthSetup = (
     const clients =
       setup.grant === "client_credentials"
         ? []
-        : yield* usableOAuthClients(
-            executor,
-            owner,
-            yield* currentResourceAuthority,
-            input.provider,
-          );
+        : yield* usableOAuthClients(executor, owner, yield* currentResourceAuthority, setup.issuer);
     return { ...setup, clients };
   });
 

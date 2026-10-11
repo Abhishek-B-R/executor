@@ -1,9 +1,16 @@
 /**
- * A stored client's credentials are its owner, provider, client ID and secret (none for a public
- * client). They have one identity per owner and provider, a keyed digest, recorded in
- * `executor_stored_oauth_client_credentials` for every set of credentials a client holds or
- * held. So credentials read from anywhere, a grant's copy, a connect form or an attempt, resolve
- * to exactly one stored client, or to none, by an indexed lookup that compares no secret.
+ * A stored client's credentials are its owner, authorization server (issuer), client ID and secret
+ * (none for a public client). They have one identity per owner and issuer, a keyed digest,
+ * recorded in `executor_stored_oauth_client_credentials` for every set of credentials a client
+ * holds or held. So credentials read from anywhere, a grant's copy, a connect form or an attempt,
+ * resolve to exactly one stored client, or to none, by an indexed lookup that compares no secret.
+ *
+ * Rows written before 4.0.12 digest owner, provider, client ID and secret instead. Data step
+ * `8_oauth_clients_by_issuer` records each existing client's current credentials under the new
+ * identity, but a row for credentials a client held before an edit, or held before it was removed,
+ * holds only its digest, so it cannot be recomputed. A sign-in therefore also looks its
+ * credentials up under that earlier identity for its own provider (`legacyCredentialsDigest`), so
+ * those credentials keep resolving to their client, or stay withdrawn.
  */
 import { Effect, Redacted, Result, Schema } from "effect";
 import { SqlError } from "effect/sql";
@@ -15,13 +22,25 @@ import type { CredentialsWithdrawal } from "./storage-schema.ts";
 
 export interface ClientCredentials {
   readonly owner: OwnerId;
-  readonly provider: ProviderId;
+  readonly issuer: string;
   readonly clientId: string;
   readonly secret: string | undefined;
 }
 
 /** The credentials' identity under this host's key. */
 export const credentialsDigest = (credentials: Credentials, input: ClientCredentials) =>
+  credentials.fingerprint(
+    "oauth client credentials by issuer",
+    Redacted.make(
+      JSON.stringify([input.owner, input.issuer, input.clientId, input.secret ?? null]),
+    ),
+  );
+
+/** The identity rows written before 4.0.12 have: owner, provider, client ID and secret. */
+export const legacyCredentialsDigest = (
+  credentials: Credentials,
+  input: Omit<ClientCredentials, "issuer"> & { readonly provider: ProviderId },
+) =>
   credentials.fingerprint(
     "oauth client credentials",
     Redacted.make(
@@ -63,7 +82,8 @@ export const claimCredentials = (
   input: {
     readonly digest: string;
     readonly owner: OwnerId;
-    readonly provider: ProviderId;
+    /** Only data step `6_stored_oauth_clients` writes rows under the pre-4.0.12 identity. */
+    readonly provider?: ProviderId | null | undefined;
     readonly client: OAuthClientId;
     readonly createdAt: Date;
     readonly reclaim: boolean;
@@ -77,7 +97,7 @@ export const claimCredentials = (
           store.create("storedOAuthClientCredentials", {
             id: input.digest,
             owner: input.owner,
-            provider: input.provider,
+            provider: input.provider ?? null,
             client: input.client,
             createdAt: input.createdAt,
           }),
@@ -125,3 +145,44 @@ export const withdrawCredentials = (
 
 const isUniqueViolation = (error: unknown) =>
   SqlError.isSqlError(error) && Schema.is(SqlError.UniqueViolation)(error.reason);
+
+/**
+ * The authorization server a client belongs to: the issuer discovery found or the provider
+ * declared, or, when the provider declares endpoints without an issuer, its token endpoint URL.
+ * Executor records a derived issuer (the token URL's origin) for such a server, but one origin can
+ * host several servers, such as one per realm or tenant, whose clients are not interchangeable.
+ */
+export const oauthClientIssuer = (server: {
+  readonly issuer: string;
+  readonly issuer_derived?: true | undefined;
+  readonly token_endpoint: string;
+}) => (server.issuer_derived === true ? server.token_endpoint : server.issuer);
+
+/**
+ * The key a registered client is found again by: what its registration request asked for. See
+ * `automaticKey` in the sign-in for why these settings and no others.
+ */
+export const registeredClientKey = <E>(
+  hash: (value: string) => Effect.Effect<string, E>,
+  input: {
+    readonly owner: OwnerId;
+    readonly issuer: string;
+    readonly callback: string | undefined;
+    readonly scopes: ReadonlyArray<string>;
+    /** The client authentication the registration requested (`token_endpoint_auth_method`). */
+    readonly tokenEndpointAuthMethod: string;
+    /** The grants it requested (`grant_types`). */
+    readonly grantTypes: ReadonlyArray<string>;
+  },
+) =>
+  hash(
+    JSON.stringify([
+      "registered",
+      input.owner,
+      input.issuer,
+      input.callback ?? null,
+      [...new Set(input.scopes)].sort(),
+      input.tokenEndpointAuthMethod,
+      [...input.grantTypes].sort(),
+    ]),
+  );

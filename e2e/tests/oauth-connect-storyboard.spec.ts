@@ -18,6 +18,7 @@ import {
   nameAccountDialog,
   nameConnectedAccount,
 } from "../support/name-account.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -548,6 +549,8 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* heading("Account not connected");
         yield* capture("Expired-or-other-tab");
         yield* issuer.configure({ registration: false });
+        // The organization's client registered for this server would serve another of its apps.
+        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const manual = yield* deploy("Manual service");
         yield* browser.use("Open a provider without automatic registration", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),

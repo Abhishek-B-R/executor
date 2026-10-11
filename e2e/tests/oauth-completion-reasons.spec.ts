@@ -19,6 +19,7 @@ import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { enterClientDetails } from "../support/oauth-client-entry.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
 const Redirect = Schema.Struct({
@@ -328,7 +329,9 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         // The rejected registration was discarded, so the retry registered a new client.
         expect((yield* issuer.metrics).registrations).toBe(registrations + 1);
 
-        // A client rejected moments after its registration will not work on a retry either.
+        // A client rejected moments after its registration will not work on a retry either. The
+        // retry's client would serve another app of this server, so it is removed first.
+        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const freshApp = yield* deployRegistered;
         yield* issuer.configure({ tokenError: { status: 401, body: { error: "invalid_client" } } });
         yield* addAccount(freshApp, "Fresh");

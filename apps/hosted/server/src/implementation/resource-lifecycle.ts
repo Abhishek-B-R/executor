@@ -288,6 +288,62 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             where g.client_id = p.client_id and gm.member_id = m.id)))`;
         return rows.length === 1;
       }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
+    // Clients one owner held the same credentials in for one server become one. Whoever could use
+    // any of them may use the survivor: the union of their audiences, when one audience says it.
+    // Everyone, if any was everyone's; otherwise the union of their groups; otherwise one person's
+    // private client. A private client with groups, or two people's private clients, cannot be
+    // one audience without widening or narrowing who may use it, so the step leaves them.
+    oauthClientsMerging: ({ survivor, merged, apply }) =>
+      Effect.gen(function* () {
+        const organization = yield* organizationOf(survivor.owner);
+        const ids = [survivor.id, ...merged.map((client) => client.id)];
+        const rows = yield* sql<{
+          readonly client_id: string;
+          readonly creator_id: string | null;
+          readonly audience: "private" | "groups" | "everyone";
+        }>`select client_id, creator_id, audience from hosted_oauth_client_access
+        where organization_id = ${organization} and ${sql.in("client_id", ids)}
+        order by client_id for update`;
+        const groups = (yield* sql<{ readonly group_id: string }>`select distinct group_id
+        from hosted_oauth_client_groups
+        where organization_id = ${organization} and ${sql.in("client_id", ids)}`).map(
+          (row) => row.group_id,
+        );
+        // Clients without a record are usable by nobody, so they add nobody.
+        if (rows.length === 0) return true;
+        const privates = new Set(
+          rows.filter((row) => row.audience === "private").map((row) => row.creator_id),
+        );
+        const audience = rows.some((row) => row.audience === "everyone")
+          ? ("everyone" as const)
+          : privates.size === 0
+            ? ("groups" as const)
+            : groups.length === 0 && privates.size === 1
+              ? ("private" as const)
+              : undefined;
+        if (audience === undefined) return false;
+        if (!apply) return true;
+        const own = rows.find((row) => row.client_id === survivor.id);
+        const creator =
+          audience === "private"
+            ? ([...privates][0] ?? null)
+            : (own?.creator_id ?? rows.find((row) => row.creator_id !== null)?.creator_id ?? null);
+        if (own === undefined)
+          yield* sql`insert into hosted_oauth_client_access (client_id, organization_id, creator_id, audience)
+          values (${survivor.id}, ${organization}, ${creator}, ${audience})`;
+        else
+          yield* sql`update hosted_oauth_client_access
+          set audience = ${audience}, creator_id = ${creator}, revision = gen_random_uuid()::text
+          where client_id = ${survivor.id} and organization_id = ${organization}`;
+        if (audience === "groups")
+          for (const group of groups)
+            yield* sql`insert into hosted_oauth_client_groups (organization_id, client_id, group_id)
+            values (${organization}, ${survivor.id}, ${group}) on conflict do nothing`;
+        else
+          yield* sql`delete from hosted_oauth_client_groups
+          where organization_id = ${organization} and client_id = ${survivor.id}`;
+        return true;
+      }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
     accountRemoving: (account) =>
       Effect.gen(function* () {
         const organization = yield* organizationOf(account.owner);

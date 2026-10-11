@@ -11,7 +11,10 @@
  *   same, so it agrees with applying.
  * - `no_account`: no account signed in with it, so its owner is unknown; not moved.
  * - `machine_client`: a client credentials client, which only its account's grant keeps.
- * - `ambiguous_owner`: accounts of several owners or providers hold it; not moved.
+ * - `ambiguous_owner`: accounts of several owners or providers hold it; not moved. Its journal
+ *   owner is why instead, such as
+ *   `ambiguous:owners=2,providers=1,secret=yes,source=manual,resolvable_by_key=yes,provider_ids=…`,
+ *   so the summary's `owners` groups ambiguous clients by cause.
  * - `absent`: removed since the pass listed it.
  * - `unreadable`: its record cannot be read with this host's key.
  * - `unavailable`: storage failed; a later pass retries it.
@@ -35,7 +38,7 @@ export const storedOAuthClientsStep = (host: StoredOAuthClientsHost): DataStep<n
     Effect.map((items) =>
       items.map((item) => ({
         id: item.id,
-        owner: item.owner ?? "",
+        owner: item.owner ?? item.bucket ?? "",
         run: (mode: DataStepMode) => item.move(mode === "apply"),
       })),
     ),

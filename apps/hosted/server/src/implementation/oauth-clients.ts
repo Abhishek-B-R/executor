@@ -49,7 +49,12 @@ const administrator = Effect.gen(function* () {
 const signsInWithClient = (method: { readonly type: string; readonly grant?: string }) =>
   method.type === "oauth2" && method.grant !== "client_credentials";
 
-/** Every client of the organization with its policy, for administrators. */
+/**
+ * Every client of the organization with its policy, and the authorization servers its apps sign in
+ * at, for administrators. A server is found as a sign-in finds it: declared endpoints name it, and
+ * a provider that discovers its server is asked now. A provider whose discovery fails is listed as
+ * unresolved rather than failing the whole view.
+ */
 export const oauthClientDirectory = (redirectUri: typeof HttpUrl.Type) =>
   Effect.gen(function* () {
     const actor = yield* administrator;
@@ -67,12 +72,40 @@ export const oauthClientDirectory = (redirectUri: typeof HttpUrl.Type) =>
       for (const requirement of Object.values(app.requirements.accounts))
         if (Object.values(requirement.definition.auth).some(signsInWithClient))
           providers.set(requirement.provider, requirement.definition.name);
+    const resolved = yield* Effect.forEach(
+      [...providers],
+      ([id, name]) =>
+        executor.oauthClients.issuers({ provider: id }).pipe(
+          Effect.map((methods) => ({ id, name, issuers: methods.map((method) => method.issuer) })),
+          Effect.catch(() =>
+            Effect.succeed({ id, name, issuers: [] as Array<typeof HttpUrl.Type> }),
+          ),
+        ),
+      { concurrency: 4 },
+    );
+    const services = new Map<
+      typeof HttpUrl.Type,
+      Array<{ readonly id: ProviderId; readonly name: string }>
+    >();
+    for (const provider of resolved)
+      for (const issuer of new Set(provider.issuers))
+        services.set(issuer, [
+          ...(services.get(issuer) ?? []),
+          { id: provider.id, name: provider.name },
+        ]);
     return {
       clients: clients.flatMap((client) => {
         const access = policies.get(client.id);
         return access === undefined ? [] : [{ client, access }];
       }),
-      providers: [...providers].map(([id, name]) => ({ id, name })),
+      services: [...services].flatMap(([issuer, list]) => {
+        const sorted = list.toSorted((a, b) => a.name.localeCompare(b.name));
+        const [first, ...rest] = sorted;
+        return first === undefined ? [] : [{ issuer, providers: [first, ...rest] as const }];
+      }),
+      unresolved: resolved
+        .filter((provider) => provider.issuers.length === 0)
+        .map(({ id, name }) => ({ id, name })),
       redirectUri,
     };
   });
@@ -190,16 +223,16 @@ export const updateOAuthClient = (
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
 
-/** Registered clients for a provider that this member may sign in with. */
+/** Registered clients for the server a sign-in uses that this member may sign in with. */
 export const usableOAuthClients = (
   executor: Executor,
   owner: OwnerId,
   actor: ResourceAuthority,
-  provider: ProviderId,
+  issuer: typeof HttpUrl.Type,
 ) =>
   Effect.gen(function* () {
     // Automatically registered clients are offered as the automatic choice, not one by one.
-    const clients = (yield* executor.oauthClients.list({ owner, provider })).filter(
+    const clients = (yield* executor.oauthClients.list({ owner, issuer })).filter(
       (client) => client.source === "manual",
     );
     const usable = new Set(

@@ -225,8 +225,13 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools:router(
         );
         expect((yield* issuer.metrics).lastRegistration?.method).toBe("client_secret_post");
 
-        // A server that advertises only Basic still matches when it compares literally.
-        yield* issuer.configure({ authMethods: ["client_secret_basic"] });
+        // A server that advertises only Basic still matches when it compares literally. Its
+        // registration asks for Basic, so it is another client: the service issues new details.
+        // (The same details would be the client already stored for this server.)
+        yield* issuer.configure({
+          authMethods: ["client_secret_basic"],
+          registeredClient: { ...doorkeeperClient, clientId: `${doorkeeperClient.clientId}-basic` },
+        });
         expect(yield* lifecycle(yield* deploy("Registered Basic client", discovered))).toBe(
           "client_secret_basic",
         );

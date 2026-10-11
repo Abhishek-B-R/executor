@@ -10,6 +10,7 @@ import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -426,8 +427,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
         }
 
         // Registration refused for Executor's callback: the service's own error is returned and
-        // recorded on the connection, beside the stage and status.
+        // recorded on the connection, beside the stage and status. A client the organization
+        // registered earlier for this server would serve this app, so it is removed first.
         {
+          yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           const serviceError = {
             error: "invalid_redirect_uri",
             description: "Redirect URIs must be on a host this service has approved",

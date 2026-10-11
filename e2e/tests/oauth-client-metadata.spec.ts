@@ -287,8 +287,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
         expect(preferred.authorization.searchParams.get("client_id")).toBe("registered-client-1");
         yield* finishSignIn(preferred);
 
-        // An owner without a client for a service uses the document.
-        const added = yield* startSignIn(yield* deployApp(issuer.origin, "New client"));
+        // An owner without a client for a service uses the document. Clients belong to the
+        // service's authorization server, so this is another server: another app of the first
+        // one would find the client registered there.
+        const other = yield* clientMetadataIssuer({
+          publicOrigins: { [publicOrigin]: target.metadata.origin },
+        });
+        const added = yield* startSignIn(yield* deployApp(other.origin, "New client"));
         expect(added.authorization.searchParams.get("client_id")).toBe(clientId);
         yield* finishSignIn(added);
         const metrics = yield* issuer.metrics;
@@ -297,8 +302,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client metadata document
           "registered",
           "registered",
           "registered",
-          "document",
         ]);
+        const elsewhere = yield* other.metrics;
+        expect(elsewhere.registrations, "the new server registered no client").toHaveLength(0);
+        expect(elsewhere.authorizations.map((entry) => entry.client)).toEqual(["document"]);
       }),
     ),
   );

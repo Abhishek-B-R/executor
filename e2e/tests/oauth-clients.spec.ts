@@ -153,13 +153,16 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
       api.request(actor, "POST", `${prefix}/connections/${connection}/oauth/complete`, {
         callbackUrl,
       });
-    /** Other scenarios' apps may be installed too, so the service is always chosen. */
+    /**
+     * Other scenarios' apps may be installed too, so the service is always chosen. A service is
+     * the server the app signs in at, listed with every app that signs in there.
+     */
     const chooseService = (page: Page, name: string) =>
       page
         .getByRole("form", { name: "Register OAuth client" })
         .getByRole("combobox", { name: "Service", exact: true })
         .click()
-        .then(() => page.getByRole("option", { name, exact: true }).click());
+        .then(() => page.getByRole("option").filter({ hasText: name }).click());
     return {
       api,
       actors,
@@ -197,7 +200,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         // Members cannot register clients through the API, and the account list offers them no manager.
         expect(
           (yield* api.request(actors.member, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...teamClient,
           })).status,
         ).toBe(403);
@@ -592,7 +595,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         // An unknown group is refused before any client exists.
         const before = (yield* directory).clients.length;
         const unknownGroup = yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-          provider: app.provider,
+          issuer: issuer.origin,
           ...restrictedClient,
           audience: { kind: "groups", groups: [`missing-${suffix}`] },
         });
@@ -602,7 +605,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const registered = yield* body(
           Registered,
           yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...restrictedClient,
             audience: { kind: "groups", groups: [group.id] },
           }),
@@ -754,7 +757,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const registered = yield* body(
           Registered,
           yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...editedClient,
           }),
         );
@@ -1079,7 +1082,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const registered = yield* body(
           Registered,
           yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...recheckedClient,
           }),
         );
@@ -1241,7 +1244,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const registered = yield* body(
           Registered,
           yield* api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...before,
           }),
         );
@@ -1377,7 +1380,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const rotated = "synthetic-identity-new";
         const register = (details: object) =>
           api.request(actors.admin, "POST", `${prefix}/oauth-clients`, {
-            provider: app.provider,
+            issuer: issuer.origin,
             ...details,
           });
         const registered = yield* body(Registered, yield* register(original));
@@ -1623,7 +1626,7 @@ export default defineApp({accounts:{service:service.many()}},async()=>({tools: r
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const connect = (client?: typeof machineClient) =>
+        const connect = (client?: typeof machineClient | { readonly id: string }) =>
           Effect.gen(function* () {
             const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
@@ -1652,13 +1655,24 @@ export default defineApp({accounts:{service:service.many()}},async()=>({tools: r
         expect(second.status, JSON.stringify(second.body)).toBe(409);
         expect((yield* body(Tagged, second))._tag).toBe("OAuthClientUnavailable");
         expect((yield* issuer.metrics).requests).toBe(requests);
-        // A machine client is the account itself, so it cannot be registered for sharing.
+        // A machine client is the account itself, so a stored client, even one registered for
+        // the same server, never signs in a client credentials connection.
         const shared = yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
-          provider: app.requirements.accounts.service.provider,
+          issuer: `${issuer.origin}/token`,
           ...machineClient,
         });
-        expect(shared.status).toBe(422);
-        expect((yield* body(Tagged, shared))._tag).toBe("OAuthClientsUnsupported");
+        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+        const stored = yield* body(
+          Schema.Struct({ client: Schema.Struct({ id: Schema.String }) }),
+          shared,
+        );
+        const named = yield* connect({ id: stored.client.id });
+        expect(named.status, JSON.stringify(named.body)).toBe(422);
+        expect(yield* body(CompletionFailure, named)).toMatchObject({
+          _tag: "OAuthSetupFailed",
+          reason: "invalid_client",
+        });
+        expect((yield* issuer.metrics).requests).toBe(requests);
       }),
     ),
   );

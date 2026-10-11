@@ -6,6 +6,7 @@ import {
   oauthClientEntryReasons,
   type Account,
   type AppId,
+  type HttpUrl,
   type Provider,
 } from "@executor-js/sdk";
 import type {
@@ -143,7 +144,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const admin = role !== undefined && role !== "member";
   const registry = useContext(RegistryContext);
   // Registering replaces the account form, since it is a form itself, then returns to the method.
-  const [registering, setRegistering] = useState<string>();
+  const [registering, setRegistering] = useState<{
+    readonly method: string;
+    readonly issuer: typeof HttpUrl.Type;
+  }>();
   const [method, setMethod] = useState(initialMethod);
   // Reconnects keep their name; a new account is named once saved.
   const saved = (value: Account) => {
@@ -154,12 +158,15 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   if (registering !== undefined)
     return (
       <RegisterServiceClient
-        provider={{ id: provider.id, name: provider.definition.name }}
+        service={{
+          issuer: registering.issuer,
+          providers: [{ id: provider.id, name: provider.definition.name }],
+        }}
         onDone={() => {
           registry.refresh(
-            oauthSetupAtom({ organization, provider: provider.id, method: registering }),
+            oauthSetupAtom({ organization, provider: provider.id, method: registering.method }),
           );
-          setMethod(registering);
+          setMethod(registering.method);
           setRegistering(undefined);
         }}
       />
@@ -194,13 +201,13 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
               {...(account ? { account } : {})}
               redirectUri={redirectUri}
               onPendingChange={onPendingChange}
-              {...(admin
+              {...(admin && setup !== "unresolved" && setup.grant === "authorization_code"
                 ? {
                     missingClient: (
                       <Button
                         type="button"
                         className="w-full"
-                        onClick={() => setRegistering(method)}
+                        onClick={() => setRegistering({ method, issuer: setup.issuer })}
                       >
                         Register OAuth client
                       </Button>

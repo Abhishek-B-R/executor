@@ -2,11 +2,12 @@
 import { useAtomSet } from "@effect/atom-react";
 import { Cause, Exit, Option, Redacted } from "effect";
 import { useState, type ReactNode } from "react";
-import type { OAuthClientId, ProviderId } from "@executor-js/sdk";
+import type { HttpUrl, OAuthClientId } from "@executor-js/sdk";
 import type { AppAudience } from "@executor-js/hosted-server/resource-access";
 import type {
   HostedOAuthClient,
   OAuthClientDirectory,
+  OAuthClientService,
 } from "@executor-js/hosted-server/oauth-clients";
 import { Button } from "@executor-js/ui/components/button";
 import {
@@ -36,7 +37,7 @@ import {
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { CopyButton } from "@executor-js/ui/dashboard/code";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
-import { OAuthClientOrigin } from "@executor-js/ui/dashboard/oauth-client-origin";
+import { OAuthClientOrigin, issuerLabel } from "@executor-js/ui/dashboard/oauth-client-origin";
 import { appError, type HostedError } from "../../contracts/errors.ts";
 import { groupsAtom } from "../../contracts/groups.ts";
 import {
@@ -85,9 +86,13 @@ type OpenForm =
   | { readonly kind: "register" }
   | { readonly kind: "edit"; readonly client: OAuthClientId };
 
+/** The apps that sign in at a server, by name, as one label. */
+const serviceName = (service: OAuthClientService) =>
+  service.providers.map((provider) => provider.name).join(", ");
+
 function OAuthClientList({ directory }: { readonly directory: OAuthClientDirectory }) {
   const [form, setForm] = useState<OpenForm>();
-  const providers = new Map(directory.providers.map((provider) => [provider.id, provider.name]));
+  const services = new Map(directory.services.map((service) => [service.issuer, service]));
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -100,7 +105,9 @@ function OAuthClientList({ directory }: { readonly directory: OAuthClientDirecto
                 key={entry.client.id}
                 entry={entry}
                 clients={directory.clients.map((other) => other.client)}
-                provider={providers.get(entry.client.provider)}
+                service={
+                  entry.client.issuer === null ? undefined : services.get(entry.client.issuer)
+                }
                 redirectUri={directory.redirectUri}
                 editing={form?.kind === "edit" && form.client === entry.client.id}
                 onEdit={(editing) =>
@@ -112,19 +119,26 @@ function OAuthClientList({ directory }: { readonly directory: OAuthClientDirecto
         )}
         {form?.kind === "register" && (
           <RegisterOAuthClient
-            providers={directory.providers}
+            services={directory.services}
             redirectUri={directory.redirectUri}
             onDone={() => setForm(undefined)}
           />
+        )}
+        {directory.unresolved.length > 0 && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Couldn’t reach the sign-in service of{" "}
+            {directory.unresolved.map((provider) => provider.name).join(", ")} just now, so it isn’t
+            listed. Try again later.
+          </p>
         )}
       </div>
       {form?.kind !== "register" && (
         <div className="flex justify-end">
           <Button
             variant="outline"
-            disabled={directory.providers.length === 0}
+            disabled={directory.services.length === 0}
             disabledReason={
-              directory.providers.length === 0
+              directory.services.length === 0
                 ? "Add an app that signs in with OAuth to register a client for it."
                 : undefined
             }
@@ -141,7 +155,7 @@ function OAuthClientList({ directory }: { readonly directory: OAuthClientDirecto
 function OAuthClientRow({
   entry,
   clients,
-  provider,
+  service: known,
   redirectUri,
   editing,
   onEdit,
@@ -149,7 +163,8 @@ function OAuthClientRow({
   readonly entry: HostedOAuthClient;
   /** Every listed client, to tell apart clients with the same client ID. */
   readonly clients: ReadonlyArray<HostedOAuthClient["client"]>;
-  readonly provider: string | undefined;
+  /** The organization's apps that sign in at the client's server, when any still do. */
+  readonly service: OAuthClientService | undefined;
   readonly redirectUri: string;
   readonly editing: boolean;
   readonly onEdit: (editing: boolean) => void;
@@ -160,8 +175,11 @@ function OAuthClientRow({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string>();
   const { client, access } = entry;
-  // Clients have no names: the service and its public client ID identify one.
-  const service = provider ?? client.provider;
+  // Clients have no names: the server, by the apps that sign in there, and the public client ID
+  // identify one. A client stored before its server was recorded is offered to no sign-in.
+  const server = client.issuer === null ? undefined : issuerLabel(client.issuer);
+  const service =
+    known !== undefined ? serviceName(known) : (server ?? "Sign-in service not recorded");
   const audience =
     access.audience.kind === "everyone"
       ? "Everyone"
@@ -175,6 +193,7 @@ function OAuthClientRow({
           <p className="truncate text-[13px] font-medium">{service}</p>
           <p className="truncate font-mono text-xs text-muted-foreground">{client.clientId}</p>
           <p className="truncate text-xs text-muted-foreground">
+            {server === undefined ? "Not offered until registered again" : server} ·{" "}
             <OAuthClientOrigin client={client} clients={clients} /> · {audience}
           </p>
         </div>
@@ -301,12 +320,12 @@ const editConflict = (cause: Cause.Cause<HostedError>) =>
     onNone: () => undefined,
   });
 
-/** Connecting without a client swaps to registering one for that service, then returns. */
+/** Connecting without a client swaps to registering one for that sign-in's server, then returns. */
 export function RegisterServiceClient({
-  provider,
+  service,
   onDone,
 }: {
-  readonly provider: { readonly id: ProviderId; readonly name: string };
+  readonly service: OAuthClientService;
   readonly onDone: () => void;
 }) {
   const organization = useOrganization();
@@ -318,7 +337,9 @@ export function RegisterServiceClient({
     >
       {(directory) => (
         <RegisterOAuthClient
-          providers={[provider]}
+          services={[
+            directory.services.find((known) => known.issuer === service.issuer) ?? service,
+          ]}
           redirectUri={directory.redirectUri}
           className=""
           onDone={onDone}
@@ -329,12 +350,12 @@ export function RegisterServiceClient({
 }
 
 function RegisterOAuthClient({
-  providers,
+  services,
   redirectUri,
   className = "mt-4",
   onDone,
 }: {
-  readonly providers: OAuthClientDirectory["providers"];
+  readonly services: OAuthClientDirectory["services"];
   readonly redirectUri: string;
   readonly className?: string;
   readonly onDone: () => void;
@@ -343,9 +364,10 @@ function RegisterOAuthClient({
   const register = useAtomSet(registerOAuthClientAtom(organization.organization), {
     mode: "promiseExit",
   });
-  const [provider, setProvider] = useState<ProviderId | undefined>(
-    providers.length === 1 ? providers[0]?.id : undefined,
+  const [issuer, setIssuer] = useState<typeof HttpUrl.Type | undefined>(
+    services.length === 1 ? services[0]?.issuer : undefined,
   );
+  const chosen = services.find((service) => service.issuer === issuer);
   return (
     <OAuthClientForm
       label="Register OAuth client"
@@ -354,23 +376,30 @@ function RegisterOAuthClient({
         <label className="field-label flex flex-col gap-2 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
           Service
           <Select
-            value={provider ?? ""}
+            value={issuer ?? ""}
             disabled={pending}
             onValueChange={(value) =>
-              setProvider(providers.find((option) => option.id === value)?.id)
+              setIssuer(services.find((option) => option.issuer === value)?.issuer)
             }
           >
             <SelectTrigger aria-label="Service">
               <SelectValue placeholder="Choose a service" />
             </SelectTrigger>
             <SelectContent>
-              {providers.map((option) => (
-                <SelectItem key={option.id} value={option.id}>
-                  {option.name}
+              {services.map((option) => (
+                <SelectItem key={option.issuer} value={option.issuer}>
+                  {serviceName(option)}
+                  <span className="text-muted-foreground"> · {issuerLabel(option.issuer)}</span>
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {chosen !== undefined && (
+            <span className="text-xs font-normal text-muted-foreground">
+              Signs in at {issuerLabel(chosen.issuer)}. Every app that signs in there can use it
+              {chosen.providers.length > 1 ? `: ${serviceName(chosen)}` : ""}.
+            </span>
+          )}
         </label>
       )}
       redirectUri={redirectUri}
@@ -378,7 +407,7 @@ function RegisterOAuthClient({
       allowPrivate
       privateLabel="Only me"
       submitLabel="Register"
-      save={provider === undefined ? undefined : (values) => register({ provider, ...values })}
+      save={issuer === undefined ? undefined : (values) => register({ issuer, ...values })}
       onDone={onDone}
     />
   );

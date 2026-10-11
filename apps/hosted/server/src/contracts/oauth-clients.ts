@@ -12,6 +12,7 @@ import {
   OAuthClientInput,
   OAuthClientExists,
   OAuthClientInputs,
+  OAuthClientIssuer,
   OAuthClientNotEditable,
   OAuthClientNotFound,
   OAuthClientsUnsupported,
@@ -50,10 +51,22 @@ export const OAuthClientProvider = Schema.Struct({
   name: Schema.NonEmptyString,
 });
 
-/** The management view: every client and the providers a new one can be registered for. */
+/**
+ * An authorization server the organization's apps sign in at, with those apps' providers. A
+ * client registered for it is offered to every one of them.
+ */
+export const OAuthClientService = Schema.Struct({
+  issuer: OAuthClientIssuer,
+  providers: Schema.NonEmptyArray(OAuthClientProvider),
+});
+export type OAuthClientService = typeof OAuthClientService.Type;
+
+/** The management view: every client and the servers a new one can be registered for. */
 export const OAuthClientDirectory = Schema.Struct({
   clients: Schema.Array(HostedOAuthClient),
-  providers: Schema.Array(OAuthClientProvider),
+  services: Schema.Array(OAuthClientService),
+  /** Providers whose server could not be discovered just now, so none is listed for them. */
+  unresolved: Schema.Array(OAuthClientProvider),
   /** The callback a registered client's OAuth app must allow. */
   redirectUri: HttpUrl,
 });
@@ -87,7 +100,8 @@ export const HostedOAuthClients = HttpApiGroup.make("oauthClients")
     HttpApiEndpoint.post("register", prefix, {
       params: organization,
       payload: Schema.Struct({
-        provider: ProviderId,
+        /** The authorization server it signs in at; see the directory's `services`. */
+        issuer: OAuthClientIssuer,
         ...OAuthClientInput.fields,
         /** Who may sign in with it; everyone in the organization when omitted. */
         audience: Schema.optional(AppAudience),
@@ -98,7 +112,7 @@ export const HostedOAuthClients = HttpApiGroup.make("oauthClients")
       .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
-        "Register an OAuth client from the service's developer settings, with the audience that may sign in with it (everyone in the organization by default). Administrators only. The client and its audience are recorded together. The secret is never returned. Details another client of the organization holds, or held before an edit, fail with OAuthClientExists.",
+        "Register an OAuth client from the service's developer settings for one authorization server (`issuer`), with the audience that may sign in with it (everyone in the organization by default). Every app of the organization that signs in at that server offers it. Administrators only. The client and its audience are recorded together. The secret is never returned. Details another client of the organization holds, or held before an edit, fail with OAuthClientExists.",
       ),
   )
   .add(

@@ -223,7 +223,11 @@ export const createExecutor = (
           ),
       },
       [PrefetchHost]: { invocation: tools.prefetchInvocation },
-      [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, options.hooks),
+      [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
+        ...(options.oauth?.savedClientCallbacks ?? []),
+        ...(options.oauth?.previousRedirectUris ?? []),
+        new URL("/api/oauth/callback", origin).href,
+      ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
       scheduler: schedules.dispatcher,
       events,

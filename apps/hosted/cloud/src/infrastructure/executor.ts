@@ -121,7 +121,10 @@ export const cloudExecutor = Effect.fn(function* (
           ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
           // Entered clients saved before sign-ins moved to `executor.sh` keep the callback they name.
           ...(Option.isSome(accountSignIns.callbacks)
-            ? { previousRedirectUris: accountSignIns.callbacks.value.previous }
+            ? {
+                previousRedirectUris: accountSignIns.callbacks.value.previous,
+                savedClientCallbacks: [accountSignIns.callbacks.value.current],
+              }
             : {}),
           // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix; a stage's
           // also names the stage, which production sends the browser back to.

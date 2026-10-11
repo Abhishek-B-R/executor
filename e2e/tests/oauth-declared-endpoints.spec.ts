@@ -191,10 +191,12 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           `${prefix}/providers/${undeclared.requirements.accounts.service.provider}/oauth/oauth/setup`,
         );
         expect(setup.status).toBe(200);
+        // Endpoints without an issuer sign in at the server their token endpoint names.
         expect(setup.body).toEqual({
           mode: "client-required",
           scopes: ["openid", "read"],
           grant: "authorization_code",
+          issuer: `${issuer.origin}/token`,
           clients: [],
         });
         // Executor never reads ID tokens, so sign-in and refresh succeed even though these name
@@ -434,6 +436,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           mode: "client-required",
           scopes: ["read"],
           grant: "authorization_code",
+          issuer: issuer.origin,
           clients: [],
         });
         const signInWith = (

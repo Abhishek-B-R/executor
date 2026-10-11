@@ -58,6 +58,11 @@ export const OAuthClientSetup = Schema.Union([
   Schema.Struct({
     ...clientSetup,
     grant: Schema.Literal("authorization_code"),
+    /**
+     * The authorization server this sign-in uses (see `OAuthClientIssuer`): stored clients
+     * registered for it are the ones a connection may name.
+     */
+    issuer: HttpUrl,
     /** Omitted when the provider does not declare one; the client secret is then optional. */
     tokenEndpointAuthMethod: Schema.optional(OAuthClientAuth),
     /**
@@ -436,6 +441,14 @@ export interface OAuthOptions {
    * current callback.
    */
   readonly previousRedirectUris?: readonly string[];
+  /**
+   * Callbacks this host sent as `redirect_uri` when versions before 4.0.10 saved clients, besides
+   * `previousRedirectUris` and `/api/oauth/callback` at its origin. Read only to rebuild the keys
+   * of earlier versions: which owner a saved client's key names (`6_stored_oauth_clients`,
+   * `9_saved_oauth_clients_by_issuer`) and what a registered client was registered for
+   * (`8_oauth_clients_by_issuer`).
+   */
+  readonly savedClientCallbacks?: readonly string[];
   /**
    * A fixed prefix for every sign-in's OAuth `state`, so a proxy in front of a shared callback
    * URL can tell this host's callbacks apart without a lookup. The random part is unchanged.

@@ -93,6 +93,7 @@ export const executorHandlers = (executor: Executor) =>
       handlers
         .handle("register", ({ payload }) => executor.oauthClients.register(payload))
         .handle("list", ({ query }) => executor.oauthClients.list(query))
+        .handle("issuers", ({ query }) => executor.oauthClients.issuers(query))
         .handle("get", ({ params, query }) => executor.oauthClients.get({ ...params, ...query }))
         .handle("update", ({ params, payload }) =>
           executor.oauthClients.update({ ...params, ...payload }),

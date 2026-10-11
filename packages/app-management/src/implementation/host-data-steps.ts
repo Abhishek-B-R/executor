@@ -18,6 +18,13 @@ import {
   type StoredOAuthClientsHost,
 } from "./stored-oauth-clients.ts";
 import { localOwnersStep, localOwnersStepName, type LocalOwnersHost } from "./local-owners.ts";
+import {
+  oauthClientsByIssuerStep,
+  oauthClientsByIssuerStepName,
+  savedOAuthClientsByIssuerStep,
+  savedOAuthClientsByIssuerStepName,
+  type OAuthClientsByIssuerHost,
+} from "./oauth-clients-by-issuer.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -27,7 +34,8 @@ export type DataStepHost = FrameworkPinHost &
   AgentGrantHost &
   ExecutorAppRedeployHost &
   StoredOAuthClientsHost &
-  LocalOwnersHost;
+  LocalOwnersHost &
+  OAuthClientsByIssuerHost;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
@@ -70,6 +78,11 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   // Local only, one-off: give `local` the records of owners agents named before local assigned
   // them.
   { name: localOwnersStepName, local: (host, owners) => localOwnersStep(host.executor, owners) },
+  // One-off: record the authorization server of clients stored by provider before SDK 4.0.12, and
+  // merge an owner's clients that hold the same credentials for one server.
+  { name: oauthClientsByIssuerStepName, step: oauthClientsByIssuerStep },
+  // One-off: move the saved clients step 6 left, and collapse the rest, by owner and server.
+  { name: savedOAuthClientsByIssuerStepName, step: savedOAuthClientsByIssuerStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>

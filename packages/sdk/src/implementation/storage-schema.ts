@@ -575,7 +575,7 @@ export const storedOAuthClientIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_client_credentials_owner ON executor_stored_oauth_client_credentials (owner)",
 ] as const;
 
-/** The 4.0.10 layout. Profiles own account selections; apps declare requirements. */
+/** The 4.0.10 layout: stored OAuth clients keyed by owner and provider. */
 export const version4010Schema = schema({
   version: "4.0.10",
   tables: version4010Tables,
@@ -606,3 +606,78 @@ export const boundedReadIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_installations_owner_app ON executor_installations (owner, app)",
   "CREATE INDEX IF NOT EXISTS executor_deployments_code_created ON executor_deployments (code, created_at)",
 ] as const;
+
+/**
+ * Version 4.0.12 keys stored OAuth clients by owner and authorization server instead of owner and
+ * provider, so one client serves every app that signs in at the same server. `issuer` is the
+ * server's issuer as the sign-in discovered or declared it, or the token endpoint URL when the
+ * provider declares endpoints without an issuer (`oauthClientIssuer`). It is null on a client
+ * stored before 4.0.12 until data step `8_oauth_clients_by_issuer` records it; such a client is
+ * offered to no sign-in, and its credentials resolve to it through their pre-4.0.12 identity.
+ * `provider` is kept, now nullable, for those clients and for the running server during the
+ * rollout; clients stored from 4.0.12 have none. A later release drops it.
+ */
+const storedOAuthClientsByIssuer = table("executor_stored_oauth_clients", {
+  id: idColumn("id", OAuthClientId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  provider: column("provider", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
+  issuer: column("issuer", Schema.NullOr(Schema.String)).default(null),
+  clientId: column("client_id", Schema.String),
+  source: column("source", OAuthClientSource, { type: "varchar(32)" }),
+  hasSecret: column("has_secret", Schema.Boolean),
+  automaticKey: column("automatic_key", Schema.NullOr(Schema.String), {
+    type: "varchar(255)",
+  }).default(null),
+  confirmed: column("confirmed", Schema.Boolean).default(false),
+  encrypted: column("encrypted", Schema.Uint8Array),
+  createdAt: column("created_at", Schema.Date),
+});
+
+/**
+ * From 4.0.12 a credentials row's ID digests owner, issuer, client ID and secret, so credentials
+ * are one client per owner and authorization server. Rows written before keep their provider
+ * digest and their provider; rows written from 4.0.12 have no provider.
+ */
+const storedOAuthClientCredentialsByIssuer = table("executor_stored_oauth_client_credentials", {
+  id: idColumn("id", Schema.String, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  provider: column("provider", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
+  client: column("client", OAuthClientId, { type: "varchar(255)" }),
+  withdrawal: column("withdrawal", Schema.NullOr(CredentialsWithdrawal), {
+    type: "varchar(32)",
+  }).default(null),
+  createdAt: column("created_at", Schema.Date),
+});
+
+/** Tables of the 4.0.12 layout. */
+export const version4012Tables = {
+  ...version409Tables,
+  storedOAuthClients: storedOAuthClientsByIssuer,
+  storedOAuthClientCredentials: storedOAuthClientCredentialsByIssuer,
+};
+
+/** The index 4.0.12 adds, created in the same step as its column. */
+export const storedOAuthClientIssuerIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_issuer ON executor_stored_oauth_clients (owner, issuer)",
+] as const;
+
+/** Current ORM layout. Profiles own account selections; apps declare requirements. */
+export const storageSchema = schema({
+  version: "4.0.12",
+  tables: version4012Tables,
+  up: ({ auto }) =>
+    auto.pipe(
+      Effect.map((operations) => [
+        ...operations,
+        ...storedOAuthClientIssuerIndexes.map((sql) => ({ type: "custom" as const, sql })),
+      ]),
+    ),
+  relations: {
+    accounts: ({ one }) => ({
+      providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+    }),
+    apps: ({ one }) => ({
+      deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+    }),
+  },
+});

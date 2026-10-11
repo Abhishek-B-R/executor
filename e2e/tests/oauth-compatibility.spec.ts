@@ -10,6 +10,7 @@ import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { createProfile, Profile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
@@ -154,7 +155,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             setupFailure: "client_registration_required",
           },
         ];
+        // Clients belong to the service's server, so another app of it reuses a client the
+        // organization registered. Each case starts without one, so each case registers.
         for (const scenario of cases) {
+          yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           yield* issuer.configure(scenario);
           // Deploy the quick-add OAuth source directly; these cases break discovery on purpose.
           const name = `${scenario.name} ${randomUUID().slice(0, 8)}`;

@@ -108,6 +108,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     oauthClients: {
       register: (input) => run(OAuthClientInputs.register, input, executor.oauthClients.register),
       list: (input) => run(OAuthClientInputs.list, input, executor.oauthClients.list),
+      issuers: (input) => run(OAuthClientInputs.issuers, input, executor.oauthClients.issuers),
       get: (input) => run(OAuthClientInputs.get, input, executor.oauthClients.get),
       update: (input) => run(OAuthClientInputs.update, input, executor.oauthClients.update),
       remove: (input) => run(OAuthClientInputs.remove, input, executor.oauthClients.remove),

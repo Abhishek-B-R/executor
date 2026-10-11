@@ -30,6 +30,7 @@ import {
   organizationDefaults,
   noOrganizationRemovals,
   lazyHostedApiDocument,
+  authSettings,
   clientMetadataSetting,
   firstPartyOAuthClients,
   hostedOAuthClientName,
@@ -75,6 +76,8 @@ export const selfHostExecutorServices = <E, R>(
       const origin = yield* Config.String("BETTER_AUTH_URL");
       const clientMetadata = yield* clientMetadataSetting(origin);
       const firstPartyClients = yield* firstPartyOAuthClients;
+      // A configured account callback is the one saved clients were keyed with.
+      const accountCallback = (yield* authSettings).oauthRedirectUri;
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
@@ -102,6 +105,9 @@ export const selfHostExecutorServices = <E, R>(
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          ...(Option.isSome(accountCallback)
+            ? { savedClientCallbacks: [accountCallback.value] }
+            : {}),
           firstPartyClients,
         },
         cache: {

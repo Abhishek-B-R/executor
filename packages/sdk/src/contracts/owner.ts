@@ -60,8 +60,9 @@ export const OwnerMovesHost = Symbol("executor.OwnerMoves");
 
 /**
  * Records that cannot all belong to the target owner: apps with one name or one slug, or stored
- * OAuth clients holding the same credentials for one provider. `key` is the name, the slug, or
- * the provider and public client ID; it never holds a secret.
+ * OAuth clients holding the same credentials for one authorization server (for one provider, for
+ * clients stored before SDK 4.0.12). `key` is the name, the slug, or the client's issuer (else its
+ * provider) and public client ID; it never holds a secret.
  */
 export const OwnerMoveCollision = Schema.Struct({
   kind: Schema.Literals(["app_name", "app_slug", "oauth_client_credentials"]),

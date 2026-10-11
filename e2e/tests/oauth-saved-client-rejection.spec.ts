@@ -165,7 +165,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
         const registeredClient = yield* body(
           Registered,
           yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
-            provider: manualApp.requirements.accounts.service.provider,
+            issuer: issuer.origin,
             ...entered,
           }),
         );

@@ -93,6 +93,19 @@ export interface ResourceLifecycle {
   readonly oauthClientResolving?: (
     client: import("./oauth-clients.ts").OAuthClient,
   ) => Effect.Effect<boolean, StorageError>;
+  /**
+   * Called when clients of one owner that hold the same credentials for one authorization server
+   * become one (data step `8_oauth_clients_by_issuer`): `merged` are removed and `survivor` keeps
+   * their credentials. A product that decides who may use clients lets everyone who could use any
+   * of them use the survivor, and returns false when it cannot, which leaves every one of them as
+   * it was. With `apply` false it only answers whether it could; with `apply` true it records the
+   * survivor's access in the step's transaction, before the merged clients are removed.
+   */
+  readonly oauthClientsMerging?: (input: {
+    readonly survivor: import("./oauth-clients.ts").OAuthClient;
+    readonly merged: ReadonlyArray<import("./oauth-clients.ts").OAuthClient>;
+    readonly apply: boolean;
+  }) => Effect.Effect<boolean, StorageError>;
 }
 
 /** Evaluated declarations and tool listings: where they are kept and how long they are trusted. */

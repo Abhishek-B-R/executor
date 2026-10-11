@@ -3,9 +3,10 @@
  * Everything that names an owner moves: owner columns; the owner a stored connection names for its
  * target app and its completed account; the owners inside a live pending sign-in's and tool
  * approval's encrypted record; and the identity of stored OAuth client credentials, a keyed digest
- * over owner, provider, client ID and secret. Collisions are found before anything is written,
- * and a move that has one changes no record: app names and slugs are unique per owner, and so are
- * a provider's client credentials. Neither does a move with a record it has to read and cannot, one
+ * over owner, authorization server (issuer), client ID and secret, or over owner, provider, client
+ * ID and secret for rows written before SDK 4.0.12. Collisions are found before anything is
+ * written, and a move that has one changes no record: app names and slugs are unique per owner,
+ * and so are an authorization server's, or before 4.0.12 a provider's, client credentials. Neither does a move with a record it has to read and cannot, one
  * that does not decrypt or that the product would not read back: it would move the rest and strand
  * that one under its old owner. Each record is read with the schemas the product reads it with
  * when it resumes: a stored client's secret and registration, a grant, a sign-in, an approval and
@@ -45,7 +46,11 @@ import { StoredState } from "./connection-state.ts";
 import { query, transaction } from "./database.ts";
 import type { Query } from "./database.ts";
 import { StoredClientSecret, storedRegistration } from "./oauth.ts";
-import { credentialsDigest } from "./stored-oauth-client-credentials.ts";
+import {
+  credentialsDigest,
+  legacyCredentialsDigest,
+  oauthClientIssuer,
+} from "./stored-oauth-client-credentials.ts";
 import { ApprovalPayload } from "./tool-approvals.ts";
 
 /** What the credentials digest reads from a stored client's, a grant's or a sign-in's client. */
@@ -53,6 +58,16 @@ type ClientCopy = Pick<
   StoredClientSecret,
   "client_id" | "client_secret" | "token_endpoint_auth_method"
 >;
+/**
+ * A copy of credentials with what its identities digest besides the owner: the authorization
+ * server its source names, and the provider, which a stored client from 4.0.12 does not name.
+ */
+interface CopySource {
+  readonly owner: OwnerId;
+  readonly issuer: string | null;
+  readonly provider: ProviderId | null;
+  readonly copy: ClientCopy;
+}
 const Owned = Schema.Struct({ owner: OwnerId });
 const isObject = Schema.is(JsonObject);
 const decodeObject = Schema.decodeUnknownEffect(JsonObject);
@@ -80,14 +95,30 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
     credentials
       .encrypt(identity, Redacted.make(value))
       .pipe(Effect.mapError(() => new StorageError()));
-  const digestOf = (owner: OwnerId, provider: ProviderId, copy: ClientCopy) =>
-    credentialsDigest(credentials, {
+  /**
+   * The identities a copy of credentials has under an owner: by its authorization server, and by
+   * its provider for rows written before 4.0.12, each when the copy's source names it.
+   */
+  const digestsOf = (owner: OwnerId, source: CopySource) => {
+    const client = {
       owner,
-      provider,
-      clientId: copy.client_id,
+      clientId: source.copy.client_id,
       // A public client has no secret, whatever it was issued.
-      secret: copy.token_endpoint_auth_method === "none" ? undefined : copy.client_secret,
-    }).pipe(Effect.mapError(() => new StorageError()));
+      secret:
+        source.copy.token_endpoint_auth_method === "none" ? undefined : source.copy.client_secret,
+    };
+    return Effect.all([
+      source.issuer === null
+        ? Effect.succeed(undefined)
+        : credentialsDigest(credentials, { ...client, issuer: source.issuer }),
+      source.provider === null
+        ? Effect.succeed(undefined)
+        : legacyCredentialsDigest(credentials, { ...client, provider: source.provider }),
+    ]).pipe(
+      Effect.map((digests) => digests.filter((digest) => digest !== undefined)),
+      Effect.mapError(() => new StorageError()),
+    );
+  };
 
   const owners = Effect.all(
     [
@@ -162,11 +193,12 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
                 records: group.map((app) => ({ owner: app.owner, id: app.id })),
               });
 
-        // Credentials are one client per owner and provider, identified by a digest over both. A
-        // moved row's identity is computed again from a copy of the credentials: its client's
-        // current ones, or those a grant or a pending sign-in holds. Credentials no copy holds any
-        // more, such as a client's before an edit, keep an identity no later sign-in matches.
-        const copies: Array<{ owner: OwnerId; provider: ProviderId; copy: ClientCopy }> = [];
+        // Credentials are one client per owner and authorization server, identified by a digest
+        // over both; rows written before 4.0.12 digest the provider instead. A moved row's identity
+        // is computed again, under each, from a copy of the credentials: its client's current
+        // ones, or those a grant or a pending sign-in holds. Credentials no copy holds any more,
+        // such as a client's before an edit, keep an identity no later sign-in matches.
+        const copies: Array<CopySource> = [];
         for (const client of yield* query(() =>
           tx.findMany("storedOAuthClients", { where: (b) => b("owner", "in", from) }),
         )) {
@@ -179,7 +211,12 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
             ),
           );
           if (Option.isSome(copy))
-            copies.push({ owner: client.owner, provider: client.provider, copy: copy.value });
+            copies.push({
+              owner: client.owner,
+              issuer: client.issuer,
+              provider: client.provider,
+              copy: copy.value,
+            });
         }
         const accounts = yield* query(() =>
           tx.findMany("accounts", {
@@ -213,6 +250,7 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
           if (Option.isSome(grant) && !isFirstPartyGrant(grant.value))
             copies.push({
               owner: account.owner,
+              issuer: oauthClientIssuer(grant.value.server),
               provider: account.provider,
               copy: grant.value.client,
             });
@@ -241,12 +279,21 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
           const { record, attempt } = read.value;
           attempts.push({ id, record: { ...record, owner: to } });
           if (!isFirstPartyAttempt(attempt))
-            copies.push({ owner: attempt.owner, provider: attempt.provider, copy: attempt.client });
+            copies.push({
+              owner: attempt.owner,
+              issuer: oauthClientIssuer(attempt.server),
+              provider: attempt.provider,
+              copy: attempt.client,
+            });
         }
         const rekeyed = new Map<string, string>();
-        for (const { owner, provider, copy } of copies) {
-          const before = yield* digestOf(owner, provider, copy);
-          if (!rekeyed.has(before)) rekeyed.set(before, yield* digestOf(to, provider, copy));
+        for (const source of copies) {
+          const before = yield* digestsOf(source.owner, source);
+          const after = yield* digestsOf(to, source);
+          before.forEach((digest, index) => {
+            const next = after[index];
+            if (!rekeyed.has(digest) && next !== undefined) rekeyed.set(digest, next);
+          });
         }
         const held = yield* query(() =>
           tx.findMany("storedOAuthClientCredentials", {
@@ -260,7 +307,7 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
           if (group.length > 1) {
             const clients = yield* query(() =>
               tx.findMany("storedOAuthClients", {
-                select: ["provider", "clientId"],
+                select: ["provider", "issuer", "clientId"],
                 where: (b) =>
                   b(
                     "id",
@@ -275,7 +322,7 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
               key:
                 first === undefined
                   ? (group[0]?.provider ?? "")
-                  : `${first.provider} ${first.clientId}`,
+                  : `${first.issuer ?? first.provider ?? ""} ${first.clientId}`,
               records: group.map((row) => ({ owner: row.owner, id: row.client })),
             });
           }
