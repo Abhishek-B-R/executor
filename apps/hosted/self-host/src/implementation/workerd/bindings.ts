@@ -22,96 +22,83 @@ const diskRequest = (key: BlobKey, init?: RequestInit) =>
 const DirectoryListing = Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String }));
 
 /** workerd disk PUT atomically publishes an object; missing files remain ordinary results. */
-export const bindingBlobStore = (disk: HttpBinding): BlobStorage => ({
-  get: (key) =>
+export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
+  /** A failed request keeps its cause; an answer outside `expected` keeps its status. */
+  const send = (
+    operation: BlobStoreError["operation"],
+    key: BlobKey,
+    expected: ReadonlyArray<number>,
+    init?: RequestInit,
+  ) =>
     Effect.tryPromise({
-      try: async () => {
+      try: () => {
         Schema.decodeUnknownSync(BlobKey)(key);
-        const response = await disk.fetch(diskRequest(key));
-        if (response.status === 404) return Option.none<Uint8Array>();
-        if (response.status !== 200) throw new Error("Blob read failed");
-        return Option.some(new Uint8Array(await response.arrayBuffer()));
+        return disk.fetch(diskRequest(key, init));
       },
-      catch: () => new BlobStoreError({ operation: "get" }),
-    }),
-  exists: (key) =>
-    Effect.tryPromise({
-      try: async () => {
-        Schema.decodeUnknownSync(BlobKey)(key);
-        const response = await disk.fetch(diskRequest(key, { method: "HEAD" }));
-        if (response.status === 404) return false;
-        if (response.status !== 200) throw new Error("Blob lookup failed");
-        return true;
-      },
-      catch: () => new BlobStoreError({ operation: "exists" }),
-    }),
-  put: (key, body) =>
-    Effect.tryPromise({
-      try: async () => {
-        Schema.decodeUnknownSync(BlobKey)(key);
-        const response = await disk.fetch(
-          diskRequest(key, { method: "PUT", body: new Uint8Array(body) }),
-        );
-        if (response.status !== 204) throw new Error("Blob write failed");
-      },
-      catch: () => new BlobStoreError({ operation: "put" }),
-    }),
-  remove: (key) =>
-    Effect.tryPromise({
-      try: async () => {
-        Schema.decodeUnknownSync(BlobKey)(key);
-        const response = await disk.fetch(diskRequest(key, { method: "DELETE" }));
-        if (response.status !== 204 && response.status !== 404)
-          throw new Error("Blob removal failed");
-      },
-      catch: () => new BlobStoreError({ operation: "remove" }),
-    }),
-  list: (folder, options) =>
-    Effect.tryPromise({
-      try: async () => {
-        Schema.decodeUnknownSync(BlobKey)(folder);
-        const response = await disk.fetch(diskRequest(folder));
-        if (response.status === 404) return [];
-        if (response.status !== 200) throw new Error("Blob listing failed");
-        return Schema.decodeUnknownSync(DirectoryListing)(await response.json());
-      },
-      catch: () => new BlobStoreError({ operation: "list" }),
+      catch: (cause) => new BlobStoreError({ operation, cause }),
     }).pipe(
-      Effect.map((entries) =>
-        pageOf(
-          entries.filter((entry) => entry.type === "file").map((entry) => entry.name),
-          options,
+      Effect.filterOrFail(
+        (response) => expected.includes(response.status),
+        (response) => new BlobStoreError({ operation, status: response.status }),
+      ),
+    );
+  return {
+    get: (key) =>
+      send("get", key, [200, 404]).pipe(
+        Effect.flatMap((response) =>
+          response.status === 404
+            ? Effect.succeedNone
+            : Effect.tryPromise({
+                try: () => response.arrayBuffer(),
+                catch: (cause) => new BlobStoreError({ operation: "get", cause }),
+              }).pipe(Effect.map((bytes) => Option.some(new Uint8Array(bytes)))),
         ),
       ),
-    ),
-  // The disk service sends whole files, so a range is cut from the stream here.
-  stream: (key, range) =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: async () => {
-          Schema.decodeUnknownSync(BlobKey)(key);
-          const response = await disk.fetch(diskRequest(key));
-          if (response.status === 404) return undefined;
-          if (response.status !== 200 || response.body === null)
-            throw new Error("Blob read failed");
-          return { body: response.body, size: Number(response.headers.get("content-length")) };
-        },
-        catch: () => new BlobStoreError({ operation: "get" }),
-      });
-      if (response === undefined) return Option.none();
-      if (!Number.isSafeInteger(response.size))
-        return yield* new BlobStoreError({ operation: "get" });
-      const { start, end } = rangeWindow(response.size, range);
-      const body = Stream.fromReadableStream({
-        evaluate: () => response.body,
-        onError: () => new BlobStoreError({ operation: "get" }),
-      });
-      return Option.some({
-        size: response.size,
-        body: start === 0 && end === response.size ? body : windowed(body, start, end),
-      });
-    }),
-});
+    exists: (key) =>
+      send("exists", key, [200, 404], { method: "HEAD" }).pipe(
+        Effect.map((response) => response.status === 200),
+      ),
+    put: (key, body) =>
+      send("put", key, [204], { method: "PUT", body: new Uint8Array(body) }).pipe(Effect.asVoid),
+    remove: (key) => send("remove", key, [204, 404], { method: "DELETE" }).pipe(Effect.asVoid),
+    list: (folder, options) =>
+      send("list", folder, [200, 404]).pipe(
+        Effect.flatMap((response) =>
+          response.status === 404
+            ? Effect.succeed([])
+            : Effect.tryPromise(() => response.json()).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(DirectoryListing)),
+                Effect.mapError((cause) => new BlobStoreError({ operation: "list", cause })),
+              ),
+        ),
+        Effect.map((entries) =>
+          pageOf(
+            entries.filter((entry) => entry.type === "file").map((entry) => entry.name),
+            options,
+          ),
+        ),
+      ),
+    // The disk service sends whole files, so a range is cut from the stream here.
+    stream: (key, range) =>
+      Effect.gen(function* () {
+        const response = yield* send("get", key, [200, 404]);
+        if (response.status === 404) return Option.none();
+        const readable = response.body;
+        const size = Number(response.headers.get("content-length"));
+        if (readable === null || !Number.isSafeInteger(size))
+          return yield* new BlobStoreError({ operation: "get" });
+        const { start, end } = rangeWindow(size, range);
+        const body = Stream.fromReadableStream({
+          evaluate: () => readable,
+          onError: (cause) => new BlobStoreError({ operation: "get", cause }),
+        });
+        return Option.some({
+          size,
+          body: start === 0 && end === size ? body : windowed(body, start, end),
+        });
+      }),
+  };
+};
 
 const GitResult = Schema.Struct({ code: Schema.Int, output: Schema.Uint8ArrayFromBase64 });
 const Index = Schema.Struct({ index: Schema.NonEmptyString });

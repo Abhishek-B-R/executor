@@ -73,7 +73,10 @@ export const evaluatedDeclarations = <E>(
       return { at: entry.at, json: text };
     }).pipe(
       Effect.timeout(readMillis),
-      Effect.catchCause(() => Effect.succeed(undefined)),
+      // A store failure or a slow read is a miss; defects and interruption still propagate.
+      Effect.catch((error) =>
+        Effect.logWarning("Evaluated result read failed", error).pipe(Effect.as(undefined)),
+      ),
       Effect.withSpan("storage.evaluated.read", { attributes: { "executor.app.id": app } }),
     ),
   set: (app, key, entry) =>
@@ -92,7 +95,7 @@ export const evaluatedDeclarations = <E>(
         yield* annotateSupervisor(written.value.supervisor);
       }
     }).pipe(
-      Effect.catchCause(() => Effect.logWarning("Evaluated result was not kept")),
+      Effect.catch((error) => Effect.logWarning("Evaluated result was not kept", error)),
       Effect.withSpan("storage.evaluated.write", { attributes: { "executor.app.id": app } }),
     ),
 });

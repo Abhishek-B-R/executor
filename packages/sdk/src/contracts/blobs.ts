@@ -18,6 +18,10 @@ export type BlobKey = typeof BlobKey.Type;
 /** Missing objects are ordinary results; storage failures must not look like absence. */
 export class BlobStoreError extends Schema.TaggedError<BlobStoreError>()("BlobStoreError", {
   operation: Schema.Literals(["get", "exists", "put", "remove", "list"]),
+  /** The store's unexpected HTTP status, when it answered with one. */
+  status: Schema.optionalKey(Schema.Int),
+  /** The underlying failure, kept for diagnosis. */
+  cause: Schema.optionalKey(Schema.Defect()),
 }) {}
 
 /** `length` bytes from `offset`. Readers clamp a range that runs past the object's end. */

@@ -47,13 +47,11 @@ export class AppManagementHost extends Context.Service<
   Effect.Effect<
     {
       readonly executor: Executor;
-      /** Optional product-owned policy; local pairing uses the identity's existing authority. */
-      readonly access?:
-        | ((
-            app: App,
-            identity: Context.Service.Shape<typeof AppIdentity>,
-          ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>)
-        | undefined;
+      /** The product's policy for each app; every host states it, even when it allows all. */
+      readonly access: (
+        app: App,
+        identity: Context.Service.Shape<typeof AppIdentity>,
+      ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>;
     },
     StorageError
   >
@@ -93,19 +91,11 @@ const writeIdentity = AppIdentity.pipe(
   ),
 );
 type ManagementHost = Effect.Success<Context.Service.Shape<typeof AppManagementHost>>;
-const capabilities = (
-  host: ManagementHost,
-  app: App,
-  identity: Context.Service.Shape<typeof AppIdentity>,
-) =>
-  host.access === undefined
-    ? Effect.succeed({ visible: true, manage: true, edit: true })
-    : host.access(app, identity);
 const projectApp = <A extends App>(
   host: ManagementHost,
   app: A,
   identity: Context.Service.Shape<typeof AppIdentity>,
-) => capabilities(host, app, identity).pipe(Effect.as(app));
+) => host.access(app, identity).pipe(Effect.as(app));
 const ownedSource = (
   host: ManagementHost,
   identity: Context.Service.Shape<typeof AppIdentity>,
@@ -118,7 +108,7 @@ const ownedSource = (
     const app = yield* host.executor.apps.get(
       identity.readOwner === null ? { app: id } : { owner: identity.readOwner, app: id },
     );
-    const access = yield* capabilities(host, app, identity);
+    const access = yield* host.access(app, identity);
     if (!access.manage || (edit && !access.edit))
       return yield* new AppAccessDenied({ reason: "forbidden" });
     return { app, access };
@@ -170,7 +160,7 @@ const nameAddressHolder = (
       (identity.appIds !== undefined && !identity.appIds.includes(holder.id))
     )
       return error;
-    const access = yield* capabilities(host, holder, identity);
+    const access = yield* host.access(holder, identity);
     return access.visible
       ? new AppSlugTaken({ ...error, existing: { app: holder.id, name: holder.name } })
       : error;
@@ -214,9 +204,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             ids: identity.appIds,
           });
           return (yield* Effect.forEach(apps, (app) =>
-            capabilities(host, app, identity).pipe(
-              Effect.map((access) => (access.visible ? [app] : [])),
-            ),
+            host.access(app, identity).pipe(Effect.map((access) => (access.visible ? [app] : []))),
           )).flat();
         }),
       )
