@@ -2,6 +2,7 @@
 import { makeExecutorStorage } from "@executor-js/sdk/core";
 import { createDataStepJournal } from "@executor-js/app-management/data-steps";
 import { startupPhase } from "./startup-diagnostics.ts";
+import { PGlite } from "@electric-sql/pglite";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { Context, Effect, FileSystem, Layer, Path } from "effect";
 import { SqlClient } from "effect/sql";
@@ -25,6 +26,18 @@ const migrateLocalProduct = Effect.gen(function* () {
   });
 });
 
+/**
+ * Open one of the local server's PGlite databases. Each database is its own Postgres with its own
+ * WebAssembly memory, and Postgres's default 128 MB buffer pool is allocated in that memory
+ * up front. Local databases are small and their files stay in the OS page cache, so a 16 MB pool
+ * keeps reads fast while the three databases together hold about 350 MB less of the process.
+ */
+export const localDatabase = (dataDir: string) =>
+  pgliteLayer({
+    dataDir,
+    startParams: [...PGlite.defaultStartParams, "-c", "shared_buffers=16MB"],
+  });
+
 /** Open persistent Effect SQL resources in the host scope and preserve existing records. */
 export const openStorage = (directory: string) =>
   Effect.gen(function* () {
@@ -34,7 +47,7 @@ export const openStorage = (directory: string) =>
     const location = path.join(directory, "executor.pglite");
     yield* fs.makeDirectory(location, { recursive: true, mode: 0o700 });
     yield* fs.chmod(location, 0o700);
-    const context = yield* Layer.build(pgliteLayer({ dataDir: location }));
+    const context = yield* Layer.build(localDatabase(location));
     const sql = Context.get(context, SqlClient.SqlClient);
     const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
       Effect.provideService(SqlClient.SqlClient, sql),

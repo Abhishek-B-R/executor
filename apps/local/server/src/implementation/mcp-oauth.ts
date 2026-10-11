@@ -14,7 +14,7 @@ import {
 } from "@executor-js/mcp-auth";
 import { makeAuthDatabase } from "@executor-js/mcp-auth/node-database";
 import type { ConnectionId, ConnectionPolicy } from "@executor-js/mcp-auth/connections";
-import { pgliteLayer } from "fumadb-effect/pglite";
+import { localDatabase } from "./storage.ts";
 import {
   Effect,
   Layer,
@@ -68,7 +68,7 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
     const directory = path.join(config.directory, "mcp-auth.pglite");
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
     yield* fs.chmod(directory, 0o700);
-    const databaseContext = yield* Layer.build(pgliteLayer({ dataDir: directory }));
+    const databaseContext = yield* Layer.build(localDatabase(directory));
     const db = yield* makeAuthDatabase.pipe(Effect.provideContext(databaseContext));
     // Separate signing material from encryption use; no generated or fallback secret.
     const secret = yield* Effect.promise(async () => {

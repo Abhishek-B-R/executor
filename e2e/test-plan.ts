@@ -6956,6 +6956,27 @@ export const scenarios = plan({
       cloud: na("This case exercises the runner's Local process control and readiness protocol."),
     },
   },
+  localShutdown: {
+    file: "local-shutdown.spec.ts",
+    title:
+      "local server stops promptly when its whole process group is signalled and keeps its last write",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The self-host image runs its collector as a workerd actor, not a child process.",
+      ),
+      cloud: na("Cloud runs no local server process."),
+    },
+  },
+  localShutdownRemoteMetrics: {
+    file: "local-shutdown.spec.ts",
+    title: "local server waits for a slow remote metrics collector to acknowledge its final batch",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only the local server bounds its bundled collector's final flush."),
+      cloud: na("Cloud runs no local server process."),
+    },
+  },
   cloud: {
     file: "cloud.spec.ts",
     title: "cloud endpoint is healthy and protects the signed-out viewer",
