@@ -218,37 +218,34 @@ export const cloudAuthOptions = (
       // hook that sees a returning or newly linked provider's verified profile, so keep the
       // photo current here. Name and email stay as they are, and a provider without a photo
       // never clears one. Accepts every identity; a failed write must not block sign-in.
+      // ChatGPT never joins an existing account by email. The rejection is returned, not
+      // thrown: Better Auth replaces anything thrown here with a generic validation failure.
       validateUserInfo: ({ user, source }, context) =>
-        Effect.runPromise(
-          Effect.gen(function* () {
-            if (
-              source.method === "oauth" &&
-              source.oauth?.providerId === "openai" &&
-              source.action === "link-account"
-            )
-              return yield* Effect.fail(
-                new APIError("FORBIDDEN", {
-                  code: "account_not_linked",
-                  message: "Sign in with your existing method before linking ChatGPT.",
-                }),
-              );
-            const { id, image } = user;
-            if (source.method !== "oauth" || source.action === "create-user") return;
-            if (typeof id !== "string" || typeof image !== "string" || image.length === 0) return;
-            const adapter = context.context.internalAdapter;
-            const current = yield* Effect.tryPromise(() => adapter.findUserById(id));
-            if (!current || current.image === image) return;
-            yield* Effect.tryPromise(() => adapter.updateUser(id, { image }));
-          }).pipe(
-            Effect.catch((error) =>
-              error instanceof APIError
-                ? Effect.fail(error)
-                : Effect.sync(() =>
+        source.method === "oauth" &&
+        source.oauth?.providerId === "openai" &&
+        source.action === "link-account"
+          ? Promise.resolve({
+              error: "account_not_linked",
+              errorDescription: "Sign in with your existing method before linking ChatGPT.",
+            })
+          : Effect.runPromise(
+              Effect.gen(function* () {
+                const { id, image } = user;
+                if (source.method !== "oauth" || source.action === "create-user") return;
+                if (typeof id !== "string" || typeof image !== "string" || image.length === 0)
+                  return;
+                const adapter = context.context.internalAdapter;
+                const current = yield* Effect.tryPromise(() => adapter.findUserById(id));
+                if (!current || current.image === image) return;
+                yield* Effect.tryPromise(() => adapter.updateUser(id, { image }));
+              }).pipe(
+                Effect.catch((error) =>
+                  Effect.sync(() =>
                     context.context.logger.warn("Unable to refresh the provider photo", error),
                   ),
+                ),
+              ),
             ),
-          ),
-        ),
     } satisfies BetterAuthOptions["user"],
     databaseHooks: {
       account: {

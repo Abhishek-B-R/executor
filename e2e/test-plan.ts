@@ -1943,6 +1943,15 @@ export const scenarios = plan({
       local: na("Cloudflare's static asset rewrites are Cloud-only."),
     },
   },
+  cloudSignInErrors: {
+    file: "cloud-sign-in-errors.spec.ts",
+    title: "Cloud sign-in explains a refused social sign-in by its error code",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host has its own sign-in page without social providers."),
+      local: na("Local has no sign-in."),
+    },
+  },
   openAiAppsChallenge: {
     file: "openai-apps-challenge.spec.ts",
     title: "Cloud serves the ChatGPT app domain verification token at its exact path",
