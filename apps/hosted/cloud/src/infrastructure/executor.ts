@@ -29,8 +29,8 @@ import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
-import { cloudHosts, cloudOrigin, cloudResourceOrigins } from "./stage.ts";
-import { accountOAuthStatePrefix } from "../contracts/edge-paths.ts";
+import { cloudOrigin, cloudResourceOrigins } from "./stage.ts";
+import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -62,7 +62,7 @@ export const cloudExecutor = Effect.fn(function* (
   // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
   // origin keeps delivering, so existing subscriptions keep the URL they stored.
   const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
-  const accountCallbacks = (yield* cloudHosts.pipe(Effect.orDie)).accountCallbacks;
+  const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
   const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
@@ -115,11 +115,12 @@ export const cloudExecutor = Effect.fn(function* (
           urlPolicy: egress.policy,
           ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
           // Entered clients saved before sign-ins moved to `executor.sh` keep the callback they name.
-          ...(Option.isSome(accountCallbacks)
-            ? { previousRedirectUris: accountCallbacks.value.previous }
+          ...(Option.isSome(accountSignIns.callbacks)
+            ? { previousRedirectUris: accountSignIns.callbacks.value.previous }
             : {}),
-          // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix.
-          statePrefix: accountOAuthStatePrefix,
+          // v1's edge forwards `executor.sh/api/oauth/callback` to v2 by this state prefix; a stage's
+          // also names the stage, which production sends the browser back to.
+          statePrefix: accountSignIns.statePrefix,
           firstPartyClients,
         },
         cache: {

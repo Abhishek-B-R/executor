@@ -311,6 +311,17 @@ export const scenarios = plan({
       local: na("The OAuth proxy and role hosts are Cloud's."),
     },
   },
+  cloudOAuthProxyPreviewAccount: {
+    fixtures: "actors",
+    file: "cloud-oauth-proxy.spec.ts",
+    title:
+      "A test stage connects an account with production's OAuth callback, which returns the sign-in to the stage",
+    targets: {
+      cloud: oauthProxyPreviewCloud,
+      "self-host": na("The OAuth proxy and role hosts are Cloud's."),
+      local: na("The OAuth proxy and role hosts are Cloud's."),
+    },
+  },
   cloudRoleHostResourceSeed: {
     fixtures: "actors",
     file: "cloud-role-host-seed.spec.ts",

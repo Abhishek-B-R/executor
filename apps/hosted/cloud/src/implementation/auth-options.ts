@@ -4,12 +4,17 @@ import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions, type RefreshRejection } from "@executor-js/hosted-server";
 import { HttpUrl } from "@executor-js/sdk/core";
-import { cloudHosts, type CloudHosts } from "../infrastructure/stage.ts";
+import { cloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
 import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
+import {
+  cloudAccountSignIns,
+  cloudOAuthProxy,
+  socialCallbackOrigin,
+} from "./oauth-proxy-settings.ts";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { emailCodeExpiresIn, emailCodeMessage, invitationEmailMessage } from "./email-messages.ts";
@@ -24,45 +29,6 @@ import { cloudMemberLimit } from "./member-limit.ts";
 /** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
 
-const ProxyOrigin = Schema.String.check(
-  Schema.makeFilter(
-    (value) => {
-      try {
-        const url = new URL(value);
-        return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
-      } catch {
-        return false;
-      }
-    },
-    {
-      message:
-        "The OAuth proxy's production URL must be an HTTP(S) origin without a trailing slash",
-    },
-  ),
-);
-
-/**
- * One registered OAuth client serves every stage, and its callback belongs to production.
- * A test stage needs both the production origin and the shared proxy secret, or neither.
- */
-const OAuthProxySettings = Schema.Struct({
-  productionUrl: Schema.Option(ProxyOrigin),
-  secret: Schema.Option(Schema.Redacted(Schema.String.check(Schema.isMinLength(32)))),
-}).check(
-  Schema.makeFilter((value) => Option.isSome(value.productionUrl) === Option.isSome(value.secret), {
-    message: "Set the OAuth proxy's production URL and secret together, or set neither",
-  }),
-);
-
-/**
- * Where social providers send sign-in back. With role hosts it is the edge (`executor.sh`), whose
- * callback answers with a redirect to the same path on the browser origin: the sign-in's state
- * cookie is host-only there, and the code exchange names the registered edge URI. Without role
- * hosts it is the browser origin itself.
- */
-const socialCallbackOrigin = (hosts: CloudHosts) =>
-  Option.match(hosts.roles, { onNone: () => hosts.browser, onSome: (roles) => roles.edge });
-
 /** Require both cloud social providers and reject blank credentials at startup. */
 export const cloudAuthSettings = Effect.gen(function* () {
   const hosts = yield* cloudHosts;
@@ -70,13 +36,15 @@ export const cloudAuthSettings = Effect.gen(function* () {
   const resourceOrigins = hosts.resourceOrigins;
   const callbackOrigin = socialCallbackOrigin(hosts);
   const emulators = yield* cloudEmulators;
+  const accountSignIns = yield* cloudAccountSignIns;
   const configuredRedirectUri = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
     Config.option,
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Option(HttpUrl))),
   );
   // With role hosts, new connected-account sign-ins return to the edge's callback, which sends the
-  // browser to the browser origin. Without them, an operator may set a relay.
-  const oauthRedirectUri = Option.isNone(hosts.accountCallbacks)
+  // browser to the browser origin: production's edge for a stage that signs in through its proxy.
+  // Without them, an operator may set a relay.
+  const oauthRedirectUri = Option.isNone(accountSignIns.callbacks)
     ? configuredRedirectUri
     : Option.isSome(configuredRedirectUri)
       ? yield* Effect.die(
@@ -84,20 +52,8 @@ export const cloudAuthSettings = Effect.gen(function* () {
             "EXECUTOR_OAUTH_CALLBACK_URL is derived from the role hosts; remove it from this deployment",
           ),
         )
-      : Option.some(HttpUrl.make(hosts.accountCallbacks.value.current));
-  // Emulated sign-ins never resolve the real proxy credentials, including bindings retained from
-  // a previous non-emulated version: they name production and its shared secret. A run that
-  // proves the proxy names an emulated one, whose production is another emulated deployment.
-  const proxyNames = Option.isSome(emulators)
-    ? {
-        productionUrl: "EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL",
-        secret: "EXECUTOR_EMULATED_OAUTH_PROXY_SECRET",
-      }
-    : { productionUrl: "OAUTH_PROXY_PRODUCTION_URL", secret: "OAUTH_PROXY_SECRET" };
-  const oauthProxy = yield* Config.all({
-    productionUrl: Config.String(proxyNames.productionUrl).pipe(Config.option),
-    secret: Config.Redacted(proxyNames.secret).pipe(Config.option),
-  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(OAuthProxySettings)), Effect.map(Option.all));
+      : Option.some(HttpUrl.make(accountSignIns.callbacks.value.current));
+  const { names: proxyNames, settings: oauthProxy } = yield* cloudOAuthProxy;
   // The proxy's production is where its sign-ins return. A value naming this deployment's other
   // hosts is stale configuration: production would proxy its own sign-ins to itself. The browser
   // origin moves with `CLOUD_BROWSER_ORIGIN`; the callback origin does not, so neither does this.

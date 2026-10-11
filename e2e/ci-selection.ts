@@ -165,7 +165,8 @@ const jobs = {
     target: "cloud",
     runner: 3,
     cloudMode: "oauth-proxy-preview",
-    pattern: "A test stage signs in through production's OAuth proxy",
+    pattern:
+      "A test stage signs in through production's OAuth proxy|A test stage connects an account with production's OAuth callback",
   },
 } as const satisfies Record<
   string,

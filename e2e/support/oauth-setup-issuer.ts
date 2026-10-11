@@ -76,6 +76,12 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     "invalid_client_metadata";
   /** The `error_description` a refused registration sends; undefined omits it. */
   let registrationErrorDescription: string | undefined = "PRIVATE_PROVIDER_ERROR";
+  /**
+   * The only redirect URIs registration accepts; undefined accepts any. A registration naming
+   * another is refused with `invalid_redirect_uri`, as Vercel's MCP authorization server refuses
+   * callbacks it has not approved.
+   */
+  let registrationRedirects: readonly string[] | undefined;
   let omitSecretExpiry = false;
   /** Vercel registers a public client whatever method the request names, as RFC 7591 allows. */
   let issuePublicClients = false;
@@ -260,6 +266,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let lastRegistration:
     | { scope: string; method: string; applicationType: string | undefined }
     | undefined;
+  /** The redirect URIs each registration request named, in order, including refused ones. */
+  const registeredRedirects: Array<readonly string[]> = [];
   /**
    * How the service reads HTTP Basic client credentials. "form-decoded" follows RFC 6749
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
@@ -834,6 +842,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           method: input.token_endpoint_auth_method,
           applicationType: input.application_type,
         };
+        registeredRedirects.push([...input.redirect_uris]);
         const description =
           registrationErrorDescription === undefined
             ? {}
@@ -847,6 +856,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (registrationStatus === 400)
           return yield* HttpServerResponse.json(
             { error: registrationError, ...description },
+            { status: 400 },
+          );
+        if (
+          registrationRedirects !== undefined &&
+          !input.redirect_uris.every((uri) => registrationRedirects?.includes(uri))
+        )
+          return yield* HttpServerResponse.json(
+            { error: "invalid_redirect_uri", ...description },
             { status: 400 },
           );
         const issued = registeredClient ?? {
@@ -909,6 +926,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registrationError?: typeof registrationError;
       /** The `error_description` of a refused registration; null omits it. */
       readonly registrationErrorDescription?: string | null;
+      /** Refuse registrations naming a redirect URI outside these; null accepts any. */
+      readonly registrationRedirects?: readonly string[] | null;
       /** The Retry-After header of rate-limited discovery and registration; null omits it. */
       readonly retryAfter?: string | null;
       readonly omitSecretExpiry?: boolean;
@@ -1015,6 +1034,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             input.registrationErrorDescription === null
               ? undefined
               : input.registrationErrorDescription;
+        if (input.registrationRedirects !== undefined)
+          registrationRedirects =
+            input.registrationRedirects === null ? undefined : [...input.registrationRedirects];
         if (input.retryAfter !== undefined)
           retryAfter = input.retryAfter === null ? undefined : input.retryAfter;
         if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
@@ -1094,6 +1116,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       discoveries,
       discoveryRequests: [...discoveryRequests],
       lastRegistration,
+      registeredRedirects: [...registeredRedirects],
       probes,
       tokenExchanges,
       tokenChecks,

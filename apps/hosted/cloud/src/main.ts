@@ -39,7 +39,6 @@ import { publishedSkillRoutes } from "@executor-js/app-templates/executor";
 import { hideRemovedOrganizations } from "./implementation/organization-removal.ts";
 import {
   browserTelemetry,
-  hostedOAuthCallback,
   clientMetadataDocument,
   clientMetadataDocumentPath,
   clientMetadataSetting,
@@ -60,6 +59,7 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
+import { cloudAccountCallback } from "./implementation/account-callback.ts";
 import { cloudOnboarding } from "./infrastructure/onboarding.ts";
 import { Onboarding } from "./contracts/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
@@ -551,9 +551,11 @@ export default Api.make(
       ),
       HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
-      HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
-        HttpRouter.provideRequest(auth.identity),
-      ),
+      HttpRouter.add(
+        "GET",
+        "/api/oauth/callback",
+        cloudAccountCallback(auth.returnsStageAccountCallback),
+      ).pipe(HttpRouter.provideRequest(auth.identity)),
       HttpRouter.add(
         "GET",
         clientMetadataDocumentPath,
@@ -607,10 +609,13 @@ export default Api.make(
     const edgeHost = yield* Layer.mergeAll(
       authorizationServerRoutes,
       HttpRouter.add("GET", "/api/auth/callback/:provider", redirectTo(auth.origin, 302)),
-      // A connected-account sign-in's return opens the browser origin's callback page.
-      HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
-        HttpRouter.provideRequest(auth.identity),
-      ),
+      // A connected-account sign-in's return opens the browser origin's callback page, or a
+      // stage's when the sign-in is the stage's.
+      HttpRouter.add(
+        "GET",
+        "/api/oauth/callback",
+        cloudAccountCallback(auth.returnsStageAccountCallback),
+      ).pipe(HttpRouter.provideRequest(auth.identity)),
       withGitAccess(gitRoutes),
       // The public site. Nobody is signed in to v2 on the edge, so `/` is always the site's.
       HttpRouter.add("GET", "/", staticDocument("/index.html")),
