@@ -294,6 +294,13 @@ export const ResumeInput = Schema.Struct({
   requestId: InteractionId,
   response: ElicitationResponse,
 });
+/**
+ * Claude Code saves a text result over 50,000 characters to a file unless the tool raises that
+ * threshold. Execution results are already bounded by the output budget, so ask it to show them
+ * inline up to its 500,000-character ceiling.
+ */
+export const ExecutionResultMeta = { "anthropic/maxResultSizeChars": 500_000 };
+
 /** Continue an existing program after the agent has obtained the user's decision. Never restarts source. */
 export const ResumeTool = McpTool.make("resume", {
   description:
@@ -302,7 +309,7 @@ export const ResumeTool = McpTool.make("resume", {
   parameters: ResumeInput,
   success: McpExecutionResult,
   failure: ElicitationResponseInvalid,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);
 
 /** Bounds that keep each tools.search item short. Pages are also bounded by bytes. */
 export const SearchLimits = Schema.Struct({
@@ -415,11 +422,14 @@ export const McpLimits = Schema.Struct({
   maxOutputBytes: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 export type McpLimits = typeof McpLimits.Type;
-/** Default interpreter budgets; each product may supply different limits. */
+/**
+ * Default interpreter budgets; each product may supply different limits. The output budget is
+ * about Claude Code's default 25,000-token MCP result limit.
+ */
 export const defaultMcpLimits: McpLimits = {
   timeoutMs: 5 * 60_000,
   maxToolCalls: 100,
-  maxOutputBytes: 65_536,
+  maxOutputBytes: 100_000,
 };
 /**
  * UTF-8 bytes of JSON one search page may hold: a quarter of the execute output budget, so a
@@ -435,7 +445,7 @@ export const ExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: ExecutionRejected,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);
 
 /** Native-mode execution obtains policy decisions through server-initiated MCP requests. */
 export const NativeExecuteTool = McpTool.make("execute", {
@@ -445,4 +455,4 @@ export const NativeExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);

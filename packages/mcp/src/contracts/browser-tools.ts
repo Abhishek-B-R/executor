@@ -3,7 +3,12 @@ import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { Tool as McpTool } from "effect/ai";
 import { ToolPending } from "@executor-js/sdk/core";
-import { ExecuteInput, ExecutionOutcome, ExecutionRejected } from "./execute.ts";
+import {
+  ExecuteInput,
+  ExecutionOutcome,
+  ExecutionRejected,
+  ExecutionResultMeta,
+} from "./execute.ts";
 import { ElicitationResponseInvalid, InteractionId, ToolInputPending } from "./interactions.ts";
 
 /** Browser pending results retain the standard interaction and add its authenticated review link. */
@@ -24,7 +29,7 @@ export const BrowserExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: BrowserExecutionResult,
   failure: ExecutionRejected,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);
 /** Wait for a browser-submitted decision, then continue through the common execution manager. */
 export const BrowserResumeTool = McpTool.make("resume", {
   description:
@@ -33,4 +38,4 @@ export const BrowserResumeTool = McpTool.make("resume", {
   parameters: BrowserResumeInput,
   success: BrowserExecutionResult,
   failure: ElicitationResponseInvalid,
-});
+}).annotate(McpTool.Meta, ExecutionResultMeta);

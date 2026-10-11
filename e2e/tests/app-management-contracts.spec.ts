@@ -214,7 +214,7 @@ return { app, deployed, files: source.files };`,
       "Deploy a large saved source",
       `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
 const source = await executor.appManagement.source({ path });
-const saved = await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "reference.md", content: "x".repeat(70000) }], message: "Add a large reference" } });
+const saved = await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "reference.md", content: "x".repeat(110000) }], message: "Add a large reference" } });
 const deployed = await executor.appManagement.deploy({ path, body: { commit: saved.revision.commit } });
 return { saved, deployed };`,
     );
@@ -382,7 +382,7 @@ const deployThroughApps = (client: Connection, profile: string, app: string) =>
 const path = { app: ${JSON.stringify(app)} };
 const { owner } = await executor.apps.get({ path });
 const source = await executor.apps.workspace({ path, query: { owner } });
-const files = source.files.map((file) => file.path === "reference.md" ? { ...file, content: "y".repeat(70000) } : file);
+const files = source.files.map((file) => file.path === "reference.md" ? { ...file, content: "y".repeat(110000) } : file);
 const saved = await executor.apps.commit({ path, body: { owner, expected: source.revision.commit, files, message: "Revise the large reference" } });
 const deployed = await executor.apps.deploy({ body: { owner, app: path.app, files } });
 return { saved, deployed };`,

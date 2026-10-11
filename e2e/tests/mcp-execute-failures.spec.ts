@@ -679,7 +679,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
   runs: query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT title, length FROM runs ORDER BY rowid").toArray()),
   ask: mutation({ input: object({}) }, async ({ elicit }) => {
     try {
-      await elicit({ mode: "form", message: "Q".repeat(70000), requestedSchema: { type: "object", properties: {} } });
+      await elicit({ mode: "form", message: "Q".repeat(110000), requestedSchema: { type: "object", properties: {} } });
       return { asked: true };
     } catch (error) {
       return { reason: error.reason };
@@ -1766,11 +1766,11 @@ return messages;`,
               .execution;
           });
 
-        // 40 KB of arguments: well inside the 64 KiB execute result, but not when it holds them twice.
+        // 60 KB of arguments: well inside the 100 KB execute result, but not when it holds them twice.
         const parked = yield* executeOnce(
           client,
-          "Ask approval for a call with 40 KB of arguments",
-          `return await ${publish("Weekly report", ascii(40_000))};`,
+          "Ask approval for a call with 60 KB of arguments",
+          `return await ${publish("Weekly report", ascii(60_000))};`,
           "large-approval.json",
         );
         expect(parked.structured).toMatchObject({ status: "approval-required" });
@@ -1779,45 +1779,45 @@ return messages;`,
         // how long it is.
         expect(pending.invocation.input).toEqual({
           title: "Weekly report",
-          body: "A".repeat(40_000),
+          body: "A".repeat(60_000),
         });
         expect(pending.elicitation.message).toContain("Approve publish?");
         expect(pending.elicitation.message).toContain('"title": "Weekly report"');
         expect(pending.elicitation.message).toContain(`"${"A".repeat(100)}`);
-        expect(pending.elicitation.message).toContain('"… (40000 characters)');
+        expect(pending.elicitation.message).toContain('"… (60000 characters)');
         expect(pending.elicitation.message).toContain(
           "Approving runs the call with the complete arguments",
         );
         expect(pending.elicitation.message.length).toBeLessThan(5_000);
         expect(
           yield* accept(
-            "Approve the call with 40 KB of arguments",
+            "Approve the call with 60 KB of arguments",
             pending.requestId,
             "large-approval-resumed.json",
           ),
-        ).toMatchObject({ ok: true, value: { title: "Weekly report", length: 40_000 } });
+        ).toMatchObject({ ok: true, value: { title: "Weekly report", length: 60_000 } });
 
-        // 60 KB of ASCII still fits once, so it is offered and runs.
+        // 95 KB of ASCII still fits once, so it is offered and runs.
         const boundary = yield* executeOnce(
           client,
-          "Ask approval for a call with 60 KB of arguments",
-          `return await ${publish("Boundary report", ascii(60_000))};`,
+          "Ask approval for a call with 95 KB of arguments",
+          `return await ${publish("Boundary report", ascii(95_000))};`,
           "boundary-approval.json",
         );
         const near = yield* Schema.decodeUnknownEffect(PublishPending)(boundary.structured);
-        expect(near.invocation.input.body).toHaveLength(60_000);
+        expect(near.invocation.input.body).toHaveLength(95_000);
         expect(
           yield* accept(
-            "Approve the call with 60 KB of arguments",
+            "Approve the call with 95 KB of arguments",
             near.requestId,
             "boundary-approval-resumed.json",
           ),
-        ).toMatchObject({ ok: true, value: { title: "Boundary report", length: 60_000 } });
+        ).toMatchObject({ ok: true, value: { title: "Boundary report", length: 95_000 } });
 
         // Arguments the execute result cannot hold once are refused with the request's size and
         // the limit, not only the error's name.
         const refusal =
-          /^ApprovalTooLarge \(HTTP 413\): The approval request for “publish” is (\d+) bytes, over the 65536-byte limit for an approval request, so Executor did not ask for approval and will not run the call\. Recovery: Make the arguments smaller/u;
+          /^ApprovalTooLarge \(HTTP 413\): The approval request for “publish” is (\d+) bytes, over the 100000-byte limit for an approval request, so Executor did not ask for approval and will not run the call\. Recovery: Make the arguments smaller/u;
         const refusedBytes = (label: string, body: string, file: string) =>
           Effect.gen(function* () {
             const refused = yield* executeOnce(
@@ -1834,23 +1834,23 @@ return messages;`,
             return { bytes: Number(measured[1]), structured: refused.structured };
           });
         const refused = yield* refusedBytes(
-          "Ask approval for a call with 70 KB of arguments",
-          ascii(70_000),
+          "Ask approval for a call with 110 KB of arguments",
+          ascii(110_000),
           "oversized-approval.json",
         );
-        expect(refused.bytes).toBeGreaterThan(70_000);
-        expect(refused.bytes).toBeLessThan(75_000);
-        // 25,000 three-byte characters: short in characters, but over the limit in UTF-8 bytes.
+        expect(refused.bytes).toBeGreaterThan(110_000);
+        expect(refused.bytes).toBeLessThan(115_000);
+        // 34,000 three-byte characters: short in characters, but over the limit in UTF-8 bytes.
         const multibyte = yield* refusedBytes(
-          "Ask approval for a call with 25,000 euro signs",
-          `"€".repeat(25_000)`,
+          "Ask approval for a call with 34,000 euro signs",
+          `"€".repeat(34_000)`,
           "oversized-multibyte-approval.json",
         );
-        expect(multibyte.bytes).toBeGreaterThan(75_000);
+        expect(multibyte.bytes).toBeGreaterThan(102_000);
         const caught = yield* executeOnce(
           client,
           "Catch the oversized approval and read its recovery",
-          `try { await ${publish("Oversized report", ascii(70_000))}; return "ran"; } catch (error) { return error.message; }`,
+          `try { await ${publish("Oversized report", ascii(110_000))}; return "ran"; } catch (error) { return error.message; }`,
           "oversized-approval-caught.json",
         );
         const recovery = yield* Schema.decodeUnknownEffect(CaughtRecovery)(
@@ -1865,8 +1865,8 @@ return messages;`,
         expect(uncaught.execution.error.response.recovery).toEqual(recovery.recovery);
         // None of the refused calls ran.
         expect(yield* runs("Read the runs after the refusals", "runs-after-refusal.json")).toEqual([
-          { title: "Weekly report", length: 40_000 },
-          { title: "Boundary report", length: 60_000 },
+          { title: "Weekly report", length: 60_000 },
+          { title: "Boundary report", length: 95_000 },
         ]);
 
         // An app's own question too large to return reaches the app as an invalid request, and
@@ -1983,8 +1983,8 @@ return messages;`,
         expect(
           yield* runs("Read the runs after the native approvals", "runs-after-native.json"),
         ).toEqual([
-          { title: "Weekly report", length: 40_000 },
-          { title: "Boundary report", length: 60_000 },
+          { title: "Weekly report", length: 60_000 },
+          { title: "Boundary report", length: 95_000 },
           { title: "Browser report", length: 40_015 },
           { title: "Native exact report", length: 40_015 },
           { title: "Native report", length: 100_000 },

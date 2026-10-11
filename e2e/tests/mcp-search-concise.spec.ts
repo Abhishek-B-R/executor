@@ -12,7 +12,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /** Execute's default output budget; a search page may use a quarter of it. */
-const outputBytes = 65_536;
+const outputBytes = 100_000;
 const records = 100;
 const kinds = 300;
 
