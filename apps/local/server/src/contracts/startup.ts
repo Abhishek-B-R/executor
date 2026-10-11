@@ -109,6 +109,47 @@ export const rotateKeyCommand = Command.make("rotate-key").pipe(
   ),
 );
 
+/** Install a newer release with the package manager that installed this copy. */
+export const upgradeCommand = Command.make("upgrade", {
+  version: Argument.String("version").pipe(
+    Argument.withDescription("Release to install, such as 2.0.0-beta.16. Default: the newest"),
+    Argument.optional,
+  ),
+  method: Flag.Literals("method", ["npm", "pnpm", "bun", "yarn"]).pipe(
+    Flag.withDescription("Package manager to install with, instead of the detected one"),
+    Flag.optional,
+  ),
+  yes: Flag.Boolean("yes").pipe(
+    Flag.withAlias("y"),
+    Flag.withDescription("Do not ask for confirmation; required to downgrade without a terminal"),
+    Flag.withDefault(false),
+  ),
+}).pipe(
+  Command.withDescription(
+    "Install the newest Executor release on this installation's channel, or the given version",
+  ),
+);
+
+/**
+ * `executor upgrade` stopped. Every message says what to do next, and whether anything changed:
+ * only `install-failed` and `verify-failed` follow a package manager run.
+ */
+export class UpgradeFailed extends Schema.TaggedError<UpgradeFailed>()("UpgradeFailed", {
+  reason: Schema.Literals([
+    "development-build",
+    "invalid-version",
+    "registry-unavailable",
+    "unknown-release",
+    "node-too-old",
+    "unknown-install",
+    "downgrade-unconfirmed",
+    "cancelled",
+    "install-failed",
+    "verify-failed",
+  ]),
+  message: Schema.String,
+}) {}
+
 /** Executor 1 commands that Executor 2 does not have. */
 export const LegacyCommandName = Schema.Literals([
   "web",

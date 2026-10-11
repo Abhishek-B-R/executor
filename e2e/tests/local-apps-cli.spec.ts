@@ -580,7 +580,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
           run(["list", "--host", "http://127.0.0.1:9"], true, undefined, environment(registryUrl));
         const outdated = yield* failsWith(local);
         yield* evidence.json("outdated-cli.json", outdated);
-        const update = `This CLI (v${version}) is out of date; the latest is v2.999.0. Update with: npm i -g executor`;
+        const update = `This CLI (v${version}) is out of date; the latest is v2.999.0. Run: executor upgrade`;
         expect(outdated.code).toBe(1);
         expect(outdated.stderr).toContain("Code: HostUnreachable");
         expect(outdated.stderr).toContain(update);

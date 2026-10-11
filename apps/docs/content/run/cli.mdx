@@ -48,6 +48,7 @@ value that does not match the directory stops startup and changes nothing.
 | `executor serve` | Start without opening a browser. |
 | `executor pair` | Print a new connection link for the running server. |
 | `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
+| `executor upgrade` | Install the newest release with the package manager that installed Executor. |
 | `executor rotate-key` | Replace the saved API key. Restart Executor, then update clients that used the old key. |
 
 `executor pair` asks the server on `EXECUTOR_PORT` for a link, using the API key
@@ -111,10 +112,33 @@ Missing keys stop startup. Executor will not generate replacements for an
 existing installation. Restore the original keys to recover access.
 
 `executor` and `executor serve` check npm at most once a day for a newer
-release on their channel and print the install command. Beta installs are told
-about stable once it is newer. The check never installs anything and is skipped
-in CI. Run the install command again to update. The v2 data directory stays the same
-when beta becomes stable. Uninstalling the package does not delete data or keys.
+release on their channel and print a reminder to run `executor upgrade`. Beta
+installs are told about stable once it is newer. The check never installs
+anything and is skipped in CI. The v2 data directory stays the same when beta
+becomes stable. Uninstalling the package does not delete data or keys.
+
+`executor upgrade` installs the newest release on your channel with the package
+manager that installed Executor: npm, pnpm, Bun or Yarn. It tells them apart by
+where Executor's files live; `--method npm|pnpm|bun|yarn` chooses one instead.
+Before installing, it checks that your Node.js version meets the new release's
+requirement and stops without changing anything if it does not. Afterwards it
+runs `executor --version` to confirm the new command works.
+
+```sh
+executor upgrade                 # newest release on your channel
+executor upgrade 2.0.0-beta.16   # a specific release
+executor upgrade --method pnpm   # install with pnpm
+```
+
+On a terminal it asks before installing; `--yes` skips the question. Without a
+terminal, as for agents and CI, it installs without asking. Installing an older
+release needs the version and confirmation, or `--yes` without a terminal. If
+you run Executor through `npx`, `bunx` or `pnpm dlx`, there is nothing to
+upgrade: run `npx executor@beta` to get the newest release. When Executor cannot
+tell which package manager installed it, it prints the install command for each
+one instead of guessing. A running `executor` or `executor serve` keeps using
+the old version until you restart it; `executor upgrade` says when one is
+running. Executor never updates itself without being asked.
 
 The desktop app uses the same local server with a separate
 profile. It checks for updates in the background and asks before restarting to

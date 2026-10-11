@@ -14,7 +14,12 @@ import {
 } from "effect";
 import { Hex } from "effect/encoding";
 import { lock } from "proper-lockfile";
-import { config, keyStorageConfig, type KeyStorage } from "../contracts/config.ts";
+import {
+  config,
+  dataDirectoryConfig,
+  keyStorageConfig,
+  type KeyStorage,
+} from "../contracts/config.ts";
 import {
   LocalConfigurationReason,
   LocalCredentialService,
@@ -204,9 +209,7 @@ const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Keys));
 /** One directory's files and any supplied keys, read before anything touches the directory. */
 const dataDirectory = Effect.gen(function* () {
   const path = yield* Path.Path;
-  const directory = path.resolve(
-    yield* Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
-  );
+  const directory = path.resolve(yield* dataDirectoryConfig);
   return {
     directory,
     marker: path.join(directory, "installation.json"),

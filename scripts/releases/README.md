@@ -2,8 +2,11 @@
 
 Install with `npm i -g executor@beta`. Requires Node 24.14 or newer.
 Run `executor` to start the server and open the dashboard. It checks npm daily
-for a newer release and prints the install command; set `EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor serve`
+for a newer release and suggests `executor upgrade`; set `EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor serve`
 for headless operation and `executor pair` to get a new browser connection link.
+`executor upgrade` installs the newest release on your channel with the package
+manager that installed Executor, after checking the release's Node.js
+requirement; restart a running server afterwards.
 
 The package includes the dashboard, framework, runtime compiler, pinned Bun,
 Git, and the Motel collector. It does not need a source checkout, Bun, or

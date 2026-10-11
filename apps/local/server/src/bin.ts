@@ -8,7 +8,6 @@ import {
 /** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { fileURLToPath } from "node:url";
 import { Console, Effect, Option, Schema } from "effect";
 import { CliError, Command } from "effect/cli";
 import {
@@ -19,27 +18,35 @@ import {
   pairCommand,
   rotateKeyCommand,
   serveCommand,
+  UpgradeFailed,
+  upgradeCommand,
 } from "./contracts/startup.ts";
 import { LocalConfigurationError, rotateApiKey } from "./implementation/bootstrap.ts";
 import { launch } from "./implementation/launcher.ts";
 import { outdatedCli } from "./implementation/update-notice.ts";
 import { pair } from "./implementation/pair.ts";
+import { upgrade } from "./implementation/upgrade.ts";
 
-// The installed runtime's own path shows which package manager installed it.
-const installation = fileURLToPath(import.meta.url);
+// The script Node started, such as the npm launcher, shows which package manager installed it.
+const entry = process.argv[1];
 /** Failures whose message is written for the person running the command. */
-const explained = Schema.is(Schema.Union([LocalConfigurationError, PairFailed, LegacyCommand]));
+const explained = Schema.is(
+  Schema.Union([LocalConfigurationError, PairFailed, LegacyCommand, UpgradeFailed]),
+);
 
 const cli = executorCommand.pipe(
   Command.withHandler(({ bootstrapFd }) =>
-    launch(Option.isSome(bootstrapFd) ? "desktop" : "browser", process.platform, installation),
+    launch(Option.isSome(bootstrapFd) ? "desktop" : "browser", process.platform, entry),
   ),
   Command.withSubcommands([
     appsCommand(process.platform),
-    serveCommand.pipe(
-      Command.withHandler(() => launch("headless", process.platform, installation)),
-    ),
+    serveCommand.pipe(Command.withHandler(() => launch("headless", process.platform, entry))),
     pairCommand.pipe(Command.withHandler(() => pair(process.platform))),
+    upgradeCommand.pipe(
+      Command.withHandler((options) =>
+        upgrade(options, { entry, node: process.versions.node, platform: process.platform }),
+      ),
+    ),
     rotateKeyCommand.pipe(
       Command.withHandler(() =>
         rotateApiKey(process.platform).pipe(
@@ -62,7 +69,6 @@ const cli = executorCommand.pipe(
 NodeRuntime.runMain(
   Command.run(cli, { version: process.env.EXECUTOR_BUILD_VERSION ?? "0.0.0-dev" }).pipe(
     Effect.scoped,
-    Effect.provide(NodeServices.layer),
     // Effect CLI renders argument errors and supplies the exit status for help.
     // Operational failures retain the launcher's sanitized message. An apps command failure
     // states the host's code, status, message and recovery, and also prints them as JSON on
@@ -72,7 +78,7 @@ NodeRuntime.runMain(
       const described = explained(error) ? undefined : describeAppFailure(error);
       return Effect.gen(function* () {
         // A failed apps command also says when this CLI is out of date.
-        const update = described === undefined ? undefined : yield* outdatedCli(installation);
+        const update = described === undefined ? undefined : yield* outdatedCli(entry);
         const failure =
           described === undefined || update === undefined ? described : { ...described, update };
         yield* Console.error(
@@ -89,5 +95,6 @@ NodeRuntime.runMain(
         });
       });
     }),
+    Effect.provide(NodeServices.layer),
   ),
 );

@@ -1,6 +1,6 @@
 /**
- * Tell a person running the npm CLI that a newer release is on its channel.
- * It only reports; npm owns installation. The desktop app updates itself.
+ * Tell a person running the npm CLI that a newer release is on its channel, and how this copy was
+ * installed. It only reports; `executor upgrade` installs on request. The desktop app updates itself.
  */
 import {
   compareReleaseVersions,
@@ -25,51 +25,63 @@ const LastCheck = Schema.fromJsonString(
 );
 type LastCheck = typeof LastCheck.Type;
 
-// Global installs replace the copy; one-shot runners fetch the tag again.
-const installs = {
-  npm: "npm i -g",
-  bun: "bun add -g",
-  pnpm: "pnpm add -g",
-  yarn: "yarn global add",
-  npx: "npx",
-  bunx: "bunx",
-  "pnpm dlx": "pnpm dlx",
-} as const;
+/** Package managers whose global install replaces this copy; `executor upgrade` runs them. */
+export const GlobalInstaller = Schema.Literals(["npm", "pnpm", "bun", "yarn"]);
+export type GlobalInstaller = typeof GlobalInstaller.Type;
+/** Runners that fetch the release each time instead of keeping an installed copy. */
+export type OneShotRunner = "npx" | "bunx" | "pnpm dlx";
+/** How this copy was installed. `unknown` when its location matches no package manager's layout. */
+export type InstallMethod = GlobalInstaller | OneShotRunner | "unknown";
 
-/** How this copy was installed, read from where its files live. Anything else is npm. */
-const installer = (location: string): keyof typeof installs => {
+/** Classify a CLI file's location by the directory layout each package manager uses. */
+const classify = (location: string): InstallMethod => {
   const file = location.replaceAll("\\", "/").toLowerCase();
   if (file.includes("/_npx/")) return "npx";
-  if (/\/bunx-[^/]*executor@/.test(file)) return "bunx";
+  if (/\/bunx-[^/]*executor@/u.test(file)) return "bunx";
   if (file.includes("/dlx/") && file.includes("/.pnpm/")) return "pnpm dlx";
   if (file.includes("/install/global/node_modules/")) return "bun";
   if (file.includes("/.pnpm/")) return "pnpm";
-  if (/\/yarn\/(data\/)?global\/node_modules\//.test(file)) return "yarn";
-  return "npm";
+  if (/\/yarn\/(data\/)?global\/node_modules\//u.test(file)) return "yarn";
+  // npm's global prefix: lib/node_modules on macOS and Linux, npm/node_modules on Windows.
+  if (/\/(lib|npm)\/node_modules\/executor\//u.test(file)) return "npm";
+  return "unknown";
 };
 
-/** The command that moves this installation to `version` with the tool it already uses. */
-const updateCommand = (location: string | undefined, version: typeof ReleaseVersion.Type) => {
-  const method = location === undefined ? "npm" : installer(location);
-  const tag = releaseChannel(version);
-  const oneShot = method === "npx" || method === "bunx" || method === "pnpm dlx";
-  return oneShot
-    ? `Run it with: ${installs[method]} executor@${tag}`
-    : `Update with: ${installs[method]} executor${tag === "beta" ? "@beta" : ""}`;
-};
+/**
+ * How the running CLI was installed, read from the script Node started. Command shims are often
+ * symlinks into the package, so the script's real path is the one that shows the layout.
+ */
+export const installMethod = (entry: string | undefined) =>
+  Effect.gen(function* () {
+    if (entry === undefined) return "unknown" as const;
+    const fs = yield* FileSystem.FileSystem;
+    const real = yield* fs.realPath(entry).pipe(Effect.orElseSucceed(() => entry));
+    return classify(real);
+  });
+
+export const isOneShot = (method: InstallMethod): method is OneShotRunner =>
+  method === "npx" || method === "bunx" || method === "pnpm dlx";
+
+/** What to tell a person whose CLI is older than `version`. */
+const updateCommand = (method: InstallMethod, version: typeof ReleaseVersion.Type) =>
+  isOneShot(method)
+    ? `Run it with: ${method} executor@${releaseChannel(version)}`
+    : "Run: executor upgrade";
 
 const releaseTag = (tags: typeof DistTags.Type, name: string) =>
   Schema.decodeUnknownOption(ReleaseVersion)(tags[name]).pipe(Option.getOrUndefined);
 
-/** Read the npm `beta` and `latest` tags. `EXECUTOR_NPM_REGISTRY` names a registry mirror. */
-const fetchReleases = (timeout: Duration.Input) =>
+/** The registry Executor reads releases from. `EXECUTOR_NPM_REGISTRY` names a registry mirror. */
+export const npmRegistry = Config.String("EXECUTOR_NPM_REGISTRY").pipe(
+  Config.withDefault("https://registry.npmjs.org"),
+  Config.map((registry) => registry.replace(/\/+$/u, "")),
+);
+
+/** Read the npm `beta` and `latest` tags. */
+export const fetchReleases = (timeout: Duration.Input) =>
   Effect.gen(function* () {
-    const registry = yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(
-      Config.withDefault("https://registry.npmjs.org"),
-    );
-    const tags = yield* HttpClient.get(
-      `${registry.replace(/\/+$/u, "")}/-/package/executor/dist-tags`,
-    ).pipe(
+    const registry = yield* npmRegistry;
+    const tags = yield* HttpClient.get(`${registry}/-/package/executor/dist-tags`).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.json),
       Effect.flatMap(Schema.decodeUnknownEffect(DistTags)),
@@ -82,7 +94,7 @@ const fetchReleases = (timeout: Duration.Input) =>
   });
 
 /** The newest release this installation should move to, if any. */
-const newerRelease = (
+export const newerRelease = (
   current: typeof ReleaseVersion.Type,
   known: {
     readonly beta?: typeof ReleaseVersion.Type | undefined;
@@ -100,7 +112,9 @@ const newerRelease = (
 };
 
 /** This build's release version, or none for development and commit builds. */
-const currentRelease = Config.schema(ReleaseVersion, "EXECUTOR_BUILD_VERSION").pipe(Config.option);
+export const currentRelease = Config.schema(ReleaseVersion, "EXECUTOR_BUILD_VERSION").pipe(
+  Config.option,
+);
 const checksDisabled = Config.Boolean("EXECUTOR_NO_UPDATE_CHECK").pipe(Config.withDefault(false));
 
 /**
@@ -108,17 +122,17 @@ const checksDisabled = Config.Boolean("EXECUTOR_NO_UPDATE_CHECK").pipe(Config.wi
  * common cause. The lookup waits at most two seconds and never fails; undefined when the CLI is
  * current, checks are off, or the registry does not answer in time.
  */
-export const outdatedCli = (installation: string | undefined) =>
+export const outdatedCli = (entry: string | undefined) =>
   Effect.gen(function* () {
     const current = yield* currentRelease;
     if (Option.isNone(current) || (yield* checksDisabled)) return undefined;
     const newer = newerRelease(current.value, yield* fetchReleases(Duration.seconds(2)));
     if (newer === undefined) return undefined;
-    return `This CLI (v${current.value}) is out of date; the latest is v${newer}. ${updateCommand(installation, newer)}`;
+    return `This CLI (v${current.value}) is out of date; the latest is v${newer}. ${updateCommand(yield* installMethod(entry), newer)}`;
   }).pipe(Effect.orElseSucceed(() => undefined));
 
 /** Check at most daily, remember the answer in the data directory, and never delay or fail startup. */
-export const updateNotice = (directory: string, installation: string | undefined) =>
+export const updateNotice = (directory: string, entry: string | undefined) =>
   Effect.gen(function* () {
     const current = yield* currentRelease;
     const disabled = yield* checksDisabled;
@@ -141,5 +155,7 @@ export const updateNotice = (directory: string, installation: string | undefined
           );
     const newer = newerRelease(current.value, known);
     if (newer === undefined) return;
-    yield* Console.error(`Executor ${newer} is available. ${updateCommand(installation, newer)}`);
+    yield* Console.error(
+      `Executor ${newer} is available. ${updateCommand(yield* installMethod(entry), newer)}`,
+    );
   }).pipe(Effect.ignore);

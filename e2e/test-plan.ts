@@ -1230,6 +1230,16 @@ export const scenarios = plan({
       "self-host": na("Local CLI pairing"),
     },
   },
+  localUpgrade: {
+    file: "local-upgrade.spec.ts",
+    title:
+      "executor upgrade installs the newest release with the detected or chosen package manager, refuses an old Node, prints commands for one-shot and unknown installs, verifies the new command and names a running server to restart",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI upgrade"),
+      "self-host": na("Local CLI upgrade"),
+    },
+  },
   localCliLegacyCommands: {
     file: "local-cli-legacy-commands.spec.ts",
     title:
