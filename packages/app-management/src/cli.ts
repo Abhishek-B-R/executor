@@ -21,7 +21,7 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { isPlatformError, type PlatformError } from "effect/PlatformError";
+import { isPlatformError } from "effect/PlatformError";
 import {
   AppId,
   AppName,
@@ -33,12 +33,26 @@ import {
   ProfileId,
   SourceCommit,
   SourceFilePath,
-  SourceFiles,
+  SourceError,
+  inlineBytes,
   PackageName,
   hostedExecutorOrigin,
+  publicFileLimits,
   sourceLimits,
   type App,
 } from "@executor-js/sdk/core";
+import { GitPushRefused, readCommitBlobs } from "@executor-js/app-source/git-client";
+import {
+  codeOnly,
+  fitsRequest,
+  formatBytes,
+  formatCount,
+  ignoredSource,
+  pushSource,
+  readSource,
+  requestFiles,
+  type LocalFile,
+} from "./implementation/cli-source.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {
   AppClientError,
@@ -94,17 +108,9 @@ const commit = (purpose: string) =>
     Flag.withSchema(SourceCommit),
     Flag.withDescription(`Full 40-character Git commit ${purpose}`),
   );
-const ignoredSource = [".git", "node_modules", ".DS_Store"];
-const formatBytes = (bytes: number) =>
-  bytes >= 1024 * 1024
-    ? `${Number((bytes / (1024 * 1024)).toFixed(1))} MiB`
-    : bytes >= 1024
-      ? `${Number((bytes / 1024).toFixed(1))} KiB`
-      : `${bytes} bytes`;
-const formatCount = (count: number) => count.toLocaleString("en-US");
 const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription(
-    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. The source must include a root index.ts and be UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}; the CLI checks this before uploading`,
+    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. It must include a root index.ts. Code outside ui/public/ is UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}. Files under ui/public/ may be binary: at most ${formatCount(publicFileLimits.files)} files, each at most ${formatCount(publicFileLimits.fileBytes)} bytes. A source larger than ${formatBytes(sourceLimits.bytes)} in total is pushed with Git. The CLI checks this before uploading`,
   ),
 );
 const publication = {
@@ -278,125 +284,56 @@ const print =
     Schema.encodeEffect(Schema.toCodecJson(schema))(value).pipe(
       Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))),
     );
-/** At most this many paths are named in a refusal; the count says how many there are. */
-const namedPaths = 20;
+/** The working source the host holds now, with its revision and Git location. */
+const workingSource = (host: string, organization: Option.Option<string>, app: AppId) =>
+  manage(host, organization, (api, tenant) => api.source({ params: { ...tenant, app } }));
+
+/** The credential Git requests carry, the same one the API requests use. */
+const gitAuthorization = (host: string, organization: Option.Option<string>) =>
+  access(host, organization).pipe(Effect.map(({ token }) => `Bearer ${Redacted.value(token)}`));
+
 /**
- * Every host accepts the same source budget (`sourceLimits`): a file count and the UTF-8 bytes of
- * all contents. Refuse a larger source before uploading it, naming the limit and the largest files.
+ * Save a local source as the commit after `expected`. A source that fits one request is sent as
+ * files; a larger one is pushed with Git, sending only the files the app does not already hold.
  */
-const withinSourceLimits = (
-  files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>,
-) => {
-  if (files.length > sourceLimits.files)
-    return Effect.fail(
-      new SourceRejected({
-        reason: "files",
-        detail: `The source has ${formatCount(files.length)} files; Executor accepts at most ${formatCount(sourceLimits.files)}. The CLI already skips ${ignoredSource.join(", ")}; remove generated or unneeded files from the source.`,
-        paths: [],
-      }),
-    );
-  const total = files.reduce((sum, file) => sum + file.bytes, 0);
-  if (total <= sourceLimits.bytes) return Effect.void;
-  const largest = files.toSorted((left, right) => right.bytes - left.bytes).slice(0, 10);
-  return Effect.fail(
-    new SourceRejected({
-      reason: "bytes",
-      detail: `The source's files hold ${formatBytes(total)} (${formatCount(total)} bytes); Executor accepts at most ${formatBytes(sourceLimits.bytes)} (${formatCount(sourceLimits.bytes)} bytes) in total. The largest files: ${largest.map((file) => `${file.path} (${formatBytes(file.bytes)})`).join(", ")}.`,
-      paths: largest.map((file) => file.path),
-    }),
-  );
-};
-/** The CLI's own checks of a file list: a root index.ts, unique and canonical paths. */
-const sourceFiles = (files: unknown) =>
-  Schema.decodeUnknownEffect(SourceFiles)(files).pipe(
-    Effect.mapError(
-      (error) =>
-        new SourceRejected({
-          reason: "invalid",
-          detail: `The files are not a valid app source: ${error.message}`,
-          paths: [],
-        }),
-    ),
-  );
-/** Source must be UTF-8 text; a file that is not is refused rather than uploaded garbled. */
-const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-/**
- * Read a JSON source list, or every file under a directory with POSIX paths relative to it. The
- * source is checked against Executor's limits and for files that are not UTF-8 text before any of
- * it is uploaded.
- */
-const readFiles = (location: string) =>
+const saveSource = (input: {
+  readonly host: string;
+  readonly organization: Option.Option<string>;
+  readonly app: AppId;
+  readonly expected: typeof SourceCommit.Type;
+  readonly files: ReadonlyArray<LocalFile>;
+  readonly message: string;
+}) =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    if ((yield* fs.stat(location)).type !== "Directory") {
-      const listed = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
-        ),
-      )(yield* fs.readFileString(location)).pipe(
-        Effect.mapError(
-          (error) =>
-            new SourceRejected({
-              reason: "invalid",
-              detail: `${location} is not a source directory or a JSON array of {"path", "content"} files: ${error.message}`,
-              paths: [],
-            }),
-        ),
+    if (fitsRequest(input.files)) {
+      const files = yield* requestFiles(input.files);
+      return yield* manage(input.host, input.organization, (api, tenant) =>
+        api.commit({
+          params: { ...tenant, app: input.app },
+          payload: { expected: input.expected, files, message: input.message },
+        }),
       );
-      const encoder = new TextEncoder();
-      yield* withinSourceLimits(
-        listed.map((file) => ({ path: file.path, bytes: encoder.encode(file.content).length })),
-      );
-      return yield* sourceFiles(listed);
     }
-    const walk = (
-      relative: ReadonlyArray<string>,
-    ): Effect.Effect<
-      ReadonlyArray<{ path: string; location: string; bytes: number }>,
-      PlatformError
-    > =>
-      Effect.gen(function* () {
-        const directory = path.join(location, ...relative);
-        const entries = (yield* fs.readDirectory(directory))
-          .filter((entry) => !ignoredSource.includes(entry))
-          .sort();
-        const nested = yield* Effect.forEach(entries, (entry) =>
-          Effect.gen(function* () {
-            const segments = [...relative, entry];
-            const file = path.join(directory, entry);
-            const info = yield* fs.stat(file);
-            if (info.type === "Directory") return yield* walk(segments);
-            if (info.type !== "File") return [];
-            return [{ path: segments.join("/"), location: file, bytes: Number(info.size) }];
-          }),
-        );
-        return nested.flat();
+    const source = yield* workingSource(input.host, input.organization, input.app);
+    if (source.revision.commit !== input.expected)
+      return yield* new GitPushRefused({
+        reason: "conflict",
+        detail: `the app's working source is at ${source.revision.commit}, not ${input.expected}`,
       });
-    // Sizes come from the directory listing, so an oversized source is refused before it is read.
-    const found = yield* walk([]);
-    yield* withinSourceLimits(found);
-    const read = yield* Effect.forEach(found, (file) =>
-      fs.readFile(file.location).pipe(
-        Effect.flatMap((bytes) =>
-          Effect.try({ try: () => utf8.decode(bytes), catch: () => "binary" }).pipe(Effect.option),
-        ),
-        Effect.map((content) => ({ path: file.path, content: Option.getOrUndefined(content) })),
-      ),
-    );
-    const binary = read.flatMap((file) => (file.content === undefined ? [file.path] : []));
-    if (binary.length > 0)
-      return yield* new SourceRejected({
-        reason: "binary",
-        detail: `Executor stores app source as UTF-8 text, and ${formatCount(binary.length)} ${binary.length === 1 ? "file is" : "files are"} not: ${binary.slice(0, namedPaths).join(", ")}${binary.length > namedPaths ? `, and ${formatCount(binary.length - namedPaths)} more` : ""}. Remove them from the source directory, or replace them with text files such as SVG.`,
-        paths: binary.slice(0, namedPaths),
-      });
-    return yield* sourceFiles(
-      read.flatMap((file) =>
-        file.content === undefined ? [] : [{ path: file.path, content: file.content }],
-      ),
-    );
+    const pushed = yield* pushSource({
+      url: source.gitUrl,
+      authorization: yield* gitAuthorization(input.host, input.organization),
+      expected: input.expected,
+      remote: source.files,
+      files: input.files,
+      message: input.message,
+    });
+    return CommittedSource.make({
+      revision: { code: source.revision.code, commit: pushed.commit },
+      removed: pushed.removed,
+    });
   });
+
 /** Skill lookups print the host's result for all deployed apps, one catalog, or one document. */
 const SkillListing = Schema.Struct({
   catalogs: Schema.Array(AppSkillCatalog),
@@ -588,7 +525,7 @@ const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
     return {
       code: "RequestTooLarge",
       ...status,
-      message: `The host refused ${request} as too large (HTTP 413). App source is limited to ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)} of UTF-8 text.`,
+      message: `The host refused ${request} as too large (HTTP 413). Code is limited to ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)} of UTF-8 text, and ui/public/ to ${formatCount(publicFileLimits.files)} files of at most ${formatCount(publicFileLimits.fileBytes)} bytes each.`,
       recovery: {
         action: "Remove generated or unneeded files from the source, then retry.",
         instructions: "Reduce the source below the limits; nothing was saved.",
@@ -634,6 +571,24 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
       message: `${error.detail} Nothing was uploaded.`,
       details: { reason: error.reason, paths: [...error.paths] },
     };
+  if (Schema.is(GitPushRefused)(error))
+    return error.reason === "conflict"
+      ? {
+          code: "SourceConflict",
+          status: 409,
+          message: `The app's source changed since it was read (${error.detail}). Nothing was saved.`,
+          recovery: {
+            action:
+              "Read the latest source with executor apps source, then save against its commit.",
+            instructions:
+              "Another write moved the app's working source. Read it again, reapply the change, and commit against the new revision.",
+          },
+        }
+      : {
+          code: "GitPushFailed",
+          message: `Pushing the source with Git failed: ${error.detail}. The app's working source is unchanged.`,
+          details: { reason: error.reason },
+        };
   if (Schema.is(SkillLookupFailed)(error))
     return { code: "SkillLookupFailed", message: error.reason };
   if (Schema.is(LoginFailed)(error))
@@ -747,16 +702,42 @@ export const appsCommand = (platform: string) =>
         ]),
         Command.withHandler((args) =>
           Effect.gen(function* () {
-            const files = yield* readFiles(args.files);
-            yield* manage(args.host, args.organization, (api, tenant) =>
-              api
-                .create({
-                  params: tenant,
-                  payload: { name: args.name, files },
-                  responseMode: "decoded-and-response",
-                })
-                .pipe(Effect.flatMap(printResponse)),
+            const local = yield* readSource(args.files);
+            if (fitsRequest(local)) {
+              const files = yield* requestFiles(local);
+              return yield* manage(args.host, args.organization, (api, tenant) =>
+                api
+                  .create({
+                    params: tenant,
+                    payload: { name: args.name, files },
+                    responseMode: "decoded-and-response",
+                  })
+                  .pipe(Effect.flatMap(printResponse)),
+              );
+            }
+            // Too large for one request: create the app from its code, then push the whole
+            // directory, public files included, as its next commit.
+            const [created, response] = yield* manage(args.host, args.organization, (api, tenant) =>
+              requestFiles(codeOnly(local)).pipe(
+                Effect.flatMap((files) =>
+                  api.create({
+                    params: tenant,
+                    payload: { name: args.name, files },
+                    responseMode: "decoded-and-response",
+                  }),
+                ),
+              ),
             );
+            const source = yield* workingSource(args.host, args.organization, created.id);
+            yield* pushSource({
+              url: source.gitUrl,
+              authorization: yield* gitAuthorization(args.host, args.organization),
+              expected: source.revision.commit,
+              remote: source.files,
+              files: local,
+              message: "Add ui/public files",
+            });
+            yield* printResponse([created, response]);
           }),
         ),
       ),
@@ -774,17 +755,74 @@ export const appsCommand = (platform: string) =>
           ),
         ),
       ),
-      Command.make("source", { ...connection, app }).pipe(
-        Command.withDescription("Print an app's working source files and current commit"),
-        Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .source({
-                params: { ...tenant, app: args.app },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+      Command.make("source", {
+        ...connection,
+        app,
+        out: Flag.Directory("out").pipe(
+          Flag.withDescription(
+            "Write the working source into this directory instead of printing it, binary ui/public/ files included. The directory must be empty or absent",
           ),
+          Flag.optional,
+        ),
+      }).pipe(
+        Command.withDescription(
+          "Print an app's working source files and current commit. A ui/public/ file that is not text, or does not fit, is listed as {path, object, size}; pass --out to write every file",
+        ),
+        Command.withHandler((args) =>
+          Option.match(args.out, {
+            onNone: () =>
+              manage(args.host, args.organization, (api, tenant) =>
+                api
+                  .source({
+                    params: { ...tenant, app: args.app },
+                    responseMode: "decoded-and-response",
+                  })
+                  .pipe(Effect.flatMap(printResponse)),
+              ),
+            onSome: (out) =>
+              Effect.gen(function* () {
+                const fs = yield* FileSystem.FileSystem;
+                const path = yield* Path.Path;
+                if ((yield* fs.exists(out)) && (yield* fs.readDirectory(out)).length > 0)
+                  return yield* new SourceRejected({
+                    reason: "invalid",
+                    detail: `${out} is not empty.`,
+                    paths: [],
+                  });
+                const source = yield* workingSource(args.host, args.organization, args.app);
+                const write = (file: string, bytes: Uint8Array) =>
+                  Effect.gen(function* () {
+                    const target = path.join(out, ...file.split("/"));
+                    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+                    yield* fs.writeFile(target, bytes);
+                  });
+                const stored = new Map<string, string[]>();
+                for (const file of source.files) {
+                  if ("object" in file)
+                    stored.set(file.object, [...(stored.get(file.object) ?? []), file.path]);
+                  else yield* write(file.path, inlineBytes(file));
+                }
+                // Files listed by their blob come from the app's Git remote.
+                if (stored.size > 0)
+                  yield* readCommitBlobs({
+                    url: source.gitUrl,
+                    authorization: yield* gitAuthorization(args.host, args.organization),
+                    commit: source.revision.commit,
+                    objects: [...stored.keys()],
+                    write: (object, bytes) =>
+                      Effect.forEach(stored.get(object) ?? [], (file) => write(file, bytes), {
+                        discard: true,
+                      }).pipe(Effect.mapError(() => new SourceError({ reason: "storage" }))),
+                  });
+                yield* Console.log(
+                  JSON.stringify(
+                    { revision: source.revision, files: source.files.length, out },
+                    null,
+                    2,
+                  ),
+                );
+              }),
+          }),
         ),
       ),
       Command.make("history", { ...connection, app }).pipe(
@@ -844,42 +882,81 @@ export const appsCommand = (platform: string) =>
         ]),
         Command.withHandler((args) =>
           Effect.gen(function* () {
-            const files = yield* readFiles(args.files);
-            yield* manage(args.host, args.organization, (api, tenant) =>
-              api
-                .commit({
-                  params: { ...tenant, app: args.app },
-                  payload: { expected: args.expected, files, message: args.message },
-                })
-                .pipe(Effect.flatMap(print(CommittedSource))),
-            );
+            const files = yield* readSource(args.files);
+            const committed = yield* saveSource({
+              host: args.host,
+              organization: args.organization,
+              app: args.app,
+              expected: args.expected,
+              files,
+              message: args.message,
+            });
+            yield* print(CommittedSource)(committed);
           }),
         ),
       ),
       Command.make("deploy", {
         ...connection,
         app,
-        commit: commit("to build and activate"),
+        commit: commit("to build and activate").pipe(Flag.optional),
+        files: files.pipe(
+          Flag.withDescription(
+            "A source directory to save on top of the working source and deploy, instead of --commit. Large and binary ui/public/ files are pushed with Git",
+          ),
+          Flag.optional,
+        ),
+        message: Flag.String("message").pipe(
+          Flag.withSchema(Schema.NonEmptyString),
+          Flag.withDescription("Commit message when deploying --files"),
+          Flag.withDefault("Deploy"),
+        ),
       }).pipe(
         Command.withDescription(
-          "Build a saved commit and make it the app's active deployment. A failed build leaves the active deployment unchanged and reports the failing stage, file and line",
+          "Build a saved commit, or save a source directory and build it, and make it the app's active deployment. A failed build leaves the active deployment unchanged and reports the failing stage, file and line",
         ),
         Command.withExamples([
           {
             command: "executor apps deploy --app <app-id> --commit <commit>",
             description: "Deploy the commit executor apps commit printed",
           },
+          {
+            command: "executor apps deploy --app <app-id> --files ./hello",
+            description: "Save ./hello as the next commit and deploy it",
+          },
         ]),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .deploy({
-                params: { ...tenant, app: args.app },
-                payload: { commit: args.commit },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
-          ),
+          Effect.gen(function* () {
+            if (Option.isSome(args.commit) === Option.isSome(args.files))
+              return yield* new SourceRejected({
+                reason: "invalid",
+                detail: "Pass exactly one of --commit and --files.",
+                paths: [],
+              });
+            const target = Option.isSome(args.commit)
+              ? args.commit.value
+              : yield* Effect.gen(function* () {
+                  const local = yield* readSource(Option.getOrThrow(args.files));
+                  const head = yield* workingSource(args.host, args.organization, args.app);
+                  const saved = yield* saveSource({
+                    host: args.host,
+                    organization: args.organization,
+                    app: args.app,
+                    expected: head.revision.commit,
+                    files: local,
+                    message: args.message,
+                  });
+                  return saved.revision.commit;
+                });
+            yield* manage(args.host, args.organization, (api, tenant) =>
+              api
+                .deploy({
+                  params: { ...tenant, app: args.app },
+                  payload: { commit: target },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            );
+          }),
         ),
       ),
       Command.make("copy", { ...connection, app, name }).pipe(

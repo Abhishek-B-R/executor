@@ -12,7 +12,7 @@ import {
 } from "apps/contracts";
 import { WorkflowSeed } from "./workflow-runtime.ts";
 import { RetainedWorkerBuild, WorkerBundle, WorkerFramework } from "./worker-build.ts";
-import { SourceFiles } from "./deployment.ts";
+import { CodeFiles } from "./source.ts";
 import {
   RuntimeAppsDependencyMissing,
   RuntimeBuildFailed,
@@ -49,7 +49,11 @@ export interface AppHostCallbacks extends RpcTarget {
   load(): Promise<string>;
 }
 /** Sources declare the `apps` release they use in `dependencies.apps`; the host has none. */
-export const CompileWorkerApp = Schema.Struct({ files: SourceFiles });
+export const CompileWorkerApp = Schema.Struct({
+  files: CodeFiles,
+  /** Public file paths relative to `ui/public/`, served beside the build and never compiled. */
+  public: Schema.optional(Schema.Array(Schema.String)),
+});
 /** Compiler output is validated before it is retained by the host, which stores the framework once. */
 export const CompiledWorkerApp = Schema.Struct({
   bundle: WorkerBundle,

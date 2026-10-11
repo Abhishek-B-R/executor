@@ -6,7 +6,7 @@ import {
   RuntimeAppsDependencyMissing,
   RuntimeBuildFailed,
 } from "../contracts/runtime.ts";
-import type { SourceFiles } from "../contracts/deployment.ts";
+import type { CodeFiles } from "../contracts/source.ts";
 import { prepareUiBuild } from "./ui-build.ts";
 import { Effect, Option, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
@@ -143,7 +143,11 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
  * bundle holds only the app's modules; `framework` holds the release's server modules, which a
  * host stores once and links on load (see `assembleWorkerBundle`).
  */
-export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
+export const compileWorkerApp = (
+  files: CodeFiles,
+  host: WorkerHost,
+  publicPaths: ReadonlyArray<string> = [],
+) =>
   Effect.gen(function* () {
     const vendored = files.find((file) => file.path.split("/").includes("node_modules"));
     if (vendored !== undefined)
@@ -163,7 +167,7 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
     const protocol = yield* appProtocol(selected.protocol);
     const entry = "__executor_worker.ts";
     filesystem.write(entry, protocol.workerEntry(files));
-    const plan = yield* prepareUiBuild(files);
+    const plan = yield* prepareUiBuild(files, publicPaths);
     const browser =
       plan === undefined
         ? undefined

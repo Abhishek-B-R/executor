@@ -1,5 +1,5 @@
 /** Install the bundled management app using the same deployment and account operations as user apps. */
-import { OwnerId, StorageError, type Executor } from "@executor-js/sdk/core";
+import { OwnerId, StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted } from "effect";
 import type { ServerConfig } from "../contracts/config.ts";
 import { executorAppSource } from "./executor-app-source.ts";
@@ -13,14 +13,7 @@ export const installExecutorApp = (executor: Executor, config: ServerConfig) =>
     const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
     const current =
       existing === undefined ? undefined : yield* executor.apps.source({ owner, app: existing.id });
-    const currentFiles =
-      current === undefined
-        ? undefined
-        : new Map(current.files.map((file) => [file.path, file.content]));
-    const unchanged =
-      currentFiles !== undefined &&
-      currentFiles.size === files.length &&
-      files.every((file) => currentFiles.get(file.path) === file.content);
+    const unchanged = current !== undefined && sourceFilesEqual(current.files, files);
     const app =
       existing === undefined
         ? (yield* executor.apps.deploy({ owner, name: "Executor", files })).app

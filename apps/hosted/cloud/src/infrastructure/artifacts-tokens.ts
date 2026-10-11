@@ -51,6 +51,41 @@ interface Coordinator {
     SourceError,
     RuntimeContext
   >;
+  /** A branch head or commit and its root tree, or null when there is none. */
+  readonly resolve: (
+    id: string,
+    ref: string,
+    trace: TraceContext | undefined,
+  ) => Effect.Effect<{ commit: string; tree: string } | null, SourceError, RuntimeContext>;
+  /** Every non-tree entry below a tree, by full path. */
+  readonly tree: (
+    id: string,
+    tree: string,
+    trace: TraceContext | undefined,
+  ) => Effect.Effect<
+    ReadonlyArray<{ path: string; mode: string; type: string; object: string }>,
+    SourceError,
+    RuntimeContext
+  >;
+  /** Blob sizes, with their bytes in `bytes` mode while the running total is within `budget`. */
+  readonly blobs: (
+    id: string,
+    objects: ReadonlyArray<string>,
+    mode: "sizes" | "bytes",
+    budget: number,
+    trace: TraceContext | undefined,
+  ) => Effect.Effect<
+    ReadonlyArray<{ object: string; size: number; bytes: Uint8Array | null }>,
+    SourceError,
+    RuntimeContext
+  >;
+  /** One file of a commit by path, or null. */
+  readonly file: (
+    id: string,
+    commit: string,
+    path: string,
+    trace: TraceContext | undefined,
+  ) => Effect.Effect<Uint8Array | null, SourceError, RuntimeContext>;
   /** Create the repository; null means it already existed. */
   readonly create: (
     id: string,
@@ -130,6 +165,34 @@ export const cloudArtifactsTokens = (
               Effect.withSpan("source.repository.history.rpc"),
             );
           return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
+        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+      resolve: (repository, ref) =>
+        Effect.gen(function* () {
+          return yield* coordinator
+            .getByName(repository)
+            .resolve(repository, ref, yield* currentTraceContext)
+            .pipe(Effect.withSpan("source.repository.resolve.rpc"));
+        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+      tree: (repository, tree) =>
+        Effect.gen(function* () {
+          return yield* coordinator
+            .getByName(repository)
+            .tree(repository, tree, yield* currentTraceContext)
+            .pipe(Effect.withSpan("source.repository.tree.rpc"));
+        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+      blobs: (repository, objects, mode, budget) =>
+        Effect.gen(function* () {
+          return yield* coordinator
+            .getByName(repository)
+            .blobs(repository, objects, mode, budget, yield* currentTraceContext)
+            .pipe(Effect.withSpan("source.repository.blobs.rpc"));
+        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+      file: (repository, commit, path) =>
+        Effect.gen(function* () {
+          return yield* coordinator
+            .getByName(repository)
+            .file(repository, commit, path, yield* currentTraceContext)
+            .pipe(Effect.withSpan("source.repository.file.rpc"));
         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
       create: (repository) =>
         Effect.gen(function* () {

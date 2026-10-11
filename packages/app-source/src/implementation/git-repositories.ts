@@ -4,11 +4,19 @@ import {
   SourceFiles,
   Branch,
   GitCommit,
+  GitObjectId,
   SourceCommit,
+  SourceFilePath,
+  inlineBytes,
+  isPublicSourcePath,
+  isUpload,
+  publicFits,
   sourceFiles,
   sourceFits,
+  sourceLimits,
   removedPaths,
   type RepositoryBackend,
+  type SourceFile,
 } from "@executor-js/sdk/core";
 import { Effect, Schema, Semaphore, type Scope } from "effect";
 import { protectGit } from "./protected-git.ts";
@@ -150,7 +158,12 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
         // Restrict revisions before passing them to Git; no option or revision-expression injection.
         // A commit is read as given. A branch is resolved once so the tree and the commit agree.
         const commit = Schema.is(SourceCommit)(ref)
-          ? ref
+          ? yield* Effect.gen(function* () {
+              // A commit that is not in the repository is missing, not a Git failure.
+              const found = yield* git(["--git-dir", repo, "cat-file", "-e", `${ref}^{commit}`]);
+              if (found.code !== 0) return yield* new SourceError({ reason: "not-found" });
+              return ref;
+            })
           : yield* Effect.gen(function* () {
               const name = yield* Schema.decodeUnknownEffect(Branch)(ref);
               const revision = yield* git([
@@ -169,7 +182,7 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                 ),
               );
             });
-        // One process lists every file with its size, so the budget holds before any content is read.
+        // One process lists every file with its size, so the budgets hold before any content is read.
         const tree = yield* text([
           "--git-dir",
           repo,
@@ -179,19 +192,39 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
           "-z",
           `${commit}^{commit}`,
         ]);
-        const blobs: Array<{ path: string; object: string; size: number }> = [];
-        let total = 0;
+        const entries: Array<{ path: string; object: string; size: number }> = [];
         for (const entry of tree.split("\0").filter(Boolean)) {
           const match = /^(100644|100755) blob ([a-f0-9]{40}) +(\d+)\t([\s\S]+)$/.exec(entry);
           if (match?.[2] === undefined || match[3] === undefined || match[4] === undefined)
             return yield* new SourceError({ reason: "invalid-source" });
           const size = Number(match[3]);
-          total += size;
-          if (!Number.isSafeInteger(size) || !sourceFits(blobs.length + 1, total))
-            return yield* new SourceError({ reason: "limit" });
-          blobs.push({ path: match[4], object: match[2], size });
+          if (!Number.isSafeInteger(size)) return yield* new SourceError({ reason: "limit" });
+          entries.push({ path: match[4], object: match[2], size });
         }
-        // And one process returns every blob: `<object> blob <size>\n<content>\n` for each.
+        const code = entries.filter((entry) => !isPublicSourcePath(entry.path));
+        const served = entries.filter((entry) => isPublicSourcePath(entry.path));
+        const codeBytes = code.reduce((sum, entry) => sum + entry.size, 0);
+        if (
+          !sourceFits(code.length, codeBytes) ||
+          !publicFits(
+            served.length,
+            served.reduce((sum, entry) => sum + entry.size, 0),
+            Math.max(0, ...served.map((entry) => entry.size)),
+          )
+        )
+          return yield* new SourceError({ reason: "limit" });
+        // Public files are inline while they fit beside the code, in path order.
+        let remaining = sourceLimits.bytes - codeBytes;
+        const candidates = new Set<string>();
+        for (const entry of served.toSorted((a, b) => (a.path < b.path ? -1 : 1))) {
+          if (entry.size > remaining) continue;
+          remaining -= entry.size;
+          candidates.add(entry.path);
+        }
+        const blobs = entries.filter(
+          (entry) => !isPublicSourcePath(entry.path) || candidates.has(entry.path),
+        );
+        // And one process returns every held blob: `<object> blob <size>\n<content>\n` for each.
         const output =
           blobs.length === 0
             ? new Uint8Array()
@@ -199,7 +232,7 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                 ["--git-dir", repo, "cat-file", "--batch"],
                 bytes(blobs.map((blob) => `${blob.object}\n`).join("")),
               );
-        const files: Array<{ path: string; content: string }> = [];
+        const contents = new Map<string, string | undefined>();
         let offset = 0;
         for (const blob of blobs) {
           const header = `${blob.object} blob ${blob.size}\n`;
@@ -209,13 +242,22 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             output[start + blob.size] !== 10
           )
             return yield* new SourceError({ reason: "git" });
-          files.push({
-            path: blob.path,
-            content: yield* decode(output.subarray(start, start + blob.size)),
-          });
+          const content = output.subarray(start, start + blob.size);
+          contents.set(
+            blob.path,
+            isPublicSourcePath(blob.path)
+              ? yield* decode(content).pipe(Effect.orElseSucceed(() => undefined))
+              : yield* decode(content),
+          );
           offset = start + blob.size + 1;
         }
         if (offset !== output.length) return yield* new SourceError({ reason: "git" });
+        const files: SourceFile[] = entries.map((entry) => {
+          const content = contents.get(entry.path);
+          return content === undefined
+            ? { path: entry.path, object: entry.object, size: entry.size }
+            : { path: entry.path, content };
+        });
         return {
           commit,
           files: yield* sourceFiles(yield* Schema.decodeUnknownEffect(SourceFiles)(files)),
@@ -239,13 +281,41 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
             GIT_COMMITTER_NAME: "Executor",
             GIT_COMMITTER_EMAIL: "apps@executor.local",
           };
+          // Stored files keep a blob the basis revision already holds; they are not rewritten.
+          const basis = input.basis ?? input.expected;
+          const known = new Set<string>();
+          if (files.some((file) => "object" in file && !isUpload(file))) {
+            if (basis === null) return yield* new SourceError({ reason: "invalid-source" });
+            const listed = yield* text([
+              "--git-dir",
+              repo,
+              "ls-tree",
+              "-r",
+              "-z",
+              `${yield* Schema.decodeUnknownEffect(SourceCommit)(basis)}^{tree}`,
+            ]);
+            for (const entry of listed.split("\0").filter(Boolean)) {
+              const match = /^\d{6} blob ([a-f0-9]{40})\t/.exec(entry);
+              if (match?.[1] !== undefined) known.add(match[1]);
+            }
+          }
+          const write = (content: Uint8Array) =>
+            text(["--git-dir", repo, "hash-object", "-w", "--stdin"], content);
           // The temporary index does not exist yet, so Git starts it empty.
           const entries: string[] = [];
           for (const file of files) {
-            const oid = yield* text(
-              ["--git-dir", repo, "hash-object", "-w", "--stdin"],
-              bytes(file.content),
-            );
+            const oid = isUpload(file)
+              ? yield* Effect.gen(function* () {
+                  // One upload's bytes at a time; its object ID proves they are the listed file.
+                  const written = yield* write(yield* file.read);
+                  if (written !== file.object) return yield* new SourceError({ reason: "storage" });
+                  return written;
+                })
+              : "object" in file
+                ? known.has(file.object)
+                  ? file.object
+                  : yield* new SourceError({ reason: "invalid-source" })
+                : yield* write(inlineBytes(file));
             entries.push(`100644 ${oid}\t${file.path}\0`);
           }
           yield* run(
@@ -292,6 +362,34 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
       ).pipe(
         Effect.mapError((error) =>
           Schema.is(SourceError)(error) ? error : new SourceError({ reason: "git" }),
+        ),
+      ),
+    blob: (id, object) =>
+      Effect.gen(function* () {
+        const oid = yield* Schema.decodeUnknownEffect(GitObjectId)(object).pipe(
+          Effect.mapError(() => new SourceError({ reason: "invalid-source" })),
+        );
+        const result = yield* git(["--git-dir", yield* location(id), "cat-file", "blob", oid]);
+        if (result.code !== 0) return yield* new SourceError({ reason: "not-found" });
+        return result.output;
+      }),
+    file: (id, commit, path) =>
+      Effect.gen(function* () {
+        const revision = yield* Schema.decodeUnknownEffect(SourceCommit)(commit);
+        const name = yield* Schema.decodeUnknownEffect(SourceFilePath)(path);
+        // `<commit>:<path>` names one tree entry; a revision expression cannot be injected.
+        const result = yield* git([
+          "--git-dir",
+          yield* location(id),
+          "cat-file",
+          "blob",
+          `${revision}:${name}`,
+        ]);
+        if (result.code !== 0) return yield* new SourceError({ reason: "not-found" });
+        return result.output;
+      }).pipe(
+        Effect.mapError((error) =>
+          Schema.is(SourceError)(error) ? error : new SourceError({ reason: "invalid-source" }),
         ),
       ),
     request: (id, request) =>

@@ -178,6 +178,9 @@ export default Api.make(
       // The database's cloud region is a proximity hint, not a Cloudflare data center or a
       // change to local development routing.
       ...(placement === undefined ? {} : { placement }),
+      // A deploy copies each changed ui/public/ file from Git into R2: a read and a write per
+      // file, up to `publicFileLimits.files` (10,000) of them, beyond the default 10,000.
+      limits: { subrequests: 50_000 },
       compatibility: {
         date: "2026-09-08",
         flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],

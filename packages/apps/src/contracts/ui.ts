@@ -1,5 +1,5 @@
 /** Browser-to-host operations bind identity and authentication outside authored app code. */
-import { Schema } from "effect";
+import { Schema, type Effect, type Stream } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { JsonValue } from "./schema.ts";
 
@@ -31,10 +31,28 @@ export interface UiAccountNotice {
   readonly choose: string;
 }
 /** Retained browser bytes. Hosts authorize access before reading or rendering them. */
-export interface AppUiAsset {
+export interface AppUiFile {
   readonly body: Uint8Array;
   readonly contentType: string;
 }
+/** One byte range of a stored file, already within its size. */
+export interface AppUiRange {
+  readonly offset: number;
+  readonly length: number;
+}
+/**
+ * A public file the deployment's source served from `ui/public/`, which the host copied to its
+ * own store. `etag` names its exact bytes. Hosts authorize access before reading it.
+ */
+export interface AppUiStoredFile {
+  readonly contentType: string;
+  readonly size: number;
+  readonly etag: string;
+  readonly read: (
+    range: AppUiRange | undefined,
+  ) => Effect.Effect<Stream.Stream<Uint8Array, UiFailed>, UiFailed>;
+}
+export type AppUiAsset = AppUiFile | AppUiStoredFile;
 /** Requests name an operation on this app and the page's deployment, never another app or account. */
 export const UiOperation = Schema.Struct({
   ...UiContext.fields,

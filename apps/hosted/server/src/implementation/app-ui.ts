@@ -40,7 +40,7 @@ import {
   UiForbidden,
   UiUnauthorized,
 } from "apps/ui/contracts";
-import { appAsset, appDocument, appWatchScript } from "apps/ui/serving";
+import { appAsset, appDocument, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Clock, Context, Effect, Option, Redacted, Schema, Stream } from "effect";
@@ -196,9 +196,15 @@ export const hostedAppUi = <R = never>(
     Effect.gen(function* () {
       const runtime = yield* HostedAppRuntime;
       if (runtime.asset === undefined) return yield* unavailable();
-      return yield* runtime
+      const asset = yield* runtime
         .asset({ build: version.build, path })
         .pipe(Effect.mapError(unavailable));
+      return asset === undefined || "body" in asset
+        ? asset
+        : storedAppFile(
+            { contentType: asset.contentType, size: asset.size, etag: asset.object },
+            (range) => asset.read(range).pipe(Effect.map((body) => Option.some({ body }))),
+          );
     });
   /** A page visit without an app session starts an attempt and goes straight to the dashboard. */
   const beginSignIn = (resolved: Effect.Success<typeof target>) =>
@@ -703,7 +709,9 @@ export const hostedAppUi = <R = never>(
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(unavailable));
     const version = yield* deployment(current.app, params.deployment);
-    return yield* appAsset(yield* assets(version, params["*"]), version.build, params["*"]);
+    const path = Option.getOrUndefined(assetPath(params["*"]));
+    if (path === undefined) return yield* appAsset(undefined, version.build, params["*"]);
+    return yield* appAsset(yield* assets(version, path), version.build, path);
   }).pipe(htmlFailure);
   const originAccess = HttpRouter.middleware((response) =>
     requestOrigin.pipe(

@@ -3,7 +3,7 @@ import { Effect, Option, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { appSlug } from "./app-slug.ts";
 import { AppId, JsonObject, OwnerId } from "./shared.ts";
-import { SourceCommit, SourceFiles, SourceRevision } from "./source.ts";
+import { SourceCommit, SourceFilePath, SourceFiles, SourceRevision, isTextFile } from "./source.ts";
 
 /**
  * The hosted Executor API origin: the default public registry and the host the CLI and SDK call.
@@ -130,6 +130,15 @@ export interface Registry {
     name: string,
     commit: string,
   ) => Effect.Effect<PublicationSnapshot, RegistryError>;
+  /**
+   * One file of a listing's selected commit, by path, as its exact bytes. Installation reads the
+   * public files a snapshot lists by their blob this way, one at a time.
+   */
+  readonly file: (
+    name: string,
+    commit: string,
+    path: string,
+  ) => Effect.Effect<Uint8Array, RegistryError>;
 }
 
 /** A public listing has one stable URL even when its selected commit changes. */
@@ -164,7 +173,8 @@ export type RegistryOptions = Registry | { readonly storage: RegistryStorage };
 export const scopeGeneratedPackage = (files: SourceFiles, namespace: string, name: string) =>
   Effect.gen(function* () {
     const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* new RegistryError({ reason: "invalid-manifest" });
+    if (file === undefined || !isTextFile(file))
+      return yield* new RegistryError({ reason: "invalid-manifest" });
     const manifest = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
       file.content,
     ).pipe(Effect.mapError(() => new RegistryError({ reason: "invalid-manifest" })));
@@ -200,4 +210,5 @@ export const PublicationInputs = {
 export const RegistryInputs = {
   list: Schema.Struct({ name: Schema.optional(PackageName) }),
   snapshot: Schema.Struct({ name: PackageName, commit: SourceCommit }),
+  file: Schema.Struct({ name: PackageName, commit: SourceCommit, path: SourceFilePath }),
 };

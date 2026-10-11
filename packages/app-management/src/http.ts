@@ -20,6 +20,7 @@ import {
   HttpApiEndpoint,
   HttpApiGroup,
   HttpApiMiddleware,
+  HttpApiSchema,
 } from "effect/http-api";
 import { AppGitProtocol } from "./contracts/git.ts";
 import {
@@ -30,6 +31,7 @@ import {
   RepositoryHost,
   SourceCommit,
   SourceError,
+  SourceFilePath,
   StorageError,
   RegistryError,
   Publication,
@@ -383,6 +385,11 @@ export const registryRoutes = (() => {
         success: PublicationSnapshot,
         error: RegistryError,
       }),
+      HttpApiEndpoint.get("file", "/api/registry/file", {
+        query: { name: PackageName, commit: SourceCommit, path: SourceFilePath },
+        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+        error: RegistryError,
+      }),
     ),
   );
   const publicRegistry = Effect.flatten(AppManagementHost).pipe(
@@ -401,6 +408,9 @@ export const registryRoutes = (() => {
             )
             .handle("snapshot", ({ query }) =>
               Effect.flatMap(publicRegistry, (host) => host.executor.registry.snapshot(query)),
+            )
+            .handle("file", ({ query }) =>
+              Effect.flatMap(publicRegistry, (host) => host.executor.registry.file(query)),
             ),
         ),
       ),

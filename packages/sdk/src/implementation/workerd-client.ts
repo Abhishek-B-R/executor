@@ -235,10 +235,11 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             }),
           );
         }),
-      build: ({ files }) =>
+      build: ({ files, public: publicPaths }) =>
         Effect.gen(function* () {
           const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(CompileWorkerApp))({
             files,
+            ...(publicPaths === undefined ? {} : { public: publicPaths }),
           }).pipe(
             Effect.mapError(
               (cause) =>

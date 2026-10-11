@@ -171,6 +171,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     registry: {
       list: (input = {}) => run(RegistryInputs.list, input, executor.registry.list),
       snapshot: (input) => run(RegistryInputs.snapshot, input, executor.registry.snapshot),
+      file: (input) => run(RegistryInputs.file, input, executor.registry.file),
     },
     webhookSetup: {
       read: (input) => run(WebhookTarget, input, executor.webhookSetup.read),

@@ -49,7 +49,7 @@ import { selfHostMcp } from "../mcp.ts";
 import { SelfHostAuth } from "../auth.ts";
 import { selfHostAnalytics } from "./product-analytics.ts";
 
-import type { SourceFile } from "@executor-js/sdk/core";
+import type { SourceTextFile as SourceFile } from "@executor-js/sdk/core";
 import type { selfHostExecutorServices } from "./executor-services.ts";
 /** Compose the self-host route map without opening a listener; shared by the process entry and HTTP tests. */
 export const selfHostRouteMap = <DashboardE, DashboardR>(options: {

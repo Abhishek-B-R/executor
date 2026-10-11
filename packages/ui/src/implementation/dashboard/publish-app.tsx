@@ -7,6 +7,7 @@ import {
   type App,
   type PublicationIssue,
   type PublicationReadiness,
+  sourceText,
 } from "@executor-js/sdk";
 import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -232,8 +233,7 @@ function RenameAndContinue<E>({
   const loaded = AsyncResult.isSuccess(workspace);
   const rename = async () => {
     if (!AsyncResult.isSuccess(workspace)) return;
-    const base =
-      workspace.value.files.find((file) => file.path === "package.json")?.content ?? null;
+    const base = sourceText(workspace.value.files, "package.json") ?? null;
     setSaving(true);
     setError(undefined);
     setChanged(false);

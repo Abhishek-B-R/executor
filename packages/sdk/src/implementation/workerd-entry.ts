@@ -282,6 +282,7 @@ class AppApi extends RpcTarget {
         const compiled = yield* compileWorkerApp(
           request.files,
           this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;
         const requirements = yield* runner(this.#env, this.#context)

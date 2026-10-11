@@ -18,8 +18,10 @@ import {
 } from "apps/contracts";
 import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
-import { BuildStage, SourceFiles, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
+import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
+import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
+import type { BlobKey, BlobRange } from "./blobs.ts";
 
 /**
  * Runtimes report that an invocation invalidated or explicitly refreshed the app's cached
@@ -190,11 +192,23 @@ export const BuiltApp = Schema.Struct({
   requirements: DeclaredRequirements,
   ui: Schema.optional(Schema.Array(UiAsset)),
 });
-/** A private browser asset returned to an authenticated serving host. */
-export interface RuntimeAsset {
-  readonly body: Uint8Array;
+/**
+ * A deployment's public file, which its deploy copied to the host's store. Hosts stream it, or
+ * one range of it, after authorizing the request; `object` names its exact bytes.
+ */
+export interface RuntimePublicFile {
   readonly contentType: string;
+  readonly size: number;
+  readonly object: string;
+  readonly key: BlobKey;
+  readonly read: (
+    range?: BlobRange,
+  ) => Effect.Effect<Stream.Stream<Uint8Array, RuntimeBuildUnavailable>, RuntimeBuildUnavailable>;
 }
+/** A private browser asset returned to an authenticated serving host. */
+export type RuntimeAsset =
+  | { readonly body: Uint8Array; readonly contentType: string }
+  | RuntimePublicFile;
 /** Parsed successful build result. */
 export type BuiltApp = typeof BuiltApp.Type;
 
@@ -350,8 +364,14 @@ export interface Runtime<Requirements = never> {
    */
   readonly changes?: (app: string) => Stream.Stream<number | void, RuntimeLoadError>;
   /** Sources build with the `apps` package they declare; sources without one are rejected. */
+  /**
+   * Build the code files only. `public` lists the paths, relative to `ui/public/`, of the public
+   * files served beside the build: the page may reference them, and compiled output may not
+   * reuse their paths. Their bytes never reach the build.
+   */
   readonly build: (input: {
-    readonly files: SourceFiles;
+    readonly files: CodeFiles;
+    readonly public?: ReadonlyArray<string>;
   }) => Effect.Effect<
     BuiltApp,
     | RuntimeBuildFailed

@@ -147,7 +147,8 @@ export const executorHandlers = (executor: Executor) =>
     HttpApiBuilder.group(ExecutorApi, "registry", (handlers) =>
       handlers
         .handle("list", ({ query }) => executor.registry.list(query))
-        .handle("snapshot", ({ query }) => executor.registry.snapshot(query)),
+        .handle("snapshot", ({ query }) => executor.registry.snapshot(query))
+        .handle("file", ({ query }) => executor.registry.file(query)),
     ),
     HttpApiBuilder.group(ExecutorApi, "owners", (handlers) =>
       handlers

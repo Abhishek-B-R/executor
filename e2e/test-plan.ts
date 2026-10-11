@@ -3285,6 +3285,28 @@ export const scenarios = plan({
       local: na("The shared source contract is exercised through hosted organization routes."),
     },
   },
+  appPublicFiles: {
+    fixtures: "actors",
+    file: "app-public-files.spec.ts",
+    title:
+      "The apps CLI deploys a directory of binary ui/public files larger than the code budget; they are served byte for byte with their types, ranges and blob ETags, and clone, apps source and copies return them",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
+  appPublicFilesRollback: {
+    fixtures: "actors",
+    file: "app-public-files.spec.ts",
+    title:
+      "Binary ui/public files saved through the API as base64 are served per deployment, an older deployment serves its own files, reads keep their blobs, and on Cloud a published commit installs with them",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
   workspaceSourceWrites: {
     fixtures: "actors",
     file: "workspace-source-writes.spec.ts",

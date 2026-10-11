@@ -16,7 +16,13 @@ import {
   type RegistryStorage,
 } from "../contracts/registry.ts";
 import { JsonObject } from "../contracts/shared.ts";
-import { SourceFiles, type AppSourceStorage } from "../contracts/source.ts";
+import {
+  SourceFiles,
+  isPublicSourcePath,
+  sourceFileBytes,
+  sourceText,
+  type AppSourceStorage,
+} from "../contracts/source.ts";
 import type { AppCopySnapshot } from "../contracts/apps.ts";
 import type { Query } from "./database.ts";
 import { storedApp } from "./apps.ts";
@@ -29,10 +35,12 @@ const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | nul
 /** Parse the exact saved source that will be published without evaluating any app code. */
 const publicationSource = (files: SourceFiles) =>
   Effect.gen(function* () {
+    // Public files under ui/public/ are bounded by the source's own public limits; a listing
+    // reads them only when it is installed.
+    const code = files.filter((file) => !isPublicSourcePath(file.path));
     if (
-      files.length > 512 ||
-      files.reduce((size, file) => size + new TextEncoder().encode(file.content).length, 0) >
-        4 * 1024 * 1024
+      code.length > 512 ||
+      code.reduce((size, file) => size + sourceFileBytes(file), 0) > 4 * 1024 * 1024
     )
       return yield* invalid("limit");
     if (
@@ -41,10 +49,10 @@ const publicationSource = (files: SourceFiles) =>
       )
     )
       return yield* invalid("invalid-source");
-    const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* invalid("missing-manifest");
+    const content = sourceText(files, "package.json");
+    if (content === undefined) return yield* invalid("missing-manifest");
     const document = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
-      file.content,
+      content,
     ).pipe(Effect.mapError(() => invalid("invalid-json")));
     const name = document.name;
     if (name === undefined || name === "") return yield* invalid("missing-name");
@@ -96,6 +104,21 @@ const storedRegistry = (
         .pipe(Effect.mapError(() => new RegistryError({ reason: "storage" })));
       return PublicationSnapshot.make({ publication: row.publication, files });
     }),
+  file: (name, commit, path) =>
+    Effect.gen(function* () {
+      const row = yield* storage.get(name);
+      if (row.publication.commit !== commit) return yield* new RegistryError({ reason: "changed" });
+      // The retained snapshot's tree is the published commit's, so a path names only its files.
+      return yield* sources
+        .file(row.source, path)
+        .pipe(
+          Effect.mapError((error) =>
+            error.reason === "not-found"
+              ? new RegistryError({ reason: "not-found" })
+              : new RegistryError({ reason: "storage" }),
+          ),
+        );
+    }),
 });
 
 /** Resolve reviewed public source for the shared copy operation. No app is created here. */
@@ -146,6 +169,7 @@ export const makeRegistry = (
   const registry: Executor["registry"] = {
     list: (input = {}) => reads.list(input.name),
     snapshot: (input) => reads.snapshot(input.name, input.commit),
+    file: (input) => reads.file(input.name, input.commit, input.path),
   };
   if (stored === undefined)
     return {
@@ -228,7 +252,7 @@ export const makeRegistry = (
             Effect.catchTag("PublicationIssue", (issue) => Effect.fail(publicationFailure(issue))),
           );
           const source = yield* sources
-            .retain(app.code, files)
+            .retain(app.code, files, input.commit)
             .pipe(Effect.mapError(() => new RegistryError({ reason: "storage" })));
           return yield* storage.publish({
             name: manifest.name,

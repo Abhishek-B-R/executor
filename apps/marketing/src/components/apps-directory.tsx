@@ -413,7 +413,12 @@ function PublishedFiles({ files }: { readonly files: typeof PublicationSnapshot.
           </select>
         </div>
         <pre className="m-0 max-h-[34rem] min-h-80 overflow-auto p-5 font-mono text-xs leading-6 text-ink">
-          {file && <HighlightedCode code={file.content} path={file.path} />}
+          {file &&
+            ("content" in file ? (
+              <HighlightedCode code={file.content} path={file.path} />
+            ) : (
+              `Binary file, ${file.size.toLocaleString("en-US")} bytes.`
+            ))}
         </pre>
       </div>
     </div>

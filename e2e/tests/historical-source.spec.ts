@@ -76,7 +76,8 @@ layer(HostedLive, { excludeTestServices: true })("Historical source", (it) => {
         const invalid = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           commit: "f".repeat(40),
         });
-        expect(invalid.status).toBe(503);
+        // A commit the repository does not have is missing, on every host.
+        expect(invalid.status).toBe(404);
         const afterFailure = yield* api.request(actors.owner, "GET", `${path}/source`);
         expect(afterFailure.status).toBe(200);
         expect(

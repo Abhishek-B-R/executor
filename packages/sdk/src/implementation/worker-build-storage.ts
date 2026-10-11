@@ -6,6 +6,8 @@ import { BlobKey, BlobStore } from "../contracts/blobs.ts";
 import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
 import type { BuildId } from "../contracts/shared.ts";
 import type { UiBuildFile } from "../contracts/ui-build.ts";
+import type { RuntimeAsset } from "../contracts/runtime.ts";
+import { publicFileAsset, readPublicManifest } from "./public-files.ts";
 import { Effect, Option, Schema } from "effect";
 import {
   type FrameworkIdentity,
@@ -200,9 +202,17 @@ export const workerBuildAsset = (build: BuildId, path: string) =>
       { concurrency: 2 },
     );
     const asset = retained.ui?.find((asset) => asset.path === path);
-    if (asset === undefined) return undefined;
-    if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
-    return { body: found.value, contentType: asset.contentType };
+    if (asset !== undefined) {
+      if (Option.isNone(found)) return yield* new RuntimeBuildUnavailable();
+      return { body: found.value, contentType: asset.contentType } satisfies RuntimeAsset;
+    }
+    // Public files stay in the lineage's store; the build's listing names the ones it serves.
+    const manifest = yield* readPublicManifest(blobs, build).pipe(
+      Effect.withSpan("runtime.cloud.asset.public"),
+    );
+    if (Option.isNone(manifest)) return undefined;
+    const entry = manifest.value.files.find((file) => file.path === path);
+    return entry === undefined ? undefined : publicFileAsset(blobs, manifest.value.code, entry);
   }).pipe(
     Effect.mapError(() => new RuntimeBuildUnavailable()),
     Effect.withSpan("runtime.cloud.asset"),

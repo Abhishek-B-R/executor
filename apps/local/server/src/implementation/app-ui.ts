@@ -23,10 +23,10 @@ import {
   UiUnauthorized,
   type UiOperation,
 } from "apps/ui/contracts";
-import { appDocument, appAsset, appWatchScript } from "apps/ui/serving";
+import { appDocument, appAsset, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
-import { Effect, Result, Schema, Stream } from "effect";
+import { Effect, Option, Result, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { appSessionCookie } from "../contracts/app-ui.ts";
@@ -153,7 +153,17 @@ export const appUi = (
   const readAsset = (build: Deployment["build"], path: string) =>
     native.asset === undefined
       ? Effect.succeed(undefined)
-      : native.asset({ build, path }).pipe(Effect.mapError(() => failed()));
+      : native.asset({ build, path }).pipe(
+          Effect.mapError(() => failed()),
+          Effect.map((asset) =>
+            asset === undefined || "body" in asset
+              ? asset
+              : storedAppFile(
+                  { contentType: asset.contentType, size: asset.size, etag: asset.object },
+                  (range) => asset.read(range).pipe(Effect.map((body) => Option.some({ body }))),
+                ),
+          ),
+        );
   const htmlResponse = Effect.catchTags({
     UiUnauthorized: () =>
       Effect.succeed(
@@ -197,8 +207,9 @@ export const appUi = (
       Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(() => failed()));
     const version = yield* deployment(app, params.deployment);
-    const content = yield* readAsset(version.build, params["*"]);
-    return yield* appAsset(content, version.build, params["*"]);
+    const path = Option.getOrUndefined(assetPath(params["*"]));
+    if (path === undefined) return yield* appAsset(undefined, version.build, params["*"]);
+    return yield* appAsset(yield* readAsset(version.build, path), version.build, path);
   }).pipe(htmlResponse);
   const dashboard = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
   /** The dashboard chooser for this app, returning to the page without its profile. */

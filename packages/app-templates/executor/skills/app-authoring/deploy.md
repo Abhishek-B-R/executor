@@ -19,12 +19,29 @@ Keep scratch files out of it; files missing from the directory are deleted
 from the app. `--files` also accepts a JSON file holding an array of
 `{ "path", "content" }` objects.
 
-App source is UTF-8 text: at most 4,096 files and 16 MiB of file contents in
-total, on every host. The CLI checks this before it uploads anything. A larger
-source fails with `SourceRejected`, which states the count or size and names
-the largest files; a file that is not UTF-8 text, such as a PNG or a font,
-fails the same way and is named. Remove those files or replace them with text,
-such as SVG. The host rejects a larger source with `SourceError` and HTTP 413.
+Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
+16 MiB of file contents, on every host. Files under `ui/public/` are served as
+they are and may be binary, such as images, fonts, audio, WebAssembly or a
+prebuilt bundle: at most 10,000 files, each at most 32 MB and 1 GB in total.
+Builds never load them; each deploy copies them to the host's own storage.
+The CLI checks these limits before it uploads anything. A source over them
+fails with `SourceRejected`, which states the count or size and names the
+largest files; a binary file outside `ui/public/` fails the same way and is
+named. The host rejects a larger source with `SourceError` and HTTP 413.
+
+A directory of at most 16 MiB in total is sent as files, with binary files as
+base64. A larger one is pushed with Git: `executor apps create`, `commit` and
+`deploy --files` do this themselves, send only the files the app does not
+already hold, and split large uploads into several pushes. Deploy a directory
+in one step with `executor apps deploy --app <app-id> --files ./app`.
+
+Reading source lists a `ui/public/` file that is not UTF-8 text, or does not
+fit beside the rest of the source, as `{ "path", "object", "size" }` without
+its bytes. Send that entry back unchanged in a commit to keep the file. Through
+`appManagement.commit`, send a small binary file as
+`{ "path", "content": "<base64>", "encoding": "base64" }`. `executor apps source
+--app <app-id> --out ./copy` writes every file, binary files included, and a
+Git clone has them all.
 
 Read these docs with
 `executor apps skills --app executor --name app-authoring --file deploy.md`.
@@ -127,10 +144,11 @@ git -c credential.helper='!executor apps credential' -c credential.useHttpPath=t
 Pushes save source but do not deploy it. Deploy the pushed commit with
 `executor apps deploy --app <app-id> --commit "$(git rev-parse HEAD)"`.
 Pushes stream to the repository, so Executor sets no push size limit of its own. On
-hosted Executor the repository host accepts files up to 32 MB each, and a single push
-of more than about 64 MiB of packed data currently fails; push a larger history in
-several pushes. A pushed source over the limits above cannot be read or deployed.
-The limits apply to the commit being read, not to the history before it.
+hosted Executor the repository host accepts files up to 32 MB each and repositories up
+to 1 GB, and a single push of more than about 64 MiB of packed data currently fails;
+push a larger history in several pushes. The CLI does this for you. A pushed source
+over the limits above cannot be read or deployed. The limits apply to the commit being
+read, not to the history before it.
 
 Type-check locally before deploying. A deploy compiles the app and reports
 build errors, but it does not type-check. The framework is published to npm as

@@ -116,11 +116,11 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
       name: "runtime.cloud",
       loadBuild: load,
       invoke: (invocation, capabilities) => withActor(runner.invoke(invocation, capabilities)),
-      build: ({ files }) =>
+      build: ({ files, public: publicPaths = [] }) =>
         withActor(
           Effect.gen(function* () {
             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
-            const result = yield* compiler.compile(files, headers).pipe(
+            const result = yield* compiler.compile(files, publicPaths, headers).pipe(
               Effect.timeoutOrElse({
                 duration: compilerDeadline,
                 orElse: () => compilerDidNotAnswer,

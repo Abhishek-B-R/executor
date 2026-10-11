@@ -97,8 +97,36 @@ export const remoteRegistry = (origin: string): Registry => {
       }),
     );
   };
+  const file = (name: string, commit: string, path: string) => {
+    const url = new URL(
+      `/api/registry/file?name=${encodeURIComponent(name)}&commit=${encodeURIComponent(commit)}&path=${encodeURIComponent(path)}`,
+      origin,
+    );
+    return Effect.gen(function* () {
+      const response = yield* HttpClient.execute(HttpClientRequest.get(url)).pipe(
+        Effect.mapError(() => new RegistryError({ reason: "network" })),
+      );
+      yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+      const body = yield* readBody(response);
+      if (response.status === 200) return body;
+      const error = Option.flatMap(parseJson(body), (json) =>
+        Schema.decodeUnknownOption(Schema.toCodecJson(RegistryError))(json),
+      );
+      return yield* Option.isSome(error)
+        ? error.value
+        : new RegistryError({ reason: "status", status: response.status });
+    }).pipe(
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+      Effect.provide(FetchHttpClient.layer),
+      Effect.withSpan("registry.request", {
+        attributes: { "registry.operation": "file", "server.address": url.host },
+      }),
+    );
+  };
   return {
     origin,
+    file,
     list: (name) =>
       read(
         "list",

@@ -1,8 +1,9 @@
 /** Host bindings exist only on the trusted product Worker, never on authored app isolates. */
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpServerResponse } from "effect/http";
 import { dashboardRoutes, fileHeaders } from "../web.ts";
 import { BlobKey, BlobStoreError, SourceError, type BlobStorage } from "@executor-js/sdk/core";
+import { pageOf, rangeWindow, windowed } from "@executor-js/sdk/blobs";
 import { gitRepositories } from "@executor-js/app-source/host";
 import {
   parseDestination,
@@ -16,6 +17,9 @@ export interface HttpBinding {
 }
 const diskRequest = (key: BlobKey, init?: RequestInit) =>
   new Request(`http://disk.internal/${key.split("/").map(encodeURIComponent).join("/")}`, init);
+
+/** workerd's disk service answers a directory GET with its entries as JSON. */
+const DirectoryListing = Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String }));
 
 /** workerd disk PUT atomically publishes an object; missing files remain ordinary results. */
 export const bindingBlobStore = (disk: HttpBinding): BlobStorage => ({
@@ -61,6 +65,51 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => ({
           throw new Error("Blob removal failed");
       },
       catch: () => new BlobStoreError({ operation: "remove" }),
+    }),
+  list: (folder, options) =>
+    Effect.tryPromise({
+      try: async () => {
+        Schema.decodeUnknownSync(BlobKey)(folder);
+        const response = await disk.fetch(diskRequest(folder));
+        if (response.status === 404) return [];
+        if (response.status !== 200) throw new Error("Blob listing failed");
+        return Schema.decodeUnknownSync(DirectoryListing)(await response.json());
+      },
+      catch: () => new BlobStoreError({ operation: "list" }),
+    }).pipe(
+      Effect.map((entries) =>
+        pageOf(
+          entries.filter((entry) => entry.type === "file").map((entry) => entry.name),
+          options,
+        ),
+      ),
+    ),
+  // The disk service sends whole files, so a range is cut from the stream here.
+  stream: (key, range) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.tryPromise({
+        try: async () => {
+          Schema.decodeUnknownSync(BlobKey)(key);
+          const response = await disk.fetch(diskRequest(key));
+          if (response.status === 404) return undefined;
+          if (response.status !== 200 || response.body === null)
+            throw new Error("Blob read failed");
+          return { body: response.body, size: Number(response.headers.get("content-length")) };
+        },
+        catch: () => new BlobStoreError({ operation: "get" }),
+      });
+      if (response === undefined) return Option.none();
+      if (!Number.isSafeInteger(response.size))
+        return yield* new BlobStoreError({ operation: "get" });
+      const { start, end } = rangeWindow(response.size, range);
+      const body = Stream.fromReadableStream({
+        evaluate: () => response.body,
+        onError: () => new BlobStoreError({ operation: "get" }),
+      });
+      return Option.some({
+        size: response.size,
+        body: start === 0 && end === response.size ? body : windowed(body, start, end),
+      });
     }),
 });
 

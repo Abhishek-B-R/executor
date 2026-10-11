@@ -8,6 +8,10 @@ import {
   PublicationIssue,
   RegistryError,
   publicPackageName,
+  isPublicSourcePath,
+  isTextFile,
+  sourceFileBytes,
+  sourceText,
 } from "@executor-js/sdk/core";
 
 const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | null = null) =>
@@ -16,10 +20,12 @@ const invalid = (reason: typeof PublicationIssue.Type.reason, name: string | nul
 /** Parse the exact saved source that will be published without evaluating any app code. */
 export const publicationSource = (files: SourceFiles) =>
   Effect.gen(function* () {
+    // Public files under ui/public/ are bounded by the source's own public limits; a listing
+    // reads them only when it is installed.
+    const code = files.filter((file) => !isPublicSourcePath(file.path));
     if (
-      files.length > 512 ||
-      files.reduce((size, file) => size + new TextEncoder().encode(file.content).length, 0) >
-        4 * 1024 * 1024
+      code.length > 512 ||
+      code.reduce((size, file) => size + sourceFileBytes(file), 0) > 4 * 1024 * 1024
     )
       return yield* invalid("limit");
     if (
@@ -28,10 +34,10 @@ export const publicationSource = (files: SourceFiles) =>
       )
     )
       return yield* invalid("invalid-source");
-    const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* invalid("missing-manifest");
+    const content = sourceText(files, "package.json");
+    if (content === undefined) return yield* invalid("missing-manifest");
     const document = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
-      file.content,
+      content,
     ).pipe(Effect.mapError(() => invalid("invalid-json")));
     const name = document.name;
     if (name === undefined || name === "") return yield* invalid("missing-name");
@@ -70,7 +76,8 @@ export const publicationFailure = (issue: PublicationIssue): RegistryError => {
 export const scopeGeneratedPackage = (files: SourceFiles, namespace: string, name: string) =>
   Effect.gen(function* () {
     const file = files.find((file) => file.path === "package.json");
-    if (file === undefined) return yield* new RegistryError({ reason: "invalid-manifest" });
+    if (file === undefined || !isTextFile(file))
+      return yield* new RegistryError({ reason: "invalid-manifest" });
     const manifest = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(JsonObject))(
       file.content,
     ).pipe(Effect.mapError(() => new RegistryError({ reason: "invalid-manifest" })));

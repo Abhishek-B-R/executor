@@ -1,7 +1,16 @@
 /** Explicit ephemeral adapters for isolated SDK fixtures. Hosts use durable Git and catalogs. */
 import { Effect } from "effect";
-import { removedPaths, SourceError, type RepositoryBackend } from "./contracts/source.ts";
-import type { SourceFiles } from "./contracts/deployment.ts";
+import {
+  encodeBase64,
+  inlineBytes,
+  isUpload,
+  removedPaths,
+  SourceError,
+  type RepositoryBackend,
+  type SourceFile,
+} from "./contracts/source.ts";
+
+type SourceFiles = readonly [SourceFile, ...SourceFile[]];
 import { RegistryError, type Registry } from "./contracts/registry.ts";
 
 /** Each fixture owns its revisions; reuse this instance when testing executor restarts. */
@@ -41,7 +50,17 @@ export const memoryRepositories = (): RepositoryBackend => {
           return yield* new SourceError({ reason: "conflict" });
         const previous =
           input.expected === null ? [] : (snapshots.get(`${input.id}/${input.expected}`) ?? []);
-        const copy = structuredClone(input.files);
+        // Uploads are kept inline; stored files keep the entry the caller read.
+        const kept: SourceFile[] = [];
+        for (const file of input.files)
+          kept.push(
+            isUpload(file)
+              ? { path: file.path, content: encodeBase64(yield* file.read), encoding: "base64" }
+              : structuredClone(file),
+          );
+        const [first, ...rest] = kept;
+        if (first === undefined) return yield* new SourceError({ reason: "invalid-source" });
+        const copy: SourceFiles = [first, ...rest];
         const commit = yield* hash(copy);
         snapshots.set(`${input.id}/${commit}`, copy);
         heads.set(branch, commit);
@@ -57,6 +76,15 @@ export const memoryRepositories = (): RepositoryBackend => {
           ),
         };
       }),
+    // Fixture saves keep every file inline, so no read lists a blob.
+    blob: () => Effect.fail(new SourceError({ reason: "not-found" })),
+    file: (id, commit, path) =>
+      Effect.suspend(() => {
+        const found = snapshots.get(`${id}/${commit}`)?.find((file) => file.path === path);
+        return found === undefined || "object" in found
+          ? Effect.fail(new SourceError({ reason: "not-found" }))
+          : Effect.succeed(inlineBytes(found));
+      }),
     request: () => Effect.fail(new SourceError({ reason: "git" })),
   };
   return adapter;
@@ -67,4 +95,5 @@ export const memoryRegistry = (): Registry => ({
   origin: "https://registry.invalid",
   list: () => Effect.succeed([]),
   snapshot: () => Effect.fail(new RegistryError({ reason: "not-found" })),
+  file: () => Effect.fail(new RegistryError({ reason: "not-found" })),
 });

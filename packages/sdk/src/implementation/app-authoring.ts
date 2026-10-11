@@ -2,6 +2,7 @@
 import { Clock, Crypto, Effect, Option } from "effect";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
+import { adoptStoredFiles, type StoredBytes } from "./public-files.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
 import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
@@ -27,12 +28,19 @@ export const makeAppAuthoring = (
   const create = (
     input: Parameters<Executor["apps"]["create"]>[0],
     copiedFrom: AppCopyOrigin | null = null,
+    stored?: StoredBytes,
   ) =>
     Effect.gen(function* () {
       yield* sourcePathsFit(input.files);
       const code = AppCodeId.make(
         `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
       );
+      // A new app has no repository yet. Stored files of a copy are first copied into its own
+      // store, which its initial files then name; anything else stored names nothing it owns.
+      if (input.files.some((file) => "object" in file)) {
+        if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
+        yield* adoptStoredFiles(blobs, code, input.files, stored);
+      }
       const id = AppId.make(
         `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
       );

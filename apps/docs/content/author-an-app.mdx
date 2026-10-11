@@ -421,13 +421,21 @@ Web pages show source; agents or ordinary Git clients edit it.
 Discovery is not cached across a change, so run `tools.search` again after you
 deploy.
 
-The CLI also provides `executor apps source`, `executor apps commit`, and
-`executor apps deploy --commit <sha>`. Deployment reads the chosen commit and
-leaves the Git branch unchanged. Ordinary Git pushes save source without deploying it.
+The CLI also provides `executor apps source`, `executor apps commit`,
+`executor apps deploy --commit <sha>` and `executor apps deploy --files <dir>`.
+Deployment reads the chosen commit and leaves the Git branch unchanged. Ordinary
+Git pushes save source without deploying it.
 
-App source is UTF-8 text, at most 4,096 files and 16 MiB of file contents. The
-CLI checks a directory or JSON file against these limits before uploading it and
-names the files that are too large or not text. A failed CLI command prints the
+Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
+16 MiB of file contents. Files under `ui/public/` are served as they are and may
+be binary, such as images, fonts, audio and WebAssembly: at most 10,000 files,
+each at most 32 MB and 1 GB in total. Builds never load them; each deploy copies
+them to the host's storage and serves them from there. The CLI checks a directory
+or JSON file against these limits before uploading it and names the files that
+are too large, or binary outside `ui/public/`. A directory over 16 MiB in total
+is pushed with Git, in several pushes when it is large. Source reads list binary
+public files as `{ "path", "object", "size" }`; send them back unchanged to keep
+them, or clone the app to get their bytes. A failed CLI command prints the
 host's error code, HTTP status, message and recovery; when its output is not a
 terminal it also prints them as `{ "error": ... }` JSON on standard output.
 When a newer CLI release exists, the failure also says so and how to update.

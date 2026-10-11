@@ -7,6 +7,7 @@ import { appsVersion } from "@executor-js/app-templates";
 import {
   JsonObject,
   sourceFilesEqual,
+  sourceText,
   SourceFiles,
   type App,
   type DeploymentId,
@@ -79,7 +80,7 @@ const Dependencies = Schema.Record(Schema.String, Schema.Unknown);
 
 /** The manifest and its dependencies, when `package.json` is a JSON object with object dependencies. */
 const manifestOf = (files: SourceFiles) => {
-  const content = files.find((file) => file.path === "package.json")?.content;
+  const content = sourceText(files, "package.json");
   if (content === undefined) return undefined;
   const manifest = Schema.decodeUnknownOption(Manifest)(content);
   if (Option.isNone(manifest)) return undefined;

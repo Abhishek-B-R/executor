@@ -18,6 +18,8 @@ const servingSources: AppSources = () => ({
   head: () => noSource("head"),
   read: () => noSource("read"),
   commit: () => noSource("commit"),
+  blob: () => noSource("blob"),
+  file: () => noSource("file"),
   request: () => noSource("request"),
 });
 

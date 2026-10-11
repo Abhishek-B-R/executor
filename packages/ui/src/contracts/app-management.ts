@@ -1,6 +1,6 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
 import { revalidated } from "./refresh.ts";
-import type { App, AppId } from "@executor-js/sdk";
+import { isTextFile, type App, type AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
 import type { HttpApiClient } from "effect/http-api";
@@ -124,7 +124,7 @@ export const makeAppManagementAtoms = <R, E>(
             api.source({ params: { ...params, app } }),
           );
           const file = current.files.find((item) => item.path === input.path);
-          if ((file === undefined ? null : file.content) !== input.base)
+          if ((file === undefined || !isTextFile(file) ? null : file.content) !== input.base)
             return { _tag: "FileChanged" as const };
           const files =
             file === undefined

@@ -15,7 +15,7 @@ import {
   type HostRequest,
   type WorkflowExecution,
 } from "apps/contracts";
-import type { SourceFile } from "../contracts/deployment.ts";
+import type { SourceTextFile as SourceFile } from "../contracts/source.ts";
 import { RuntimeProtocolUnsupported } from "../contracts/runtime.ts";
 import { appBridge, nodeAppEntry } from "./worker-bridge.ts";
 
