@@ -2,8 +2,8 @@ import { makeRegistryStorage } from "@executor-js/app-registry";
 /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
 import { PgClient, PgTypes } from "@effect/sql-pg";
 import {
-  HostedMigrationFailed,
   migrateHostedDatabase,
+  migrationFailed,
   migrateProductSteps,
 } from "@executor-js/hosted-server/migrations";
 import { Effect } from "effect";
@@ -51,7 +51,7 @@ export const migrateOnboarding = Effect.gen(function* () {
       for each row execute function cloud_mark_organization_edit('logo')`;
     }),
   );
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * Queue future account creations in the same transaction as Better Auth's user insert.
@@ -88,7 +88,7 @@ export const migrateWelcomeEmails = Effect.gen(function* () {
         for each row execute function cloud_queue_welcome_email()`;
     }),
   );
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * The seat count last confirmed in Autumn, so membership jobs skip unchanged
@@ -103,7 +103,7 @@ export const migrateBillingSeats = Effect.gen(function* () {
     seat_plan boolean not null default false,
     checked_at timestamptz
   )`;
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
  * Organization removals whose Workflow start succeeded, so the removal job reads only starts never
@@ -118,7 +118,7 @@ export const migrateOrganizationRemovalStarts = Effect.gen(function* () {
     instance_id text not null,
     started_at timestamptz not null default now()
   )`;
-}).pipe(Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })));
+}).pipe(Effect.mapError(migrationFailed("product")));
 
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
@@ -133,9 +133,7 @@ export const migrateCloudDatabase = Effect.scoped(
     });
     const cloudMigrations = Effect.gen(function* () {
       const registry = yield* makeRegistryStorage;
-      yield* registry.migrate.pipe(
-        Effect.mapError(() => new HostedMigrationFailed({ stage: "product" })),
-      );
+      yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
       yield* migrateProductSteps("private_cloud_migrations", {
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
         "2_billing_seats": migrateBillingSeats,
