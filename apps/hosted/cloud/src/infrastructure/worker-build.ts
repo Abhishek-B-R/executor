@@ -12,6 +12,7 @@ import {
 
 export type WorkerName =
   | "api"
+  | "app-data"
   | "app-pages"
   | "mcp-server"
   | "dashboard"
@@ -29,6 +30,8 @@ export type WorkerName =
  */
 const uploadBudgets: Record<WorkerName, number> = {
   api: 5_450_000,
+  // App runners and data supervisors: a cold tool call starts both isolates.
+  "app-data": 700_000,
   "app-pages": 2_500_000,
   "mcp-server": 3_400_000,
   dashboard: 3_900_000,

@@ -30,6 +30,7 @@ import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build
 import { cachedRuntimeBuilds } from "./implementation/runtime-build-cache.ts";
 import { appCredentialOutbound, appOutboundBindings } from "./infrastructure/app-outbound.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
+import { workerBuild } from "./infrastructure/worker-build.ts";
 import { HttpServerResponse } from "effect/http";
 import {
   cloudObservability,
@@ -165,6 +166,7 @@ export default AppData.make(
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
     return {
       main: import.meta.url,
+      build: workerBuild("app-data"),
       ...(yield* cloudObservability),
       workersDev: false,
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },

@@ -41,6 +41,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { browserOnlySettings } from "../web/browser-only-settings.ts";
 import { cloudWorkers } from "../alchemy.run.ts";
+import { AppData } from "../src/infrastructure/app-data-worker.ts";
 import AppPages from "../src/app-ui.ts";
 import { Api } from "../src/main.ts";
 import { previewSlug } from "../src/contracts/pr-preview.ts";
@@ -221,6 +222,7 @@ const budgetedWorkers = Alchemy.Stack(
   },
   Effect.gen(function* () {
     yield* Api;
+    yield* AppData;
     yield* AppPages;
     yield* McpServer;
     yield* Marketing;
