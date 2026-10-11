@@ -100,6 +100,14 @@ than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
 whose `b/` path is outside the package, and keep `\ No newline at end of file`
 markers. Its fixtures are in `scripts/check-patches-fixtures.ts`.
 
+Pin every dependency to one exact version; `versions:check`
+(`scripts/check-exact-versions.ts`) fails on anything else, including in
+`overrides`, `resolutions` and `patchedDependencies` selectors. The only ranges
+are the peers `apps` publishes, listed in that script, and they must be plain
+npm comparator ranges such as `^16.11.0`. Its fixtures are in
+`scripts/check-exact-versions-fixtures.ts`. `bunfig.toml` makes `bun install`
+and `bun add` skip versions published less than a day ago.
+
 The typecheck runs `tsc-rs`, a Rust port of the TypeScript 7 compiler that is
 about twice as fast as Go's `tsc` here and has the Effect language service
 diagnostics built in. It reports the Effect diagnostics configured in
