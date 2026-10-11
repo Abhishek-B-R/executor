@@ -8,6 +8,7 @@ import {
   Path,
   Redacted,
   Schema,
+  SchemaAST,
   Stdio,
   Stream,
 } from "effect";
@@ -20,35 +21,38 @@ import {
   type HttpClientResponse,
 } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import type { PlatformError } from "effect/PlatformError";
+import { isPlatformError, type PlatformError } from "effect/PlatformError";
 import {
-  AppDeploymentChanged,
   AppId,
   AppName,
-  AppNameTaken,
   AppSkillCatalog,
   AppSkillDocument,
   AppSkillName,
-  BuildMemoryExceeded,
   CommittedSource,
-  DeploymentBuildFailed,
   ExecutorApi,
   ProfileId,
   SourceCommit,
-  SourceError,
   SourceFilePath,
   SourceFiles,
   PackageName,
-  RegistryError,
   hostedExecutorOrigin,
+  sourceLimits,
   type App,
 } from "@executor-js/sdk/core";
-import { AppClientError, LoginFailed } from "./client-error.ts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import {
+  AppClientError,
+  HostRecovery,
+  HostRequestFailed,
+  LoginFailed,
+  SourceRejected,
+} from "./client-error.ts";
 import {
   AppAccess,
   AppAccessDenied,
   AppOperationError,
   appManagementApi,
+  appOperationErrors,
 } from "./contracts/api.ts";
 import { frameworkApi } from "./contracts/framework.ts";
 import {
@@ -65,8 +69,9 @@ class SkillLookupFailed extends Schema.TaggedError<SkillLookupFailed>()("SkillLo
 const localOrigin = "http://127.0.0.1:4312";
 const host = Flag.String("host").pipe(
   Flag.withDescription(
-    `Executor origin. Defaults to the local server; use ${hostedExecutorOrigin} for hosted Executor`,
+    `Executor origin. Defaults to EXECUTOR_HOST, then the local server at ${localOrigin}; use ${hostedExecutorOrigin} for hosted Executor`,
   ),
+  Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
   Flag.withDefault(localOrigin),
 );
 const organization = Flag.String("organization").pipe(
@@ -76,7 +81,10 @@ const organization = Flag.String("organization").pipe(
   Flag.optional,
 );
 const connection = { host, organization };
-const app = Flag.String("app").pipe(Flag.withSchema(AppId), Flag.withDescription("App ID"));
+const app = Flag.String("app").pipe(
+  Flag.withSchema(AppId),
+  Flag.withDescription("App ID, such as app_…; executor apps list prints each app's id"),
+);
 const name = Flag.String("name").pipe(
   Flag.withSchema(AppName),
   Flag.withDescription("Name for the new app"),
@@ -87,9 +95,16 @@ const commit = (purpose: string) =>
     Flag.withDescription(`Full 40-character Git commit ${purpose}`),
   );
 const ignoredSource = [".git", "node_modules", ".DS_Store"];
+const formatBytes = (bytes: number) =>
+  bytes >= 1024 * 1024
+    ? `${Number((bytes / (1024 * 1024)).toFixed(1))} MiB`
+    : bytes >= 1024
+      ? `${Number((bytes / 1024).toFixed(1))} KiB`
+      : `${bytes} bytes`;
+const formatCount = (count: number) => count.toLocaleString("en-US");
 const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription(
-    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. The source must include a root index.ts`,
+    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. The source must include a root index.ts and be UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}; the CLI checks this before uploading`,
   ),
 );
 const publication = {
@@ -138,16 +153,55 @@ const transport = (host: string, token: Redacted.Redacted<string>, path = (url: 
       ),
     ),
   ).pipe(Effect.provide(FetchHttpClient.layer));
-/** Transport failures become sanitized client errors; bodies and credentials are never shown. */
-const clientError = (error: HttpClientError.HttpClientError | Schema.SchemaError) =>
-  new AppClientError({
-    reason:
-      HttpClientError.isHttpClientError(error) && error.response?.status === 401
-        ? "authentication"
-        : HttpClientError.isHttpClientError(error) && error.response?.status === 403
-          ? "forbidden"
-          : "request",
-  });
+/** An Executor API error body this CLI's contract does not declare, as every Executor host writes it. */
+const HostAnswer = Schema.fromJsonString(
+  Schema.Struct({
+    _tag: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+    message: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
+    recovery: Schema.optional(HostRecovery),
+  }),
+);
+/** Read a host's own JSON error from a bounded body; any other response text is never kept. */
+const hostAnswer = (response: HttpClientResponse.HttpClientResponse) =>
+  /^application\/(?:[\w.-]+\+)?json$/i.test(
+    response.headers["content-type"]?.split(";")[0]?.trim() ?? "",
+  ) && Number(response.headers["content-length"] ?? 0) <= 65_536
+    ? response.text.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(HostAnswer)),
+        Effect.map(({ _tag, message, recovery }) => ({
+          code: _tag,
+          message,
+          ...(recovery === undefined ? {} : { recovery }),
+        })),
+        Effect.option,
+      )
+    : Effect.succeedNone;
+/**
+ * A response outside the operation's contract keeps its method, path, status and any Executor
+ * error the body states, so the command can say what the host answered. Credentials and other
+ * response text are never kept.
+ */
+const hostFailure = (error: HttpClientError.HttpClientError | Schema.SchemaError) =>
+  Effect.gen(function* () {
+    if (!HttpClientError.isHttpClientError(error))
+      return new HostRequestFailed({ reason: "response" });
+    const request = {
+      method: error.request.method,
+      ...(URL.canParse(error.request.url) ? { path: new URL(error.request.url).pathname } : {}),
+    };
+    const response = error.response;
+    if (response === undefined) return new HostRequestFailed({ reason: "network", ...request });
+    if (response.status === 401) return new AppClientError({ reason: "authentication" });
+    const answer = yield* hostAnswer(response);
+    if (response.status === 403 && Option.isNone(answer))
+      return new AppClientError({ reason: "forbidden" });
+    return new HostRequestFailed({
+      reason: response.status < 400 ? "response" : "status",
+      ...request,
+      status: response.status,
+      ...(Option.isSome(answer) ? { answer: answer.value } : {}),
+    });
+  }).pipe(Effect.flatMap(Effect.fail));
 const isTransportFailure = (
   error: unknown,
 ): error is HttpClientError.HttpClientError | Schema.SchemaError =>
@@ -212,7 +266,7 @@ const manage = <A, E>(
 ) =>
   connect(host, organization).pipe(
     Effect.flatMap(({ management, tenant }) => operation(management, tenant)),
-    Effect.catchIf(isTransportFailure, (error) => Effect.fail(clientError(error))),
+    Effect.catchIf(isTransportFailure, hostFailure),
   );
 /** Print a validated response exactly as the host sent it. */
 const printResponse = <A>([, response]: readonly [A, HttpClientResponse.HttpClientResponse]) =>
@@ -224,18 +278,84 @@ const print =
     Schema.encodeEffect(Schema.toCodecJson(schema))(value).pipe(
       Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))),
     );
-/** Read a JSON source list, or every file under a directory with POSIX paths relative to it. */
+/** At most this many paths are named in a refusal; the count says how many there are. */
+const namedPaths = 20;
+/**
+ * Every host accepts the same source budget (`sourceLimits`): a file count and the UTF-8 bytes of
+ * all contents. Refuse a larger source before uploading it, naming the limit and the largest files.
+ */
+const withinSourceLimits = (
+  files: ReadonlyArray<{ readonly path: string; readonly bytes: number }>,
+) => {
+  if (files.length > sourceLimits.files)
+    return Effect.fail(
+      new SourceRejected({
+        reason: "files",
+        detail: `The source has ${formatCount(files.length)} files; Executor accepts at most ${formatCount(sourceLimits.files)}. The CLI already skips ${ignoredSource.join(", ")}; remove generated or unneeded files from the source.`,
+        paths: [],
+      }),
+    );
+  const total = files.reduce((sum, file) => sum + file.bytes, 0);
+  if (total <= sourceLimits.bytes) return Effect.void;
+  const largest = files.toSorted((left, right) => right.bytes - left.bytes).slice(0, 10);
+  return Effect.fail(
+    new SourceRejected({
+      reason: "bytes",
+      detail: `The source's files hold ${formatBytes(total)} (${formatCount(total)} bytes); Executor accepts at most ${formatBytes(sourceLimits.bytes)} (${formatCount(sourceLimits.bytes)} bytes) in total. The largest files: ${largest.map((file) => `${file.path} (${formatBytes(file.bytes)})`).join(", ")}.`,
+      paths: largest.map((file) => file.path),
+    }),
+  );
+};
+/** The CLI's own checks of a file list: a root index.ts, unique and canonical paths. */
+const sourceFiles = (files: unknown) =>
+  Schema.decodeUnknownEffect(SourceFiles)(files).pipe(
+    Effect.mapError(
+      (error) =>
+        new SourceRejected({
+          reason: "invalid",
+          detail: `The files are not a valid app source: ${error.message}`,
+          paths: [],
+        }),
+    ),
+  );
+/** Source must be UTF-8 text; a file that is not is refused rather than uploaded garbled. */
+const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/**
+ * Read a JSON source list, or every file under a directory with POSIX paths relative to it. The
+ * source is checked against Executor's limits and for files that are not UTF-8 text before any of
+ * it is uploaded.
+ */
 const readFiles = (location: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    if ((yield* fs.stat(location)).type !== "Directory")
-      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(SourceFiles))(
-        yield* fs.readFileString(location),
+    if ((yield* fs.stat(location)).type !== "Directory") {
+      const listed = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+        ),
+      )(yield* fs.readFileString(location)).pipe(
+        Effect.mapError(
+          (error) =>
+            new SourceRejected({
+              reason: "invalid",
+              detail: `${location} is not a source directory or a JSON array of {"path", "content"} files: ${error.message}`,
+              paths: [],
+            }),
+        ),
       );
+      const encoder = new TextEncoder();
+      yield* withinSourceLimits(
+        listed.map((file) => ({ path: file.path, bytes: encoder.encode(file.content).length })),
+      );
+      return yield* sourceFiles(listed);
+    }
     const walk = (
       relative: ReadonlyArray<string>,
-    ): Effect.Effect<ReadonlyArray<{ path: string; content: string }>, PlatformError> =>
+    ): Effect.Effect<
+      ReadonlyArray<{ path: string; location: string; bytes: number }>,
+      PlatformError
+    > =>
       Effect.gen(function* () {
         const directory = path.join(location, ...relative);
         const entries = (yield* fs.readDirectory(directory))
@@ -244,38 +364,48 @@ const readFiles = (location: string) =>
         const nested = yield* Effect.forEach(entries, (entry) =>
           Effect.gen(function* () {
             const segments = [...relative, entry];
-            const info = yield* fs.stat(path.join(directory, entry));
+            const file = path.join(directory, entry);
+            const info = yield* fs.stat(file);
             if (info.type === "Directory") return yield* walk(segments);
             if (info.type !== "File") return [];
-            return [
-              {
-                path: segments.join("/"),
-                content: yield* fs.readFileString(path.join(directory, entry)),
-              },
-            ];
+            return [{ path: segments.join("/"), location: file, bytes: Number(info.size) }];
           }),
         );
         return nested.flat();
       });
-    return yield* Schema.decodeUnknownEffect(SourceFiles)(yield* walk([]));
+    // Sizes come from the directory listing, so an oversized source is refused before it is read.
+    const found = yield* walk([]);
+    yield* withinSourceLimits(found);
+    const read = yield* Effect.forEach(found, (file) =>
+      fs.readFile(file.location).pipe(
+        Effect.flatMap((bytes) =>
+          Effect.try({ try: () => utf8.decode(bytes), catch: () => "binary" }).pipe(Effect.option),
+        ),
+        Effect.map((content) => ({ path: file.path, content: Option.getOrUndefined(content) })),
+      ),
+    );
+    const binary = read.flatMap((file) => (file.content === undefined ? [file.path] : []));
+    if (binary.length > 0)
+      return yield* new SourceRejected({
+        reason: "binary",
+        detail: `Executor stores app source as UTF-8 text, and ${formatCount(binary.length)} ${binary.length === 1 ? "file is" : "files are"} not: ${binary.slice(0, namedPaths).join(", ")}${binary.length > namedPaths ? `, and ${formatCount(binary.length - namedPaths)} more` : ""}. Remove them from the source directory, or replace them with text files such as SVG.`,
+        paths: binary.slice(0, namedPaths),
+      });
+    return yield* sourceFiles(
+      read.flatMap((file) =>
+        file.content === undefined ? [] : [{ path: file.path, content: file.content }],
+      ),
+    );
   });
 /** Skill lookups print the host's result for all deployed apps, one catalog, or one document. */
 const SkillListing = Schema.Struct({
   catalogs: Schema.Array(AppSkillCatalog),
   unavailable: Schema.Array(Schema.String),
 });
-/** A skill read the host rejects reports its failure tag; transport failures stay sanitized. */
-const skillRead = <A, E extends { readonly _tag: string }>(
+/** A skill read the host rejects keeps the host's typed error; other answers keep their status. */
+const skillRead = <A, E>(
   effect: Effect.Effect<A, E | HttpClientError.HttpClientError | Schema.SchemaError>,
-) =>
-  effect.pipe(
-    Effect.catchIf(isTransportFailure, (error) => Effect.fail(clientError(error))),
-    Effect.mapError((error) =>
-      Schema.is(AppClientError)(error)
-        ? error
-        : new SkillLookupFailed({ reason: `The host rejected the skill read (${error._tag}).` }),
-    ),
-  );
+) => effect.pipe(Effect.catchIf(isTransportFailure, hostFailure));
 /** Skills come from each app's deployment on the host; the CLI bundles no guidance. */
 const readSkills = (args: {
   readonly host: string;
@@ -293,7 +423,7 @@ const readSkills = (args: {
     const { management, tenant, skills, profiles } = yield* connect(args.host, args.organization);
     const apps = yield* management
       .list({ params: tenant })
-      .pipe(Effect.catchIf(isTransportFailure, (error) => Effect.fail(clientError(error))));
+      .pipe(Effect.catchIf(isTransportFailure, hostFailure));
     // The same targets as the MCP skills tool: the app itself when it needs no accounts, and
     // each usable account profile.
     const targets = (app: App) =>
@@ -364,6 +494,7 @@ const readSkills = (args: {
     ).pipe(Effect.flatMap(print(AppSkillDocument)));
   });
 
+const notSignedIn = `Not signed in to this host. For hosted Executor, run executor apps login --host ${hostedExecutorOrigin} and pass the same --host to each command, or set EXECUTOR_HOST. For a local server (default ${localOrigin}), set EXECUTOR_API_KEY to its API key.`;
 /** What each sign-in failure means and what to do next. */
 const loginFailure: Record<LoginFailed["reason"], string> = {
   host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
@@ -380,46 +511,214 @@ const loginFailure: Record<LoginFailed["reason"], string> = {
     "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
 };
 
-/** Sanitized command diagnostics. Credential values and arbitrary server bodies are never printed. */
-export const appCommandFailure = (error: unknown): string | undefined => {
-  if (Schema.is(AppNameTaken)(error))
-    return "An app already uses this name. Open it or choose another name.";
-  if (Schema.is(AppDeploymentChanged)(error))
-    return "The active deployment changed. Read the app again before deploying.";
-  if (Schema.is(SourceError)(error))
-    return error.reason === "conflict"
-      ? "The source changed. Read the latest commit before saving or deploying."
-      : "The Git source could not be read or saved. Check the repository and retry.";
-  if (Schema.is(DeploymentBuildFailed)(error)) return error.message;
-  if (Schema.is(SkillLookupFailed)(error)) return error.reason;
-  if (Schema.is(BuildMemoryExceeded)(error)) return `${error.description} ${error.recovery.action}`;
-  if (Schema.is(RegistryError)(error))
-    return error.reason === "conflict"
-      ? "That publishing name is used by another app. Choose another name."
-      : `Registry operation failed (${error.reason}${error.status === undefined ? "" : ` ${error.status}`}). Check the app name, selected commit, and registry connection.`;
-  if (Schema.is(LoginFailed)(error)) return loginFailure[error.reason];
-  if (Schema.is(AppAccessDenied)(error) || Schema.is(AppClientError)(error))
-    return error.reason === "authentication"
-      ? `Not signed in to this host. For hosted Executor, run executor apps login --host ${hostedExecutorOrigin} and pass the same --host to each command. For a local server (default ${localOrigin}), set EXECUTOR_API_KEY to its API key.`
-      : error.reason === "forbidden"
-        ? "This account cannot perform that action. Check the host, selected organization, and your role."
-        : "The request could not be confirmed. Check the app state before retrying.";
-  if (Schema.is(AppOperationError)(error))
-    return "The app operation could not be completed. Check the app source and deployment state.";
-  if (Schema.isSchemaError(error))
-    return "Check the command options and source files. Use executor apps <command> --help for the expected input.";
+/**
+ * A failed command, as agents read it: the error code, the HTTP status when the host answered, the
+ * message, the declared recovery, and the error's other fields as the host sent them.
+ */
+export const AppCommandFailure = Schema.Struct({
+  code: Schema.String,
+  status: Schema.optional(Schema.Int),
+  message: Schema.String,
+  recovery: Schema.optional(HostRecovery),
+  details: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+  /** Set when a newer CLI release exists: which one, and how to install it. */
+  update: Schema.optional(Schema.String),
+});
+export type AppCommandFailure = typeof AppCommandFailure.Type;
+
+const updateCli =
+  "Check executor --version, then install the current release: npm i -g executor@beta --include=optional";
+/** The wire form of a contract error: its code, message, recovery and other fields. */
+const encodeOperationError = Schema.encodeUnknownOption(Schema.toCodecJson(AppOperationError));
+const operationStatus = (error: unknown) => {
+  for (const member of appOperationErrors)
+    if (Schema.is(member)(error)) return SchemaAST.resolveAt<number>("httpApiStatus")(member.ast);
   return undefined;
 };
+const WireError = Schema.Struct({ _tag: Schema.String, message: Schema.String });
+const presentation = new Set(["_tag", "message", "recovery"]);
+/** The fields an error carries besides its code, message and recovery, such as a build's stage. */
+const errorDetails = (wire: Record<string, Schema.Json>) => {
+  const details = Object.entries(wire).filter(([key]) => !presentation.has(key));
+  return details.length === 0 ? {} : { details: Object.fromEntries(details) };
+};
+/** What the host or the CLI said, for a request the host answered outside the contract. */
+const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
+  const request =
+    error.method === undefined ? "the request" : `${error.method} ${error.path ?? ""}`;
+  if (error.answer !== undefined)
+    return {
+      code: error.answer.code,
+      ...(error.status === undefined ? {} : { status: error.status }),
+      message: error.answer.message,
+      ...(error.answer.recovery === undefined ? {} : { recovery: error.answer.recovery }),
+    };
+  const status = error.status === undefined ? {} : { status: error.status };
+  if (error.reason === "network")
+    return {
+      code: "HostUnreachable",
+      message: `${request} got no answer from the host.`,
+      recovery: {
+        action: "Check --host and your network connection, then retry.",
+        instructions:
+          "The request may not have reached the host. Confirm the host origin, then read the app's state before repeating a write.",
+      },
+    };
+  if (error.reason === "response")
+    return {
+      code: "UnexpectedResponse",
+      ...status,
+      message: `The host's answer to ${request} does not match what this CLI expects, so the CLI and the host are probably different releases.`,
+      recovery: {
+        action: updateCli,
+        instructions: `The host may have completed the operation: read the app's state before repeating it. ${updateCli}`,
+      },
+    };
+  if (error.status === 404)
+    return {
+      code: "NotFound",
+      ...status,
+      message: `The host answered HTTP 404 to ${request}. This CLI may be older or newer than the host, which no longer serves or does not yet serve this request.`,
+      recovery: {
+        action: updateCli,
+        instructions: `The host does not serve this route. ${updateCli}. Then run the command again.`,
+      },
+    };
+  if (error.status === 413)
+    return {
+      code: "RequestTooLarge",
+      ...status,
+      message: `The host refused ${request} as too large (HTTP 413). App source is limited to ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)} of UTF-8 text.`,
+      recovery: {
+        action: "Remove generated or unneeded files from the source, then retry.",
+        instructions: "Reduce the source below the limits; nothing was saved.",
+      },
+    };
+  return {
+    code: "UnexpectedStatus",
+    ...status,
+    message: `The host answered ${request} with HTTP ${error.status ?? "error"}, which this command does not expect.`,
+    recovery: {
+      action: "Retry. If it persists, report the command and this status.",
+      instructions: `The host may have completed the operation: read the app's state before repeating a write. ${updateCli}`,
+    },
+  };
+};
+
+/**
+ * Describe an apps command failure. Host errors keep their code, status, message and recovery
+ * exactly as the host states them; the CLI's own failures say what it checked. Credentials and
+ * other response text are never included. Undefined for failures outside the apps commands.
+ */
+export const describeAppFailure = (error: unknown): AppCommandFailure | undefined => {
+  if (
+    (Schema.is(AppClientError)(error) || Schema.is(AppAccessDenied)(error)) &&
+    error.reason === "authentication"
+  )
+    return {
+      code: "NotSignedIn",
+      status: Schema.is(AppAccessDenied)(error) ? 403 : 401,
+      message: notSignedIn,
+    };
+  if (Schema.is(AppClientError)(error))
+    return {
+      code: "Forbidden",
+      status: 403,
+      message:
+        "This account cannot perform that action. Check the host, selected organization, and your role.",
+    };
+  if (Schema.is(HostRequestFailed)(error)) return hostRequestFailure(error);
+  if (Schema.is(SourceRejected)(error))
+    return {
+      code: "SourceRejected",
+      message: `${error.detail} Nothing was uploaded.`,
+      details: { reason: error.reason, paths: [...error.paths] },
+    };
+  if (Schema.is(SkillLookupFailed)(error))
+    return { code: "SkillLookupFailed", message: error.reason };
+  if (Schema.is(LoginFailed)(error))
+    return {
+      code: "LoginFailed",
+      message: loginFailure[error.reason],
+      details: { reason: error.reason },
+    };
+  if (isPlatformError(error)) return { code: "LocalFileError", message: error.message };
+  const wire = encodeOperationError(error);
+  if (Option.isSome(wire)) {
+    const fields = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json))(
+      wire.value,
+    );
+    const known = Schema.decodeUnknownOption(WireError)(wire.value);
+    if (Option.isSome(fields) && Option.isSome(known)) {
+      const status = operationStatus(error);
+      return {
+        code: known.value._tag,
+        ...(status === undefined ? {} : { status }),
+        message: known.value.message,
+        ...(UserFacingError.is(error) ? { recovery: error.recovery } : {}),
+        ...errorDetails(fields.value),
+      };
+    }
+  }
+  // Skill reads use the SDK's own routes; their errors are schema classes with a declared status.
+  if (error instanceof Error && Schema.isSchema(error.constructor)) {
+    const status = SchemaAST.resolveAt<number>("httpApiStatus")(error.constructor.ast);
+    return {
+      code: SchemaAST.resolveIdentifier(error.constructor.ast) ?? error.name,
+      ...(status === undefined ? {} : { status }),
+      message: error.message,
+      ...(UserFacingError.is(error) ? { recovery: error.recovery } : {}),
+    };
+  }
+  return undefined;
+};
+
+/** One failure as people read it: the message, its code and status, then the recovery. */
+export const renderAppFailure = (failure: AppCommandFailure): string =>
+  [
+    `Error: ${failure.message}`,
+    `Code: ${failure.code}${failure.status === undefined ? "" : ` (HTTP ${failure.status})`}`,
+    ...(failure.recovery === undefined
+      ? []
+      : [`Next step: ${failure.recovery.action}`, `For agents: ${failure.recovery.instructions}`]),
+    ...(failure.update === undefined ? [] : [failure.update]),
+  ].join("\n");
+
+/** The failure as one JSON document, `{ "error": ... }`, for callers that parse stdout. */
+export const encodeAppFailure = (failure: AppCommandFailure): string =>
+  JSON.stringify({ error: Schema.encodeSync(AppCommandFailure)(failure) }, null, 2);
 
 /** The executable supplies one platform layer and owns process lifetime. */
 export const appsCommand = (platform: string) =>
   Command.make("apps").pipe(
-    Command.withDescription("Create, edit, deploy, share, and install apps"),
+    Command.withDescription(
+      `Create, edit, deploy, share, and install apps. Output is JSON on stdout. A failure exits 1 and prints the error's message, code, HTTP status and recovery on stderr; when stdout is not a terminal it also prints them as {"error": {"code", "status", "message", "recovery", "details", "update"}} on stdout; "update" says when a newer CLI release exists. Set EXECUTOR_HOST to skip --host; --organization defaults to the one you signed in to`,
+    ),
+    Command.withExamples([
+      {
+        command: `executor apps login --host ${hostedExecutorOrigin}`,
+        description: "Sign in to hosted Executor once",
+      },
+      {
+        command: `EXECUTOR_HOST=${hostedExecutorOrigin} executor apps list`,
+        description: "List apps on the host you signed in to",
+      },
+      {
+        command: "executor apps skills --app executor --name app-authoring --file deploy.md",
+        description: "Read how to write and deploy an app",
+      },
+    ]),
     Command.withSubcommands([
       Command.make("login", { host }).pipe(
         Command.withDescription(
           `Sign in to a hosted Executor with a code approved in any browser, for example --host ${hostedExecutorOrigin}`,
         ),
+        Command.withExamples([
+          {
+            command: `executor apps login --host ${hostedExecutorOrigin}`,
+            description: "Print a link and a code, and wait until it is approved in a browser",
+          },
+        ]),
         Command.withHandler((args) => registryLogin(args.host, platform)),
       ),
       Command.make("list", connection).pipe(
@@ -434,8 +733,18 @@ export const appsCommand = (platform: string) =>
       ),
       Command.make("create", { ...connection, name, files }).pipe(
         Command.withDescription(
-          "Create an app from source files: a root index.ts and a package.json whose dependencies.apps is the version executor apps framework prints. Saving source does not run the app",
+          "Create an app from source files: a root index.ts and a package.json whose dependencies.apps is the version executor apps framework prints. Saving source does not run the app. Prints the app, including its id",
         ),
+        Command.withExamples([
+          {
+            command: 'executor apps create --name "Hello" --files ./hello',
+            description: "Create an app from the directory ./hello",
+          },
+          {
+            command: 'executor apps create --name "Hello" --files ./files.json',
+            description: 'Create an app from a JSON array of {"path", "content"} files',
+          },
+        ]),
         Command.withHandler((args) =>
           Effect.gen(function* () {
             const files = yield* readFiles(args.files);
@@ -461,7 +770,7 @@ export const appsCommand = (platform: string) =>
               framework.release({ params: tenant, responseMode: "decoded-and-response" }),
             ),
             Effect.flatMap(printResponse),
-            Effect.catchIf(isTransportFailure, (error) => Effect.fail(clientError(error))),
+            Effect.catchIf(isTransportFailure, hostFailure),
           ),
         ),
       ),
@@ -495,6 +804,13 @@ export const appsCommand = (platform: string) =>
         Command.withDescription(
           "Print the app's Git remote URL. Configure executor apps credential as the Git credential helper",
         ),
+        Command.withExamples([
+          {
+            command:
+              "git -c credential.helper='!executor apps credential' -c credential.useHttpPath=true clone \"$(executor apps git --app <app-id>)\"",
+            description: "Clone the app's source; pushes save source but do not deploy it",
+          },
+        ]),
         Command.withHandler((args) =>
           manage(args.host, args.organization, (api, tenant) =>
             api.git({ params: { ...tenant, app: args.app } }),
@@ -519,6 +835,13 @@ export const appsCommand = (platform: string) =>
         Command.withDescription(
           "Save a complete new source snapshot as a commit without deploying it. Files missing from it are deleted. Prints the new revision, the count of removed files and at most 100 of their paths; deploy its commit with executor apps deploy",
         ),
+        Command.withExamples([
+          {
+            command:
+              'executor apps commit --app <app-id> --files ./hello --expected <last-commit> --message "Add search"',
+            description: "Save ./hello as the next commit after <last-commit>",
+          },
+        ]),
         Command.withHandler((args) =>
           Effect.gen(function* () {
             const files = yield* readFiles(args.files);
@@ -538,7 +861,15 @@ export const appsCommand = (platform: string) =>
         app,
         commit: commit("to build and activate"),
       }).pipe(
-        Command.withDescription("Build a saved commit and make it the app's active deployment"),
+        Command.withDescription(
+          "Build a saved commit and make it the app's active deployment. A failed build leaves the active deployment unchanged and reports the failing stage, file and line",
+        ),
+        Command.withExamples([
+          {
+            command: "executor apps deploy --app <app-id> --commit <commit>",
+            description: "Deploy the commit executor apps commit printed",
+          },
+        ]),
         Command.withHandler((args) =>
           manage(args.host, args.organization, (api, tenant) =>
             api

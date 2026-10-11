@@ -444,22 +444,22 @@ export const gitRoutes = (() => {
       ),
     ).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed(
-        HttpServerResponse.empty({
-          status:
-            Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error)
-              ? 401
-              : Schema.is(SourceError)(error) && error.reason === "protected"
-                ? 403
-                : 503,
-          headers: {
-            "www-authenticate": 'Basic realm="Executor Git"',
-            "cache-control": "no-store",
-          },
+    Effect.catch((error) => {
+      const headers = {
+        "www-authenticate": 'Basic realm="Executor Git"',
+        "cache-control": "no-store",
+      };
+      if (Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error))
+        return Effect.succeed(HttpServerResponse.empty({ status: 401, headers }));
+      // Git prints a plain-text body as `remote:` lines when it cannot read the refs.
+      const source = Schema.is(SourceError)(error) ? error : new SourceError({ reason: "git" });
+      return Effect.succeed(
+        HttpServerResponse.text(`${source.message}\n`, {
+          status: source.reason === "protected" ? 403 : source.reason === "limit" ? 413 : 503,
+          headers,
         }),
-      ),
-    ),
+      );
+    }),
   );
   return HttpApiBuilder.layer(api).pipe(
     Layer.provide(

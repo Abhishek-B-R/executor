@@ -1,5 +1,5 @@
-/** Repository credentials for Git callers; the ArtifactsCredentials Worker hosts the coordinator. */
-import { AppCodeId, SourceError, aesGcmCredentials } from "@executor-js/sdk/core";
+/** Repository credentials and history for Git callers; the ArtifactsCredentials Worker hosts the coordinator. */
+import { AppCodeId, GitCommit, SourceError, aesGcmCredentials } from "@executor-js/sdk/core";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { currentTraceContext, type TraceContext } from "@executor-js/telemetry";
 import { RuntimeContext } from "alchemy";
@@ -41,6 +41,16 @@ interface Coordinator {
     rejectedGeneration: string | null,
     trace: TraceContext | undefined,
   ) => Effect.Effect<typeof envelope.Type, SourceError, RuntimeContext>;
+  /** List up to `limit` commits of main, newest first, without fetching their files. */
+  readonly history: (
+    id: string,
+    limit: number,
+    trace: TraceContext | undefined,
+  ) => Effect.Effect<
+    ReadonlyArray<{ commit: string; author: string; message: string; timestamp: number }>,
+    SourceError,
+    RuntimeContext
+  >;
   /** Create the repository; null means it already existed. */
   readonly create: (
     id: string,
@@ -104,6 +114,22 @@ export const cloudArtifactsTokens = (
             Effect.flatMap(Schema.decodeUnknownEffect(credential)),
           );
           return { token: payload.token, generation: payload.generation };
+        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+      history: (repository, limit) =>
+        Effect.gen(function* () {
+          const rows = yield* coordinator
+            .getByName(repository)
+            .history(repository, limit, yield* currentTraceContext)
+            .pipe(
+              Effect.tapError((error) =>
+                Effect.annotateCurrentSpan(
+                  "source.repository.rpc.failure",
+                  providerFailureCode(error),
+                ),
+              ),
+              Effect.withSpan("source.repository.history.rpc"),
+            );
+          return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
       create: (repository) =>
         Effect.gen(function* () {

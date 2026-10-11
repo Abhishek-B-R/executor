@@ -7,7 +7,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsCli } from "../support/apps-cli.ts";
@@ -89,6 +89,26 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           );
           expect(workspace.files).toContainEqual(pushed);
 
+          // A pack over Git's 1 MiB http.postBuffer is sent after a probe request whose body is
+          // only a flush packet, then streamed in chunks. Both must reach the repository.
+          const large = { path: "large.txt", content: randomBytes(1536 * 1024).toString("base64") };
+          yield* tools.fs.writeFileString(
+            tools.path.join(tools.checkout, large.path),
+            large.content,
+          );
+          expect((yield* tools.git(["add", large.path])).code).toBe(0);
+          expect((yield* tools.git(["commit", "--quiet", "-m", "Push a large file"])).code).toBe(0);
+          const largePush = yield* tools.git(["push", "--verbose", "origin", "HEAD:main"]);
+          expect(largePush.code, largePush.stderr).toBe(0);
+          expect(largePush.stderr).toContain("POST git-receive-pack (chunked)");
+          const afterLarge = yield* body(
+            Workspace,
+            yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/workspace`),
+          );
+          expect(afterLarge.files.find((file) => file.path === large.path)?.content.length).toBe(
+            large.content.length,
+          );
+
           // A remote on the deployment origin, as earlier clones have, serves the same history.
           const earlier = yield* tools.git([
             "fetch",
@@ -100,9 +120,111 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           const heads = yield* tools.git(["rev-parse", "FETCH_HEAD", "HEAD"]);
           const [fetched, local] = heads.stdout.trim().split("\n");
           expect(fetched).toBe(local);
+
+          const remoteMain = Effect.map(
+            tools.git(["ls-remote", "origin", "refs/heads/main"]),
+            (listed) => listed.stdout.split("\t")[0],
+          );
+          // A push far larger than one Worker could hold streams through to the repository. Each
+          // file stays under Artifacts' 32 MB blob limit and the pack under the 64 MiB that
+          // Artifacts accepts in one push today; random bytes keep the pack that large.
+          const hugeFiles = ["huge-1.bin", "huge-2.bin", "huge-3.bin"];
+          const beforeHuge = (yield* tools.git(["rev-parse", "HEAD"])).stdout.trim();
+          for (const file of hugeFiles)
+            yield* tools.fs.writeFile(
+              tools.path.join(tools.checkout, file),
+              randomBytes(14 * 1024 * 1024),
+            );
+          expect((yield* tools.git(["add", ...hugeFiles])).code).toBe(0);
+          expect((yield* tools.git(["commit", "--quiet", "-m", "Push 42 MiB"])).code).toBe(0);
+          const hugePush = yield* tools.git(["push", "origin", "HEAD:main"]);
+          expect(hugePush.code, hugePush.stderr).toBe(0);
+          expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
+
+          // Pushes that would move a protected ref are refused the way Git reports them, and
+          // nothing changes: main cannot be deleted, and __executor/ branches are Executor's.
+          const deleted = yield* tools.git(["push", "origin", ":main"]);
+          expect(deleted.code).not.toBe(0);
+          expect(deleted.stderr).toContain("the app's main branch cannot be deleted");
+          const retained = yield* tools.git(["push", "origin", "HEAD:refs/heads/__executor/x"]);
+          expect(retained.code).not.toBe(0);
+          expect(retained.stderr).toContain("Executor keeps this ref for retained deployments");
+          expect(yield* remoteMain).toBe((yield* tools.git(["rev-parse", "HEAD"])).stdout.trim());
+
+          // With the large files removed, the history holds more than a Worker reads in one Git
+          // response, but the current tree is small. A source read fetches only the commit it
+          // reads, an older one by its SHA included, and the history lists commits without files.
+          const hugeCommit = (yield* tools.git(["rev-parse", "HEAD"])).stdout.trim();
+          expect((yield* tools.git(["rm", "--quiet", ...hugeFiles])).code).toBe(0);
+          expect((yield* tools.git(["commit", "--quiet", "-m", "Remove 42 MiB"])).code).toBe(0);
+          const trimmed = yield* tools.git(["push", "--quiet", "origin", "HEAD:main"]);
+          expect(trimmed.code, trimmed.stderr).toBe(0);
+          const trimmedCommit = (yield* tools.git(["rev-parse", "HEAD"])).stdout.trim();
+          const current = yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/workspace`);
+          expect(current.status).toBe(200);
+          const currentFiles = (yield* body(Workspace, current)).files;
+          expect(currentFiles).toContainEqual(pushed);
+          expect(currentFiles.map((file) => file.path)).not.toContain(hugeFiles[0]);
+          const history = yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/history`);
+          expect(history.status, JSON.stringify(history.body)).toBe(200);
+          const commits = (yield* body(
+            Schema.Array(Schema.Struct({ commit: Schema.String })),
+            history,
+          )).map((entry) => entry.commit);
+          expect(commits.slice(0, 2)).toEqual([trimmedCommit, hugeCommit]);
+          expect(commits).toContain(beforeHuge);
+          const older = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/${app.id}/commits/${beforeHuge}/display/file?path=${pushed.path}`,
+          );
+          expect(older.status, JSON.stringify(older.body)).toBe(200);
+          expect((yield* body(Schema.Struct({ content: Schema.String }), older)).content).toBe(
+            pushed.content,
+          );
+          // One commit whose own files are over the limit is refused as such.
+          const oversized = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/${app.id}/commits/${hugeCommit}/display/file?path=${pushed.path}`,
+          );
+          expect(oversized.status).toBe(413);
+          expect(yield* body(Schema.Struct({ reason: Schema.String }), oversized)).toEqual({
+            reason: "limit",
+          });
+
+          // A shallow clone's push starts with its shallow boundary, and is accepted.
+          const shallow = tools.path.join(tools.checkout, "..", "shallow");
+          const shallowClone = yield* tools.git([
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            remote,
+            shallow,
+          ]);
+          expect(shallowClone.code, shallowClone.stderr).toBe(0);
+          yield* tools.fs.writeFileString(tools.path.join(shallow, "shallow.txt"), "Shallow\n");
+          expect((yield* tools.git(["-C", shallow, "add", "shallow.txt"])).code).toBe(0);
+          expect(
+            (yield* tools.git([
+              "-C",
+              shallow,
+              "commit",
+              "--quiet",
+              "-m",
+              "Push from a shallow clone",
+            ])).code,
+          ).toBe(0);
+          const shallowPush = yield* tools.git(["-C", shallow, "push", "origin", "HEAD:main"]);
+          expect(shallowPush.code, shallowPush.stderr).toBe(0);
+          expect((yield* tools.git(["pull", "--quiet", "--ff-only", "origin", "main"])).code).toBe(
+            0,
+          );
         }),
       ),
-    // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP.
-    { timeout: 120_000 },
+    // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP,
+    // including a 42 MiB push.
+    { timeout: 240_000 },
   );
 });

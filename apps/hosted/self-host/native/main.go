@@ -318,13 +318,9 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, input.Args...)...)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
-		for name, value := range input.Environment {
-			if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" {
-				http.Error(w, "Invalid Git environment", 400)
-				return
-			}
-			command.Env = append(command.Env, name+"="+value)
+		if !b.gitEnvironment(command, input.Environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
 		}
 		command.Stdin = bytes.NewReader(input.Input)
 		command.Stderr = io.Discard
@@ -349,6 +345,51 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Code   int    `json:"code"`
 			Output []byte `json:"output"`
 		}{code, output.Bytes()})
+	case "/git/http-backend":
+		// One Git HTTP request, streamed both ways so neither the pack nor a clone is held
+		// in memory. The request's own context ends the process when the client goes away.
+		var environment map[string]string
+		if err := json.Unmarshal([]byte(r.Header.Get("executor-git-environment")), &environment); err != nil {
+			http.Error(w, "Invalid host request", 400)
+			return
+		}
+		command := exec.CommandContext(r.Context(), "git", "-c", "core.hooksPath=/dev/null", "http-backend")
+		if !b.gitEnvironment(command, environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
+		}
+		command.Stdin = r.Body
+		command.Stderr = io.Discard
+		output, err := command.StdoutPipe()
+		if err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		// Git may write progress before it has read the whole push.
+		controller := http.NewResponseController(w)
+		if err := controller.EnableFullDuplex(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		if err := command.Start(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		w.Header().Set("content-type", "application/octet-stream")
+		buffer := make([]byte, 64<<10)
+		for {
+			read, err := output.Read(buffer)
+			if read > 0 {
+				if _, err := w.Write(buffer[:read]); err != nil {
+					break
+				}
+				controller.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+		command.Wait()
 	case "/git/directory":
 		var input struct {
 			Path string `json:"path"`
@@ -398,6 +439,18 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// Git runs with a fixed environment plus the CGI and Git variables a request names.
+func (b *bridge) gitEnvironment(command *exec.Cmd, environment map[string]string) bool {
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	for name, value := range environment {
+		if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" && name != "HTTP_CONTENT_ENCODING" {
+			return false
+		}
+		command.Env = append(command.Env, name+"="+value)
+	}
+	return true
 }
 
 type limitedOutput struct {
@@ -673,7 +726,7 @@ func serve(mode string) error {
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+	public := &http.Server{Handler: fullDuplex(proxy), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
 	signals := make(chan os.Signal, 1)
@@ -696,6 +749,16 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// fullDuplex lets a response start before its request body is read. A Git push streams its
+// pack through to git http-backend, which answers with headers first; without this, Go stops
+// reading an HTTP/1 request body once the response starts and the push is cut short.
+func fullDuplex(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NewResponseController(w).EnableFullDuplex()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // credentialHandleSecret derives the apps Worker's credential handle secret from the instance's

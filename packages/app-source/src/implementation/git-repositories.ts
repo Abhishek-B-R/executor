@@ -23,6 +23,15 @@ export interface GitHost {
   ) => Effect.Effect<{ readonly code: number; readonly output: Uint8Array }, SourceError>;
   readonly createDirectory: (path: string) => Effect.Effect<void, SourceError>;
   readonly temporaryIndex: Effect.Effect<string, SourceError, Scope.Scope>;
+  /**
+   * Run `git http-backend` with a CGI environment, streaming `body` to its input. Returns its
+   * output as Git writes it: CGI headers, a blank line, then the response body. Neither side is
+   * held in memory, so clones and pushes are not bounded by the host's buffers.
+   */
+  readonly httpBackend: (
+    environment: Record<string, string>,
+    body: ReadableStream<Uint8Array> | null,
+  ) => Effect.Effect<ReadableStream<Uint8Array>, SourceError>;
 }
 
 const bytes = (text: string) => new TextEncoder().encode(text);
@@ -32,6 +41,14 @@ const concat = (left: Uint8Array, right: Uint8Array) => {
   result.set(right, left.length);
   return result;
 };
+const headerEnd = (output: Uint8Array) =>
+  output.findIndex(
+    (_, index) =>
+      output[index] === 13 &&
+      output[index + 1] === 10 &&
+      output[index + 2] === 13 &&
+      output[index + 3] === 10,
+  );
 const decode = (body: Uint8Array) =>
   Effect.try({
     try: () => new TextDecoder("utf-8", { fatal: true }).decode(body),
@@ -288,32 +305,44 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
               ? "/git-receive-pack"
               : null;
         if (service === null) return new Response(null, { status: 404 });
-        const input = yield* Effect.tryPromise({
-          try: () => limitedBody(request),
-          catch: () => new SourceError({ reason: "limit" }),
-        });
-        const output = yield* run(["http-backend"], input, {
-          GIT_PROJECT_ROOT: directory,
-          GIT_HTTP_EXPORT_ALL: "1",
-          PATH_INFO: `/${id}.git${service}`,
-          REQUEST_METHOD: request.method,
-          QUERY_STRING: url.search.slice(1),
-          CONTENT_TYPE: request.headers.get("content-type") ?? "",
-          CONTENT_LENGTH: String(input.length),
-          REMOTE_USER: "executor",
-          SERVER_PROTOCOL: "HTTP/1.1",
-        });
-        const separator = output.findIndex(
-          (_, index) =>
-            output[index] === 13 &&
-            output[index + 1] === 10 &&
-            output[index + 2] === 13 &&
-            output[index + 3] === 10,
+        const length = request.headers.get("content-length");
+        const encoding = request.headers.get("content-encoding");
+        const output = yield* host.httpBackend(
+          {
+            GIT_PROJECT_ROOT: directory,
+            GIT_HTTP_EXPORT_ALL: "1",
+            PATH_INFO: `/${id}.git${service}`,
+            REQUEST_METHOD: request.method,
+            QUERY_STRING: url.search.slice(1),
+            CONTENT_TYPE: request.headers.get("content-type") ?? "",
+            // Without a length, http-backend reads the body until it ends.
+            ...(length === null ? {} : { CONTENT_LENGTH: length }),
+            // Git compresses larger fetch requests; http-backend inflates them itself.
+            ...(encoding === null ? {} : { HTTP_CONTENT_ENCODING: encoding }),
+            REMOTE_USER: "executor",
+            SERVER_PROTOCOL: "HTTP/1.1",
+          },
+          request.body,
         );
-        if (separator < 0) return yield* new SourceError({ reason: "git" });
+        // Read only the CGI headers; the body streams on to the client.
+        const reader = output.getReader();
+        let head = new Uint8Array();
+        let separator = -1;
+        while (separator < 0) {
+          const next = yield* Effect.tryPromise({
+            try: () => reader.read(),
+            catch: () => new SourceError({ reason: "git" }),
+          });
+          if (next.done) return yield* new SourceError({ reason: "git" });
+          head = concat(head, next.value);
+          separator = headerEnd(head);
+        }
         const headers = new Headers();
         let status = 200;
-        for (const line of (yield* decode(output.slice(0, separator))).split("\r\n")) {
+        const fields = yield* decode(head.slice(0, separator)).pipe(
+          Effect.tapError(() => Effect.promise(() => reader.cancel().catch(() => undefined))),
+        );
+        for (const line of fields.split("\r\n")) {
           const colon = line.indexOf(":");
           if (colon < 1) continue;
           const name = line.slice(0, colon);
@@ -321,26 +350,19 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
           if (name.toLowerCase() === "status") status = Number(value.split(" ")[0]);
           else headers.set(name, value);
         }
-        return new Response(output.slice(separator + 4), { status, headers });
+        const rest = head.slice(separator + 4);
+        const body = new ReadableStream<Uint8Array>({
+          start: (controller) => {
+            if (rest.length > 0) controller.enqueue(rest);
+          },
+          pull: async (controller) => {
+            const next = await reader.read();
+            if (next.done) controller.close();
+            else controller.enqueue(next.value);
+          },
+          cancel: (reason) => reader.cancel(reason),
+        });
+        return new Response(body, { status, headers });
       }),
   });
 };
-
-/** Bound Git HTTP requests before passing them to the native CGI backend. */
-export async function limitedBody(request: Request): Promise<Uint8Array> {
-  if (request.body === null) return new Uint8Array();
-  const reader = request.body.getReader();
-  let output = new Uint8Array();
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) return output;
-      if (output.length + part.value.length > 32 * 1024 * 1024)
-        throw new Error("Git request too large");
-      output = concat(output, part.value);
-    }
-  } finally {
-    await reader.cancel();
-    reader.releaseLock();
-  }
-}

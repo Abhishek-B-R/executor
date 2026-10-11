@@ -4,7 +4,7 @@
 export const executorSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/SKILL.md": "96780baf35e693f2af7b28f438046d5924ee5a332f7cc6ca35d168a8da24b72d",
   "app-authoring/accounts.md": "b3897072d03fef9a15711f1c24a43e90375fb02072d14127b74ad38634730287",
-  "app-authoring/deploy.md": "4824e70d17af39bdd03a7887f3316b580b58fc76370200c4bc2e3dfb853a371d",
+  "app-authoring/deploy.md": "0e86b648c9fdbb6b057c822adc5406d48530c6a2b66cf3dd9704d05a1727437b",
   "app-authoring/events.md": "202bde87c2320af9706828063c6aaeeac0c9b8661971f610220f2a49293e3561",
   "app-authoring/integrations.md": "9ead5f5fd32cfdc34b6bcca45edff06f6d91fd6bb211b06cac39a4fff819e5f3",
   "app-authoring/starter.md": "3e5b2f55da9aed2a6c0ff95d4c1982d1da6aa206fd404d6b5f1fb0b7c2880077",

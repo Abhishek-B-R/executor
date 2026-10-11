@@ -8,9 +8,9 @@ import {
   ReleaseVersion,
 } from "@executor-js/utils/release-version";
 import { Clock, Config, Console, Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
+import { HttpClient, HttpClientResponse } from "effect/http";
 
-const registry = "https://registry.npmjs.org/-/package/executor/dist-tags";
 const checkInterval = Duration.days(1);
 const requestTimeout = Duration.seconds(5);
 
@@ -61,15 +61,67 @@ const updateCommand = (location: string | undefined, version: typeof ReleaseVers
 const releaseTag = (tags: typeof DistTags.Type, name: string) =>
   Schema.decodeUnknownOption(ReleaseVersion)(tags[name]).pipe(Option.getOrUndefined);
 
+/** Read the npm `beta` and `latest` tags. `EXECUTOR_NPM_REGISTRY` names a registry mirror. */
+const fetchReleases = (timeout: Duration.Input) =>
+  Effect.gen(function* () {
+    const registry = yield* Config.String("EXECUTOR_NPM_REGISTRY").pipe(
+      Config.withDefault("https://registry.npmjs.org"),
+    );
+    const tags = yield* HttpClient.get(
+      `${registry.replace(/\/+$/u, "")}/-/package/executor/dist-tags`,
+    ).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((response) => response.json),
+      Effect.flatMap(Schema.decodeUnknownEffect(DistTags)),
+      Effect.timeout(timeout),
+      // node:http destroys an unanswered connection on timeout; an aborted fetch keeps the
+      // process alive until the operating system gives up on connecting.
+      Effect.provide(NodeHttpClient.layerNodeHttp),
+    );
+    return { beta: releaseTag(tags, "beta"), latest: releaseTag(tags, "latest") };
+  });
+
+/** The newest release this installation should move to, if any. */
+const newerRelease = (
+  current: typeof ReleaseVersion.Type,
+  known: {
+    readonly beta?: typeof ReleaseVersion.Type | undefined;
+    readonly latest?: typeof ReleaseVersion.Type | undefined;
+  },
+) => {
+  // Beta installs move to stable once it is newer; stable installs never move to beta.
+  const candidates =
+    releaseChannel(current) === "beta" ? [known.latest, known.beta] : [known.latest];
+  const [newer] = candidates
+    .filter((version) => version !== undefined)
+    .filter((version) => compareReleaseVersions(version, current) > 0)
+    .sort((left, right) => compareReleaseVersions(right, left));
+  return newer;
+};
+
+/** This build's release version, or none for development and commit builds. */
+const currentRelease = Config.schema(ReleaseVersion, "EXECUTOR_BUILD_VERSION").pipe(Config.option);
+const checksDisabled = Config.Boolean("EXECUTOR_NO_UPDATE_CHECK").pipe(Config.withDefault(false));
+
+/**
+ * When a command has failed, say so if this CLI is older than the newest release: an old CLI is a
+ * common cause. The lookup waits at most two seconds and never fails; undefined when the CLI is
+ * current, checks are off, or the registry does not answer in time.
+ */
+export const outdatedCli = (installation: string | undefined) =>
+  Effect.gen(function* () {
+    const current = yield* currentRelease;
+    if (Option.isNone(current) || (yield* checksDisabled)) return undefined;
+    const newer = newerRelease(current.value, yield* fetchReleases(Duration.seconds(2)));
+    if (newer === undefined) return undefined;
+    return `This CLI (v${current.value}) is out of date; the latest is v${newer}. ${updateCommand(installation, newer)}`;
+  }).pipe(Effect.orElseSucceed(() => undefined));
+
 /** Check at most daily, remember the answer in the data directory, and never delay or fail startup. */
 export const updateNotice = (directory: string, installation: string | undefined) =>
   Effect.gen(function* () {
-    const current = yield* Config.schema(ReleaseVersion, "EXECUTOR_BUILD_VERSION").pipe(
-      Config.option,
-    );
-    const disabled = yield* Config.Boolean("EXECUTOR_NO_UPDATE_CHECK").pipe(
-      Config.withDefault(false),
-    );
+    const current = yield* currentRelease;
+    const disabled = yield* checksDisabled;
     const ci = yield* Config.String("CI").pipe(Config.option);
     // Development and commit builds have no release version to compare.
     if (Option.isNone(current) || disabled || Option.isSome(ci)) return;
@@ -83,26 +135,11 @@ export const updateNotice = (directory: string, installation: string | undefined
     const known: LastCheck =
       Option.isSome(saved) && now - saved.value.checkedAt < Duration.toMillis(checkInterval)
         ? saved.value
-        : yield* HttpClient.get(registry).pipe(
-            Effect.flatMap(HttpClientResponse.filterStatusOk),
-            Effect.flatMap((response) => response.json),
-            Effect.flatMap(Schema.decodeUnknownEffect(DistTags)),
-            Effect.timeout(requestTimeout),
-            Effect.map((tags) => ({
-              checkedAt: now,
-              beta: releaseTag(tags, "beta"),
-              latest: releaseTag(tags, "latest"),
-            })),
+        : yield* fetchReleases(requestTimeout).pipe(
+            Effect.map((tags) => ({ checkedAt: now, ...tags })),
             Effect.tap((check) => fs.writeFileString(file, Schema.encodeSync(LastCheck)(check))),
-            Effect.provide(FetchHttpClient.layer),
           );
-    // Beta installs move to stable once it is newer; stable installs never move to beta.
-    const candidates =
-      releaseChannel(current.value) === "beta" ? [known.latest, known.beta] : [known.latest];
-    const [newer] = candidates
-      .filter((version) => version !== undefined)
-      .filter((version) => compareReleaseVersions(version, current.value) > 0)
-      .sort((left, right) => compareReleaseVersions(right, left));
+    const newer = newerRelease(current.value, known);
     if (newer === undefined) return;
     yield* Console.error(`Executor ${newer} is available. ${updateCommand(installation, newer)}`);
   }).pipe(Effect.ignore);

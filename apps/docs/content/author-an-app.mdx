@@ -425,6 +425,13 @@ The CLI also provides `executor apps source`, `executor apps commit`, and
 `executor apps deploy --commit <sha>`. Deployment reads the chosen commit and
 leaves the Git branch unchanged. Ordinary Git pushes save source without deploying it.
 
+App source is UTF-8 text, at most 4,096 files and 16 MiB of file contents. The
+CLI checks a directory or JSON file against these limits before uploading it and
+names the files that are too large or not text. A failed CLI command prints the
+host's error code, HTTP status, message and recovery; when its output is not a
+terminal it also prints them as `{ "error": ... }` JSON on standard output.
+When a newer CLI release exists, the failure also says so and how to update.
+
 ## Update a hosted app
 
 Use `appManagement.deploy` with `{ files: [...] }` to deploy a complete file set,

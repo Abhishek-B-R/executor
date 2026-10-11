@@ -1,6 +1,8 @@
 /**
  * Private entry point for Artifacts token coordinators. A coordinator that wakes in a fresh isolate
- * loads and initializes only this Worker, not the API with its routes, auth and executor.
+ * loads and initializes only this Worker, not the API with its routes, auth and executor. It holds
+ * the stage's only Artifacts binding, so it also lists commit history, which Git cannot fetch
+ * without every file those commits hold.
  */
 import { AppCodeId, aesGcmCredentials } from "@executor-js/sdk/core";
 import { externalTrace, TraceContext, traceLinks } from "@executor-js/telemetry";
@@ -31,6 +33,13 @@ const issued = Schema.Struct({
   scope: Schema.Literal("write"),
   expiresAt: Schema.String.check(Schema.makeFilter((value) => Number.isFinite(Date.parse(value)))),
 });
+/** The fields of the binding's commit metadata that history shows. */
+const listedCommit = Schema.Struct({
+  hash: Schema.String,
+  message: Schema.String,
+  author: Schema.Struct({ name: Schema.String }),
+  authoredAt: Schema.Number,
+});
 const pendingPreparation = Schema.Struct({
   repository: AppCodeId,
   trace: Schema.NullOr(TraceContext),
@@ -45,6 +54,20 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     const encryption = yield* aesGcmCredentials(yield* encryptionKey, crypto);
     const lock = yield* Semaphore.make(1);
+    const open = (repository: AppCodeId) =>
+      Effect.acquireRelease(
+        binding.get(repository).pipe(
+          Effect.retry({
+            while: (error) =>
+              error.message ===
+              `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
+            schedule: Schedule.spaced("5 seconds"),
+            times: 2,
+          }),
+          Effect.withSpan("source.repository.open"),
+        ),
+        (repo) => disposeRpc(repo.raw),
+      );
     const acquire = (repository: AppCodeId, rejectedGeneration: string | null) =>
       lock
         .withPermits(1)(
@@ -77,19 +100,7 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
                   return saved;
                 }
               }
-              const repo = yield* Effect.acquireRelease(
-                binding.get(repository).pipe(
-                  Effect.retry({
-                    while: (error) =>
-                      error.message ===
-                      `Repository "${repository}" is currently being created. The repository is not yet available. Retry after 5 seconds.`,
-                    schedule: Schedule.spaced("5 seconds"),
-                    times: 2,
-                  }),
-                  Effect.withSpan("source.repository.open"),
-                ),
-                (repo) => disposeRpc(repo.raw),
-              );
+              const repo = yield* open(repository);
               const result = yield* Effect.acquireRelease(
                 repo
                   .createToken("write", tokenLifetimeSeconds)
@@ -141,6 +152,31 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
             parent: Option.getOrUndefined(externalTrace(trace)),
           }),
           Effect.mapError(unavailable),
+        ),
+      history: (id: string, limit: number, trace: TraceContext | undefined) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
+            const repo = yield* open(repository);
+            // Commit metadata only, newest first along main's first-parent chain. An unresolved
+            // ref lists nothing, as a repository with no commits has no history.
+            const commits = yield* Effect.tryPromise({
+              try: () => repo.raw.log({ ref: "main", limit }),
+              catch: unavailable,
+            }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(listedCommit))));
+            yield* Effect.annotateCurrentSpan("source.history.commits", commits.length);
+            return commits.map((entry) => ({
+              commit: entry.hash,
+              author: entry.author.name,
+              message: entry.message.trim(),
+              timestamp: entry.authoredAt,
+            }));
+          }),
+        ).pipe(
+          Effect.mapError(unavailable),
+          Effect.withSpan("source.repository.history", {
+            parent: Option.getOrUndefined(externalTrace(trace)),
+          }),
         ),
       create: (id: string, trace: TraceContext | undefined) =>
         Effect.scoped(

@@ -3,6 +3,7 @@ import { protectGit } from "./protected-git.ts";
 import { Clock, Context, Effect, Exit, Redacted, Schema, Scope, Stream } from "effect";
 import {
   FetchHttpClient,
+  HttpBody,
   HttpClient,
   HttpClientError,
   HttpClientRequest,
@@ -16,7 +17,6 @@ import {
   SourceError,
   SourceFiles,
   Branch,
-  GitCommit,
   SourceCommit,
   sourceFiles,
   sourceFits,
@@ -25,6 +25,19 @@ import {
 } from "@executor-js/sdk/core";
 
 import type { ArtifactsTokens } from "../contracts/artifacts-tokens.ts";
+
+/**
+ * Source reads and saves clone into memory with isomorphic-git, inside a Worker's 128 MB: the
+ * pack, its inflated objects and the files all stay in the isolate. Every clone fetches one
+ * commit (depth 1, by branch or by SHA), so a response holds only that commit's own files, never
+ * its history. A response larger than this is refused as `limit`. Files within `sourceLimits`
+ * (16 MiB) cannot reach it, since a pack is no larger than the files it compresses; only a commit
+ * that a direct Git push made larger than the limits can, and such a source is over them anyway.
+ */
+const cloneBytes = 32 * 1024 * 1024;
+
+/** History lists as many recent commits as native hosts' `git log -50`. */
+const historyCommits = 50;
 
 interface RepositoryAccess {
   readonly remote: URL;
@@ -135,7 +148,13 @@ export const cloudflareRepositories = (
     });
   // Artifacts rejects invalid/expired/revoked credentials with this exact 403 body.
   // Other denials and provider failures retain their original semantics and push reconciliation.
-  const authenticatedRequest = (value: RepositoryAccess, http: HttpClient.HttpClient) => {
+  // A streamed body cannot be sent twice: a rejected one refreshes the token for the next
+  // request and fails as retryable instead of resending.
+  const authenticatedRequest = (
+    value: RepositoryAccess,
+    http: HttpClient.HttpClient,
+    body: "replayable" | "streamed" = "replayable",
+  ) => {
     let token = value.token;
     let refreshed = false;
     const scoped = HttpClient.withScope(http);
@@ -172,6 +191,7 @@ export const cloudflareRepositories = (
                 attributes: { "source.token.rejected_status": response.status },
               }),
             );
+            if (body === "streamed") return yield* new SourceError({ reason: "git" });
             ({ response, scope } = yield* send);
           } else if (denial !== undefined) {
             // Inspection consumed the body; preserve every byte of an unrelated denial.
@@ -210,6 +230,8 @@ export const cloudflareRepositories = (
             );
             if (url.origin !== remote.origin || !url.pathname.startsWith(`${remote.pathname}/`))
               return yield* failure(new Error("Unexpected Git destination"));
+            // isomorphic-git sends packs built from a source already within `sourceLimits`.
+            // The body is kept so a request rejected for an expired token can be sent again.
             const chunks: Uint8Array[] = [];
             let size = 0;
             if (request.body !== undefined) {
@@ -219,10 +241,8 @@ export const cloudflareRepositories = (
                   : Stream.fromIterable(request.body);
               yield* stream.pipe(
                 Stream.runForEach((chunk) =>
-                  Effect.gen(function* () {
+                  Effect.sync(() => {
                     size += chunk.length;
-                    if (size > 32 * 1024 * 1024)
-                      return yield* failure(new Error("Git request too large"));
                     chunks.push(chunk);
                   }),
                 ),
@@ -276,8 +296,7 @@ export const cloudflareRepositories = (
                   Stream.tap((chunk) =>
                     Effect.gen(function* () {
                       total += chunk.length;
-                      if (total > 32 * 1024 * 1024)
-                        return yield* failure(new Error("Git repository too large"));
+                      if (total > cloneBytes) return yield* new SourceError({ reason: "limit" });
                     }),
                   ),
                   Stream.onExit((exit) =>
@@ -329,36 +348,12 @@ export const cloudflareRepositories = (
       Effect.map((access) => ({ ...access, fs: createFsFromVolume(new Volume()), dir: "/repo" })),
     );
   return protectGit({
+    // Commit metadata from the Artifacts binding. Git would have to fetch every file of every
+    // listed commit, so history size, not the current source, would bound the listing.
     history: (id) =>
-      Effect.gen(function* () {
-        const value = yield* session(access(id));
-        const rows = yield* withGit("source.git.history", value, (http) =>
-          Effect.gen(function* () {
-            const options = { fs: value.fs, dir: value.dir };
-            yield* gitCall(() =>
-              Git.clone({
-                ...options,
-                http,
-                url: value.remote.href,
-                ref: "main",
-                singleBranch: true,
-                noCheckout: true,
-                noTags: true,
-                depth: 50,
-              }),
-            );
-            return (yield* gitCall(() => Git.log({ ...options, ref: "main", depth: 50 }))).map(
-              (entry) => ({
-                commit: entry.oid,
-                author: entry.commit.author.name,
-                message: entry.commit.message.trim(),
-                timestamp: entry.commit.author.timestamp,
-              }),
-            );
-          }),
-        );
-        return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
-      }).pipe(Effect.mapError(failure)),
+      tokens
+        .history(id, historyCommits)
+        .pipe(Effect.withSpan("source.git.history"), Effect.tapError(observeFailure)),
     create: (id) => create(id).pipe(Effect.asVoid),
     head: (id, branch) =>
       Effect.gen(function* () {
@@ -622,28 +617,8 @@ export const cloudflareRepositories = (
           const header = request.headers.get(name);
           if (header !== null) headers[name] = header;
         }
-        const body = yield* Effect.gen(function* () {
-          const stream = request.body;
-          if (stream === null) return undefined;
-          const chunks: Uint8Array[] = [];
-          let length = 0;
-          yield* Stream.fromReadableStream({ evaluate: () => stream, onError: failure }).pipe(
-            Stream.runForEach((chunk) =>
-              Effect.gen(function* () {
-                length += chunk.length;
-                if (length > 32 * 1024 * 1024) return yield* new SourceError({ reason: "limit" });
-                chunks.push(chunk);
-              }),
-            ),
-          );
-          const bytes = new Uint8Array(length);
-          let offset = 0;
-          for (const chunk of chunks) {
-            bytes.set(chunk, offset);
-            offset += chunk.length;
-          }
-          return bytes;
-        });
+        // The body streams through, so a push is bounded by Artifacts, not by Worker memory.
+        const body = request.body;
         if (!HttpMethod.isHttpMethod(request.method)) return yield* failure();
         const outgoing = HttpClientRequest.make(request.method)(
           value.remote.href + suffix + url.search,
@@ -661,13 +636,13 @@ export const cloudflareRepositories = (
                 const { response, body: responseBody } = yield* authenticatedRequest(
                   value,
                   http,
+                  body === null ? "replayable" : "streamed",
                 )(
-                  body === undefined
+                  body === null
                     ? outgoing
-                    : HttpClientRequest.bodyUint8Array(
+                    : HttpClientRequest.setBody(
                         outgoing,
-                        body,
-                        outgoing.headers["content-type"],
+                        HttpBody.raw(body, { contentType: outgoing.headers["content-type"] }),
                       ),
                 ).pipe(Scope.provide(scope));
                 if (response.status >= 300 && response.status < 400) return yield* failure();

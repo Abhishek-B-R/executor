@@ -2,7 +2,8 @@
 
 Use this path when you can run shell commands and `executor apps --help` works.
 If the command is missing, or it has no `framework` subcommand, install the
-current release. It needs Node.js 24.14.0 or newer:
+current release. An older CLI can also fail against a newer host with `NotFound`
+or `UnexpectedResponse`. It needs Node.js 24.14.0 or newer:
 
 ```sh
 npm i -g executor@beta --include=optional
@@ -15,7 +16,15 @@ so ask first if that has not been approved.
 Keep one directory per app with `index.ts` and `package.json` at its root. The
 CLI sends the whole directory, skipping `.git`, `node_modules` and `.DS_Store`.
 Keep scratch files out of it; files missing from the directory are deleted
-from the app.
+from the app. `--files` also accepts a JSON file holding an array of
+`{ "path", "content" }` objects.
+
+App source is UTF-8 text: at most 4,096 files and 16 MiB of file contents in
+total, on every host. The CLI checks this before it uploads anything. A larger
+source fails with `SourceRejected`, which states the count or size and names
+the largest files; a file that is not UTF-8 text, such as a PNG or a font,
+fails the same way and is named. Remove those files or replace them with text,
+such as SVG. The host rejects a larger source with `SourceError` and HTTP 413.
 
 Read these docs with
 `executor apps skills --app executor --name app-authoring --file deploy.md`.
@@ -25,7 +34,33 @@ reads the local API key from `EXECUTOR_API_KEY`. If that variable is unset, ask
 the user to set it; do not search files for it. For hosted Executor, run
 `executor apps login --host https://api.executor.sh` once. It prints a link and
 a code and waits; ask the user to open the link and approve the code. Then pass
-the same `--host` to every command.
+the same `--host` to every command, or set `EXECUTOR_HOST` to it once.
+`--organization` defaults to the organization you signed in to.
+
+A command that fails exits with status 1. Its standard error states the
+message, the error code, the HTTP status when the host answered, and the
+host's recovery: `Next step` for the user and `For agents` for you. When
+standard output is not a terminal, the command also prints the same failure
+there as JSON, so scripts can read it:
+
+```json
+{
+  "error": {
+    "code": "DeploymentBuildFailed",
+    "status": 422,
+    "message": "App build failed at the declaration stage: ...",
+    "details": {
+      "stage": "declaration",
+      "location": { "file": "index.ts", "line": 3, "column": 7 }
+    }
+  }
+}
+```
+
+`recovery` holds `action` and `instructions` when the error declares them;
+follow the instructions. `details` holds the error's other fields. When a newer
+CLI release exists, `update` says so with the install command, and standard error
+ends with the same line; update the CLI before retrying.
 
 A new app is a directory with `index.ts` and a `package.json` that pins the
 exact `apps` version the host runs. `executor apps framework` prints that
@@ -91,6 +126,11 @@ git -c credential.helper='!executor apps credential' -c credential.useHttpPath=t
 
 Pushes save source but do not deploy it. Deploy the pushed commit with
 `executor apps deploy --app <app-id> --commit "$(git rev-parse HEAD)"`.
+Pushes stream to the repository, so Executor sets no push size limit of its own. On
+hosted Executor the repository host accepts files up to 32 MB each, and a single push
+of more than about 64 MiB of packed data currently fails; push a larger history in
+several pushes. A pushed source over the limits above cannot be read or deployed.
+The limits apply to the commit being read, not to the history before it.
 
 Type-check locally before deploying. A deploy compiles the app and reports
 build errors, but it does not type-check. The framework is published to npm as

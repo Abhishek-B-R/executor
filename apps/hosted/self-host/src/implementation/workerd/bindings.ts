@@ -92,6 +92,22 @@ export const bindingRepositories = (binding: HttpBinding, directory: string) => 
         Effect.flatMap(Schema.decodeUnknownEffect(GitResult)),
         Effect.mapError(() => new SourceError({ reason: "git" })),
       ),
+    // The native helper streams the request into `git http-backend` and its output back.
+    httpBackend: (environment, body) =>
+      Effect.tryPromise({
+        try: async () => {
+          const response = await binding.fetch(
+            new Request("http://native.internal/git/http-backend", {
+              method: "POST",
+              headers: { "executor-git-environment": JSON.stringify(environment) },
+              body,
+            }),
+          );
+          if (!response.ok || response.body === null) throw new Error("Native Git request failed");
+          return response.body;
+        },
+        catch: () => new SourceError({ reason: "git" }),
+      }),
     createDirectory: (path) => call("/git/directory", { path }).pipe(Effect.asVoid),
     temporaryIndex: Effect.acquireRelease(
       call("/git/index", {}).pipe(

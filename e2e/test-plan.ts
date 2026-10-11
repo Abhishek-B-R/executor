@@ -180,7 +180,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-git-remotes.spec.ts",
     title:
-      "Git clones and pushes through the remote the host names, with the session the CLI signed in with",
+      "Git clones and pushes through the remote the host names, with the session the CLI signed in with, streams a 42 MiB push, accepts a shallow push, refuses protected refs as Git reports them, and reads source and history that is larger than one Git response a Worker holds",
     targets: {
       // Managed local Cloud has no Git storage; deployed stages have Cloudflare's.
       cloud: { status: "scheduled", runtime: "attached" },
@@ -6308,6 +6308,16 @@ export const scenarios = plan({
     file: "local-apps-cli.spec.ts",
     title:
       "apps CLI explains sign-in, reads host skills, creates from a directory and commits the current directory",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+    },
+  },
+  localAppsCliFailures: {
+    file: "local-apps-cli.spec.ts",
+    title:
+      "apps CLI reports the host's error code, status and fields as text and JSON, says when the CLI is out of date, refuses source over the limits or not UTF-8 before uploading, and reads EXECUTOR_HOST",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
