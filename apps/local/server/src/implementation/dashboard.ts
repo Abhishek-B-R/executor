@@ -33,7 +33,7 @@ import {
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
-import { createCatalog } from "@executor-js/catalog";
+import type { Catalog } from "@executor-js/catalog";
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import type { AuthStorageError } from "../contracts/auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
@@ -93,22 +93,17 @@ export const dashboard = (
   auth: LocalAuth,
   egress: HostEgress,
   {
-    catalogFeedUrl,
+    catalog: appCatalog,
     managedApp,
     managedAccount,
   }: {
-    /** A mirror of the integrations.sh feed; the public feed by default. */
-    readonly catalogFeedUrl?: string | undefined;
+    /** One process-wide catalog, so every dashboard read shares its kept copy. */
+    readonly catalog: Catalog;
     readonly managedApp?: AppId;
     readonly managedAccount?: AccountId;
-  } = {},
+  },
 ) => {
   const owner = OwnerId.make("local");
-  const appCatalog = createCatalog({
-    egress,
-    clientMetadataUrl: config.oauthClientMetadataUrl,
-    feedUrl: catalogFeedUrl,
-  });
   /** Only status and a non-refreshable expiry leave the trusted host. */
   const signIn = (account: AccountId) =>
     executor.accounts.signIn({ account }).pipe(
@@ -425,6 +420,7 @@ export const dashboard = (
           .pipe(Effect.flatMap((source) => sourceDisplayFile(source.files, query.path))),
       )
       .handle("catalog", () => appCatalog.list)
+      .handle("catalogIcons", () => appCatalog.icons)
       .handle("importApp", ({ payload }) =>
         Effect.gen(function* () {
           const existing = yield* executor.apps.list({ owner, name: payload.name });

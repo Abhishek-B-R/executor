@@ -63,6 +63,7 @@ import { openStorage } from "./storage.ts";
 import { installExecutorApp } from "./executor-app.ts";
 import { localMcp } from "./mcp.ts";
 import { dashboard } from "./dashboard.ts";
+import { catalogSource, createCatalog, keepCatalog } from "@executor-js/catalog";
 import { makeLocalAuth, authHandlers, type LocalAuth } from "./auth.ts";
 import { LocalWebhookSetupApi } from "../contracts/webhook-setup.ts";
 import { localWebhookSetupHandlers } from "./webhook-setup.ts";
@@ -343,6 +344,21 @@ export const localApi = (
         HttpRouter.add("GET", "/mcp/*", notFound),
         HttpRouter.add("GET", "*", ui.page),
       ).pipe(Layer.provide(appOriginAccess.layer), Layer.provide(privateResponses.layer));
+      // One kept catalog serves the process; a stale copy refreshes on the server's lifetime.
+      const catalog = createCatalog(
+        { egress, clientMetadataUrl: config.oauthClientMetadataUrl },
+        {
+          kept: keepCatalog(
+            catalogSource(
+              egress.client,
+              Option.getOrUndefined(
+                yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
+              ),
+            ),
+          ),
+          background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
+        },
+      );
       const dashboardApi = dashboard(
         observed("dashboard"),
         storage.reactivity,
@@ -350,9 +366,7 @@ export const localApi = (
         auth,
         egress,
         {
-          catalogFeedUrl: Option.getOrUndefined(
-            yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
-          ),
+          catalog,
           managedApp: managed.app,
           managedAccount: managed.account,
         },

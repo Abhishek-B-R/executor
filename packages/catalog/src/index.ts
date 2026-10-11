@@ -2,3 +2,5 @@
 export * from "./contracts/index.ts";
 export { createCatalog } from "./implementation/catalog.ts";
 export { detectMcpAccess } from "./implementation/detection.ts";
+export { keepCatalog } from "./implementation/kept.ts";
+export { catalogSource } from "./implementation/source.ts";

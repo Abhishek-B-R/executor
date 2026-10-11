@@ -42,7 +42,7 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
 
-/** The furthest a scenario may move a stopped product's clock; `wall-clock.mjs` enforces it too. */
+/** The furthest a scenario may move the product's clock; `wall-clock.mjs` enforces it too. */
 const maxClockOffset = 40 * 86_400_000;
 /** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
@@ -110,6 +110,8 @@ export const startManagedServer = (
       );
     }
     let generation = 0;
+    /** The clock offset the running process last confirmed; see `wall-clock.mjs`. */
+    let confirmedOffset = 0;
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
@@ -146,6 +148,7 @@ export const startManagedServer = (
           }
         : {}),
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
+      EXECUTOR_TEST_CLOCK_CONTROL: "stdin",
       EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
       ...environment,
     };
@@ -240,6 +243,8 @@ export const startManagedServer = (
                   ? { NODE_V8_COVERAGE: coverage }
                   : {}),
               },
+              // Stays open for clock moves while the process runs.
+              stdin: { stream: "pipe", endOnDone: false },
               stdout: "pipe",
               stderr: "pipe",
               additionalFds: { fd3: { type: "input" } },
@@ -279,6 +284,8 @@ export const startManagedServer = (
                 `${line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>")}\n`,
                 { flag: "a", mode: 0o600 },
               );
+              const clock = /^Executor test clock: (\d+)$/.exec(line);
+              if (clock !== null) confirmedOffset = Number(clock[1]);
               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
                 origin = line.slice("Executor: ".length);
                 env.PORT = new URL(origin).port;
@@ -377,10 +384,20 @@ export const startManagedServer = (
           );
           return yield* gate.withPermits(1)(
             Effect.gen(function* () {
-              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
               if (offset > maxClockOffset) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
+              // A later process generation starts at the offset; a running one moves now.
+              if (running !== undefined) {
+                yield* Stream.run(
+                  Stream.make(new TextEncoder().encode(`clock ${offset}\n`)),
+                  running.stdin,
+                );
+                yield* Effect.sync(() => confirmedOffset).pipe(
+                  Effect.filterOrFail((confirmed) => confirmed === offset),
+                  Effect.retry({ schedule: Schedule.spaced("25 millis"), times: 400 }),
+                );
+              }
               return HttpServerResponse.jsonUnsafe({ offset });
             }),
           );
@@ -520,17 +537,36 @@ const startIsolatedSelfHost = (
       entry,
       environment,
     );
-    return server.origin;
+    return server;
   });
 
 /** Start the complete self-host development entry point beside the production test target. */
 export const startDevelopmentServer = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
-) => startIsolatedSelfHost(target, "development", environment);
+) =>
+  startIsolatedSelfHost(target, "development", environment).pipe(
+    Effect.map(({ origin }) => origin),
+  );
 
 /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
 export const startFreshSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
-) => startIsolatedSelfHost(target, "product", environment);
+) => startIsolatedSelfHost(target, "product", environment).pipe(Effect.map(({ origin }) => origin));
+
+/**
+ * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that
+ * reaches it: its origin, and the control plane `serverControl` uses to move its clock.
+ */
+export const startControlledSelfHost = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) =>
+  startIsolatedSelfHost(target, "product", environment).pipe(
+    Effect.map(({ origin, controlOrigin }): typeof Target.Service => ({
+      ...target,
+      controlOrigin,
+      metadata: { ...target.metadata, origin, target: "self-host" },
+    })),
+  );

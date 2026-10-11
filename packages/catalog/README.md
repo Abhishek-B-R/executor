@@ -26,9 +26,15 @@ other entry, and any MCP server that needs an API key or other setup, fails with
 which writes the app with the app-authoring skill instead of guessing from
 catalog hints.
 
-These operations are Effects. Constructing a catalog does no I/O. Each `list`
-or `prepare` evaluation reads the source; there is no retained catalog cache.
-Pass a `CatalogSource` to `createCatalog` to use another feed or fixture.
+These operations are Effects. Constructing a catalog does no I/O. A host
+creates one `keepCatalog(source)` per process (or Workers isolate) and passes
+it to `createCatalog`, so `list`, `icons` and `prepare` share one fetched and
+decoded copy of the feed. `catalogFreshness` sets how long that copy is used:
+a stale copy keeps answering while one refresh runs through the host's
+`background`, and reads that start together share one fetch. `icons` is the
+small name-to-logo-domain projection dashboards use instead of the full list.
+Pass `keepCatalog(source)` to use another feed or fixture; native hosts read
+`EXECUTOR_CATALOG_URL` for a mirror of the published feed.
 Run the [example](../../playground/catalog/prepare.ts) with
 `bun run --cwd playground/catalog start` from the repository root, and the
 read-only [sweep of public servers](../../playground/catalog/sweep.ts) with
@@ -45,6 +51,7 @@ the same check.
   `prepare` or `custom` call.
 - `src/implementation/prepare.ts`: catalog selection and preparation.
 - `src/implementation/source.ts`: the integrations.sh feed.
+- `src/implementation/kept.ts`: the per-process copy, its freshness and the icon projection.
 - `src/implementation/overrides.ts`: catalog defaults, including PostHog's tool mode.
 - `src/contracts/detection.ts`: detected outcomes and their signals.
 - `src/implementation/detection.ts`: the MCP connection check.
