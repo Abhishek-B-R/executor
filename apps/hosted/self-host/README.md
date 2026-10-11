@@ -83,7 +83,9 @@ separate build stage. `/usr/share/runtime-system-packages.txt` records the copie
 system package versions; their license notices remain under `/usr/share`.
 
 Effect composes product services inside workerd. The native host forwards public
-HTTP to a private Worker socket. Outbound requests use the shared URL policy and
+HTTP to a private Worker socket and compresses text responses with brotli or gzip,
+as each client accepts. Event streams stay unencoded, and a reverse proxy in front
+sees encoded responses and does not compress them again. Outbound requests use the shared URL policy and
 workerd's network services, which check resolved destinations before connecting.
 HTTP Host and TLS server names are retained. Protocol adapters check each redirect.
 

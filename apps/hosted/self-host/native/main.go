@@ -726,7 +726,7 @@ func serve(mode string) error {
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: fullDuplex(proxy), ReadHeaderTimeout: 10 * time.Second}
+	public := &http.Server{Handler: publicHandler(proxy), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
 	signals := make(chan os.Signal, 1)
@@ -749,6 +749,12 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// publicHandler serves the public listener. fullDuplex sits outside the compressor so it reaches
+// the connection's own writer; Git's streamed requests and responses pass through unencoded.
+func publicHandler(proxy http.Handler) http.Handler {
+	return fullDuplex(compressedHandler(proxy))
 }
 
 // fullDuplex lets a response start before its request body is read. A Git push streams its

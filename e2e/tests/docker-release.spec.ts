@@ -2153,3 +2153,320 @@ export default defineApp({ accounts: {} }, async () => ({
     ).pipe(Effect.provide(NodeServices.layer)),
   300_000,
 );
+
+const Workspace = Schema.Struct({ revision: Schema.Struct({ commit: Schema.String }) });
+
+/** One unencoded HTTP exchange: the bytes exactly as the image sent them. */
+type RawResponse = {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string | ReadonlyArray<string> | undefined>>;
+  readonly body: Buffer;
+};
+
+const varies = (response: RawResponse) =>
+  [response.headers.vary ?? []]
+    .flat()
+    .flatMap((value) => value.split(","))
+    .map((field) => field.trim().toLowerCase());
+
+// The image's Go host compresses text responses for clients that accept it, off workerd's thread.
+// Event streams stay unencoded, so each event must still reach an open page as it is sent.
+it.live(
+  "released image compresses dashboard files and API JSON and keeps event streams live",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
+        const registry = yield* containerNpmRegistry;
+        const run = (args: readonly string[], env: Record<string, string> = {}) =>
+          processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
+        const id = `executor-compression-${randomBytes(6).toString("hex")}`;
+        const port = yield* driver(
+          "allocate port",
+          () =>
+            new Promise<number>((resolve, reject) => {
+              const listener = createServer();
+              listener.once("error", reject);
+              listener.listen(0, "127.0.0.1", () => {
+                const address = listener.address();
+                listener.close(() =>
+                  address === null || typeof address === "string"
+                    ? reject(new Error("No test port"))
+                    : resolve(address.port),
+                );
+              });
+            }),
+        );
+        const origin = `http://localhost:${port}`;
+        const address = `http://127.0.0.1:${port}`;
+        const environment: Record<string, string> = {
+          // Release scenarios never send product analytics, even from an image with a baked key.
+          DO_NOT_TRACK: "1",
+          PORT: "8080",
+          BETTER_AUTH_URL: origin,
+          BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
+          EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+        };
+        yield* Effect.acquireRelease(
+          run(
+            [
+              "run",
+              "--detach",
+              "--name",
+              id,
+              "--init",
+              "--publish",
+              `127.0.0.1:${port}:8080`,
+              ...Object.keys(environment).flatMap((name) => ["--env", name]),
+              ...registry.docker,
+              image,
+            ],
+            environment,
+          ),
+          // An anonymous data volume is removed with the container.
+          () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
+        );
+        yield* Effect.addFinalizer((exit) =>
+          Exit.isFailure(exit)
+            ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+            : Effect.void,
+        );
+        let cookie = "";
+        const request = (route: string, data?: unknown) =>
+          driver(`${data === undefined ? "GET" : "POST"} ${route}`, (signal) =>
+            fetch(`${address}${route}`, {
+              method: data === undefined ? "GET" : "POST",
+              signal,
+              headers: {
+                origin,
+                "content-type": "application/json",
+                ...(cookie === "" ? {} : { cookie }),
+              },
+              ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+            }),
+          );
+        const json = <S extends Schema.Top>(schema: S, route: string, data?: unknown) =>
+          request(route, data).pipe(
+            Effect.flatMap((response) =>
+              driver(`read ${route}`, () => response.text()).pipe(
+                Effect.flatMap((text) =>
+                  response.status === 200
+                    ? Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(text)
+                    : Effect.fail(new Error(`${route}: HTTP ${response.status} ${text}`)),
+                ),
+              ),
+            ),
+          );
+        // Node's HTTP client neither asks for nor decodes an encoding, so the bytes are the image's.
+        const raw = (route: string, acceptEncoding: string | undefined) =>
+          driver(
+            `GET ${route} accepting ${acceptEncoding ?? "no encoding"}`,
+            () =>
+              new Promise<RawResponse>((resolve, reject) => {
+                const outgoing = httpRequest(
+                  `${address}${route}`,
+                  {
+                    headers: {
+                      origin,
+                      ...(cookie === "" ? {} : { cookie }),
+                      ...(acceptEncoding === undefined
+                        ? {}
+                        : { "accept-encoding": acceptEncoding }),
+                    },
+                  },
+                  (response) => {
+                    const chunks: Array<Buffer> = [];
+                    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+                    response.once("error", reject);
+                    response.once("end", () =>
+                      resolve({
+                        status: response.statusCode ?? 0,
+                        headers: response.headers,
+                        body: Buffer.concat(chunks),
+                      }),
+                    );
+                  },
+                );
+                outgoing.once("error", reject);
+                outgoing.end();
+              }),
+          );
+        // fetch decodes the encoding it receives and still reports it.
+        const decoded = (route: string, acceptEncoding: string) =>
+          driver(`read ${route} accepting ${acceptEncoding}`, (signal) =>
+            fetch(`${address}${route}`, {
+              signal,
+              headers: {
+                origin,
+                "accept-encoding": acceptEncoding,
+                ...(cookie === "" ? {} : { cookie }),
+              },
+            }).then((response) =>
+              response.arrayBuffer().then((body) => ({
+                encoding: response.headers.get("content-encoding"),
+                body: Buffer.from(body),
+              })),
+            ),
+          );
+        yield* request("/health").pipe(
+          Effect.flatMap((response) =>
+            response.status === 200 ? Effect.void : Effect.fail("not ready"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
+        );
+
+        // Chromium's Accept-Encoding: brotli is preferred, and the page and its script are encoded.
+        const browserEncodings = "gzip, deflate, br, zstd";
+        const login = yield* raw("/login", browserEncodings);
+        expect(login.status).toBe(200);
+        expect(login.headers["content-encoding"], "the sign-in page is compressed").toBe("br");
+        expect(varies(login)).toContain("accept-encoding");
+        const html = (yield* decoded("/login", browserEncodings)).body.toString("utf8");
+        expect(html).toMatch(/^<!DOCTYPE html>/);
+        const script = /\/assets\/[\w-]+\.js/.exec(html)?.[0];
+        expect(script, "the sign-in page loads a hashed script").toBeDefined();
+        const identity = yield* raw(script!, undefined);
+        expect(identity.status).toBe(200);
+        expect(identity.headers["content-encoding"]).toBeUndefined();
+        expect(varies(identity), "caches keep encoded and plain copies apart").toContain(
+          "accept-encoding",
+        );
+        for (const [accepted, encoding] of [
+          [browserEncodings, "br"],
+          ["gzip", "gzip"],
+        ] as const) {
+          const encoded = yield* raw(script!, accepted);
+          expect(encoded.headers["content-encoding"], `the script is sent as ${encoding}`).toBe(
+            encoding,
+          );
+          expect(encoded.headers["content-length"]).toBeUndefined();
+          expect(encoded.headers["cache-control"]).toBe(identity.headers["cache-control"]);
+          expect(encoded.body.length).toBeLessThan(identity.body.length / 2);
+          const decoding = yield* decoded(script!, accepted);
+          expect(decoding.encoding).toBe(encoding);
+          expect(decoding.body.equals(identity.body), `${encoding} decodes exactly`).toBe(true);
+        }
+        // Already compressed formats and tiny bodies are sent as they are.
+        expect((yield* raw("/favicon.png", browserEncodings)).headers["content-encoding"]).toBe(
+          undefined,
+        );
+        expect((yield* raw("/health", browserEncodings)).headers["content-encoding"]).toBe(
+          undefined,
+        );
+
+        const setup = yield* request("/api/auth/self-host/setup", {
+          name: "Compression Owner",
+          email: "compression@example.test",
+          password: "Synthetic-compression-password-123!",
+          organizationName: "Compression lab",
+        });
+        expect(setup.status).toBe(200);
+        cookie = setup.headers
+          .getSetCookie()
+          .map((part) => part.split(";")[0])
+          .join("; ");
+        const [organization] = yield* json(
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+          "/api/auth/organization/list",
+        );
+        const prefix = `/api/organizations/${organization.id}`;
+
+        // API JSON is encoded and decodes to the same document.
+        const openapi = yield* raw("/openapi.json", browserEncodings);
+        expect(openapi.headers["content-encoding"], "API JSON is compressed").toBe("br");
+        const plainOpenapi = yield* raw("/openapi.json", undefined);
+        expect(openapi.body.length).toBeLessThan(plainOpenapi.body.length / 4);
+        const decodedOpenapi = yield* decoded("/openapi.json", browserEncodings);
+        expect(decodedOpenapi.encoding).toBe("br");
+        expect(JSON.parse(decodedOpenapi.body.toString("utf8"))).toEqual(
+          JSON.parse(plainOpenapi.body.toString("utf8")),
+        );
+
+        const browser = yield* Effect.acquireRelease(
+          driver("launch the compression browser", () => chromium.launch()),
+          (browser) =>
+            driver("close the compression browser", () => browser.close()).pipe(Effect.orDie),
+        );
+        const page = yield* driver("new browser session", () => browser.newPage());
+        page.setDefaultTimeout(20_000);
+        const scripts: Array<{ url: string; encoding: string | undefined }> = [];
+        page.on("response", (response) => {
+          if (new URL(response.url()).pathname.endsWith(".js"))
+            scripts.push({ url: response.url(), encoding: response.headers()["content-encoding"] });
+        });
+        // The dashboard renders from its compressed document, scripts and data.
+        yield* driver("open the dashboard sign-in", () => page.goto(`${origin}/login`));
+        yield* driver("enter the owner's email", () =>
+          page.getByLabel("Email", { exact: true }).fill("compression@example.test"),
+        );
+        yield* driver("enter the owner's password", () =>
+          page.getByLabel("Password", { exact: true }).fill("Synthetic-compression-password-123!"),
+        );
+        yield* driver("sign in", () =>
+          page.getByRole("button", { name: "Sign in", exact: true }).click(),
+        );
+        yield* driver("the apps page renders", () =>
+          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        );
+        expect(scripts.length).toBeGreaterThan(0);
+        expect(
+          scripts.filter((loaded) => loaded.encoding !== "br"),
+          "every dashboard script arrives compressed",
+        ).toEqual([]);
+
+        // An app page keeps an event stream open for new deployments. Deploying again must reach
+        // the open page through that stream, which reloads it.
+        const files = (heading: string) => [
+          {
+            path: "index.ts",
+            content: `import { defineApp, query, object, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }) }));`,
+          },
+          appsManifest,
+          {
+            path: "ui/index.html",
+            content: `<!doctype html><html><head><title>Stream check</title></head><body><h1>${heading}</h1></body></html>`,
+          },
+        ];
+        const app = yield* json(Schema.Struct({ id: Schema.String }), `${prefix}/apps/deploy`, {
+          name: "Stream check",
+          files: files("First deployment"),
+        });
+        const path = `${prefix}/apps/${app.id}`;
+        const ui = yield* json(
+          Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String }),
+          `${path}/ui`,
+        ).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }));
+        const [stream] = yield* driver("open the app page and its deployment stream", () =>
+          Promise.all([
+            page.waitForResponse(
+              (response) => new URL(response.url()).pathname === "/_executor/version",
+            ),
+            page.goto(ui.url),
+          ]),
+        );
+        expect(stream.status()).toBe(200);
+        expect(stream.headers()["content-type"]).toMatch(/^text\/event-stream/);
+        expect(stream.headers()["content-encoding"], "event streams are not encoded").toBe(
+          undefined,
+        );
+        yield* driver("the first deployment renders", () =>
+          page.getByRole("heading", { name: "First deployment" }).waitFor(),
+        );
+        const workspace = yield* json(Workspace, `${path}/workspace`);
+        const saved = yield* json(Workspace, `${path}/commits`, {
+          expected: workspace.revision.commit,
+          files: files("Second deployment"),
+          message: "Change the heading",
+        });
+        expect((yield* request(`${path}/deploy`, { commit: saved.revision.commit })).status).toBe(
+          200,
+        );
+        yield* driver("the open page reloads into the new deployment", () =>
+          page.getByRole("heading", { name: "Second deployment" }).waitFor(),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+  300_000,
+);

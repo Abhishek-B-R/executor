@@ -53,8 +53,9 @@ and do not import application implementations into tests. `bun run check` fails
 on any test outside `e2e/`.
 
 The one exception is the Go host in `apps/hosted/self-host/native`. Its
-`go test` suite covers timing races between the host's proxy and workerd that a
-real image cannot hit reliably, and CI runs it in the `self-host-native` job.
+`go test` suite covers timing races between the host's proxy and workerd, and
+response compression cases such as streamed chunks, that a real image cannot hit
+reliably. CI runs it in the `self-host-native` job.
 
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say
