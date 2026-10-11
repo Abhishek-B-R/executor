@@ -169,9 +169,6 @@ export function ConnectedHub() {
           ))}
         </Column>
       </div>
-      <figcaption className="border-t border-tone-90 px-5 py-4 text-[12px] leading-relaxed text-tone-53 @min-[560px]:px-9">
-        Connect an account once. Every agent you add Executor to can use it.
-      </figcaption>
     </figure>
   );
 }

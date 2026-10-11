@@ -42,7 +42,7 @@ export const introduction =
   "Executor connects the tools you use to the agent you already use, through one MCP server. Then your agent can build whatever you need on top: custom tools, automations, storage, and interfaces.";
 
 /** The hero subhead's lead sentence. */
-export const heroLead = "Executor is the cloud for your agents.";
+export const heroLead = "Executor is your agents' cloud.";
 
 /** What Executor holds, in the order the hero subhead lists them. */
 export const heroItems = [
