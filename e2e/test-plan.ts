@@ -5746,6 +5746,20 @@ export const scenarios = plan({
       local: na("Local uses its instance key."),
     },
   },
+  apiKeyConcurrentUse: {
+    fixtures: "actors",
+    file: "api-key-storage-outage.spec.ts",
+    title: "Requests that use one API key together all succeed and record its use once",
+    targets: {
+      cloud: managedCloud,
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Self-host runs one database connection, so its requests never contend for a key, and the runner cannot reach that database.",
+      },
+      local: na("Local uses its instance key."),
+    },
+  },
   organizationApiKeys: {
     fixtures: "actors",
     file: "organization-api-keys.spec.ts",

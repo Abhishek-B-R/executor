@@ -331,9 +331,23 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
               List,
               yield* api.request(actors.owner, "GET", `${lifecycle}/list?offset=0`),
             );
-            expect(list.apiKeys.find((key) => key.id === other.id)?.lastRequest).toBeTypeOf(
-              "string",
+            const recorded = list.apiKeys.find((key) => key.id === other.id)?.lastRequest;
+            expect(recorded).toBeTypeOf("string");
+            // Use is recorded to the minute: another request at once leaves the record unchanged.
+            expect(
+              (yield* api.request(
+                anonymous,
+                "GET",
+                `${prefix}/inventory`,
+                undefined,
+                headers(other.key),
+              )).status,
+            ).toBe(200);
+            const again = yield* body(
+              List,
+              yield* api.request(actors.owner, "GET", `${lifecycle}/list?offset=0`),
             );
+            expect(again.apiKeys.find((key) => key.id === other.id)?.lastRequest).toBe(recorded);
           }),
         );
         yield* browser.omitNetworkTrace;

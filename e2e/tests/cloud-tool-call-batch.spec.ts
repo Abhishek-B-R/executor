@@ -282,18 +282,20 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
 
           // Counts the PAT's checks, so the scenario knows when the first call of an execute has run
           // its batch: the request's own checks (the gateway's and the session object's) come
-          // first, then one per call.
+          // first, then one per call. A check writes the key's last use only when the stored one
+          // is a minute old, so the trigger also clears it on the counted key: every check writes,
+          // and counts.
           yield* Effect.forEach(
             [
               "create table if not exists e2e_batch_rechecks (key_id text primary key, n int not null)",
               `create or replace function e2e_batch_count() returns trigger language plpgsql as $$
-                begin update e2e_batch_rechecks set n = n + 1 where key_id = new.id; return new; end $$`,
-              `do $$ begin
-                if not exists (select 1 from pg_trigger where tgname = 'e2e_batch_count') then
-                  create trigger e2e_batch_count after update on apikey
-                    for each row execute function e2e_batch_count();
-                end if;
-              end $$`,
+                begin
+                  update e2e_batch_rechecks set n = n + 1 where key_id = new.id;
+                  if found then new."lastRequest" := null; end if;
+                  return new;
+                end $$`,
+              `create or replace trigger e2e_batch_count before update on apikey
+                for each row execute function e2e_batch_count()`,
             ],
             (sql) => locks.run({ sql }),
             { discard: true },
@@ -304,6 +306,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           const resetRechecks = locks.run({
             sql: `insert into e2e_batch_rechecks (key_id, n) values ($1, 0)
               on conflict (key_id) do update set n = 0`,
+            params: [pat.id],
+          });
+          // The warm calls recorded the key's use. Clear it before the count starts, so this
+          // update is not counted.
+          yield* locks.run({
+            sql: `update apikey set "lastRequest" = null where id = $1`,
             params: [pat.id],
           });
           yield* resetRechecks;
