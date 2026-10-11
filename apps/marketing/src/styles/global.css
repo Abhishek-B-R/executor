@@ -193,3 +193,16 @@
     transform: translateY(0);
   }
 }
+
+/* Scroll reveals. home-page.astro adds .reveal-init only when motion is allowed. */
+.reveal-init {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+.reveal-init.is-visible {
+  opacity: 1;
+  transform: none;
+}
