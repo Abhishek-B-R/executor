@@ -6,7 +6,11 @@ import {
 } from "../contracts/product-analytics.ts";
 import { McpSchema } from "effect/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
-import { permittedAppIds, requiresToolMetadata } from "@executor-js/authorization";
+import {
+  permittedAppIds,
+  permittedToolAppIds,
+  requiresToolMetadata,
+} from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { visibleApps, visibleAccounts, requireAppAccess } from "./resource-policy.ts";
@@ -94,6 +98,13 @@ export const hostedMcpBackend = Effect.gen(function* () {
         .pipe(Effect.flatMap(visibleApps)),
     ).pipe(Effect.provideContext(context)),
   );
+  const discoveryToolApps = yield* Effect.cached(
+    Effect.flatMap(sdk, (executor) =>
+      executor.apps
+        .list({ ids: permittedToolAppIds(policy), owner: organization.owner })
+        .pipe(Effect.flatMap(visibleApps)),
+    ).pipe(Effect.provideContext(context)),
+  );
   const discoveryProfiles = yield* Effect.cached(
     Effect.gen(function* () {
       if (user === undefined) return yield* new OrganizationForbidden();
@@ -175,7 +186,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         }),
       ),
     listApps: (input = {}) =>
-      discoveryApps.pipe(
+      (input.toolsOnly ? discoveryToolApps : discoveryApps).pipe(
         Effect.map((apps) => {
           if (input.ids === undefined) return apps;
           const requested = new Set(input.ids);

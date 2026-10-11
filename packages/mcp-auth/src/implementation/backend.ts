@@ -17,6 +17,7 @@ import {
   discoverableTools,
   permitsTool,
   permittedAppIds,
+  permittedToolAppIds,
   requiresToolMetadata,
   type AuthorizationPolicy,
 } from "@executor-js/authorization";
@@ -152,8 +153,13 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     listApps: (input) =>
       Effect.gen(function* () {
         const grant = yield* authority;
-        const ids = permittedAppIds(grant, input?.ids);
-        return yield* backend.listApps({ ids });
+        const ids = input?.toolsOnly
+          ? permittedToolAppIds(grant, input?.ids)
+          : permittedAppIds(grant, input?.ids);
+        return yield* backend.listApps({
+          ids,
+          ...(input?.toolsOnly === undefined ? {} : { toolsOnly: input.toolsOnly }),
+        });
       }),
     listTargets: (input) =>
       Effect.gen(function* () {

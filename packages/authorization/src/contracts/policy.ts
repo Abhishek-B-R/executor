@@ -106,6 +106,12 @@ export const selectsApp = (selection: ToolSelection, app: AppId) =>
       (scopeGrantsAny(item.tools) || eventsGrantAny(item.events)) &&
       permissionTargets(item),
   );
+/** An app is in the tool inventory only when its permission grants at least one tool. */
+export const selectsToolApp = (selection: ToolSelection, app: AppId) =>
+  selection.kind === "all" ||
+  selection.apps.some(
+    (item) => item.app === app && scopeGrantsAny(item.tools) && permissionTargets(item),
+  );
 const scopeSelects = (tools: ToolScope, tool: ToolIdentity) =>
   Match.value(tools).pipe(
     Match.when({ kind: "all" }, () => true),
@@ -308,6 +314,28 @@ export const permittedAppIds = (
           .filter(
             (item) =>
               selectsApp(policy.tools, item.app) &&
+              (requested === undefined || requested.includes(item.app)),
+          )
+          .map((item) => item.app),
+      ),
+    ]),
+    Match.exhaustive,
+  );
+};
+/** App IDs for tool discovery and execution; event-only grants stay in the event inventory. */
+export const permittedToolAppIds = (
+  policy: AuthorizationPolicy,
+  requested?: readonly AppId[],
+): readonly AppId[] | undefined => {
+  if (!permitsAction(policy, "discover")) return [];
+  return Match.value(policy.tools).pipe(
+    Match.when({ kind: "all" }, () => requested),
+    Match.when({ kind: "tools" }, ({ apps }) => [
+      ...new Set(
+        apps
+          .filter(
+            (item) =>
+              selectsToolApp(policy.tools, item.app) &&
               (requested === undefined || requested.includes(item.app)),
           )
           .map((item) => item.app),

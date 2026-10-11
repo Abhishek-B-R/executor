@@ -654,13 +654,16 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect(called.tools).toBeGreaterThanOrEqual(200);
         expect(called.rendered).toBe(0);
 
-        // CodeMode's own search() reads its search index, so it renders every reachable tool.
+        // CodeMode's own search() is served by Executor's search: it loads no app's tools and
+        // renders signatures only for the results on its page.
         const indexed = yield* run(
           "CodeMode search",
           `return await search({ query: "fixture_0007" });`,
         );
-        expect(indexed.tools).toBeGreaterThanOrEqual(200);
-        expect(indexed.rendered).toBeGreaterThanOrEqual(indexed.tools);
+        expect(JSON.stringify(indexed.value)).toContain("fixture_0007");
+        expect(indexed.tools).toBe(0);
+        expect(indexed.rendered).toBeGreaterThan(0);
+        expect(indexed.rendered).toBeLessThan(200);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

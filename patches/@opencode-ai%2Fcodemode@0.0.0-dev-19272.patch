@@ -1,8 +1,31 @@
 diff --git a/dist/codemode.d.ts b/dist/codemode.d.ts
-index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..fd7548c869cd8aa895d679975b730866e543e120 100644
+index 7e9424edcc57ed3c533ac1a55da8f6f0b6a1c8a4..961b4f9e4dfad063a5b7640e5392ef38c7dde651 100644
 --- a/dist/codemode.d.ts
 +++ b/dist/codemode.d.ts
-@@ -141,6 +141,8 @@ export type Result = typeof Result.Type;
+@@ -1,8 +1,8 @@
+ import { Effect, Schema } from "effect";
+-import { type Services, type ToolDescription, ToolRuntime } from "./tool-runtime.js";
++import { type Search, type Services, type ToolDescription, ToolRuntime } from "./tool-runtime.js";
+ import type { Tools } from "./tools.js";
+ /** A tool call admitted during an execution. */
+-export type { ToolCall, ToolCallEnded, ToolCallHooks, ToolCallStarted, ToolDescription } from "./tool-runtime.js";
++export type { Search, SearchPage, SearchRequest, ToolCall, ToolCallEnded, ToolCallHooks, ToolCallStarted, ToolDescription } from "./tool-runtime.js";
+ /** Signature-construction helpers for host-owned catalog instructions. */
+ export { searchSignature, toolExpression } from "./tool-runtime.js";
+ /** Resource budgets enforced independently during each CodeMode program execution. */
+@@ -37,6 +37,11 @@ export type ExecuteOptions<Provided extends Record<string, unknown> = {}> = {
+     onToolCallStart?: (call: ToolRuntime.ToolCallStarted) => Effect.Effect<void, never, Services<Provided>>;
+     /** Observes each admitted tool call as it succeeds, fails, or is interrupted. */
+     onToolCallEnd?: (call: ToolRuntime.ToolCallEnded) => Effect.Effect<void, never, Services<Provided>>;
++    /**
++     * Serves the program's global `search()` instead of the index of every tool's signature. It
++     * takes the built-in function's input and returns its page, which the runtime still validates.
++     */
++    search?: Search<Services<Provided>>;
+ };
+ /** A JSON value that can cross the confined interpreter boundary. */
+ export type DataValue = Schema.Json;
+@@ -141,6 +146,8 @@ export type Result = typeof Result.Type;
  export type Runtime<R = never> = {
      readonly catalog: () => ReadonlyArray<ToolDescription>;
      readonly execute: (code: string) => Effect.Effect<Result, never, R>;
@@ -35,9 +58,18 @@ index e17d5849420a0266e37bf14b7f0fc257ebce2818..aeb177171d6c924b02c4174edb767bc7
 -export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndex"]) => Effect.Effect<Result, never, Services<Provided>>;
 +export declare const executeWithLimits: <const Provided extends Record<string, unknown>>(options: ExecuteOptions<Provided>, limits: ResolvedExecutionLimits, searchIndex: ToolRuntime.DiscoveryPlan["searchIndexOnUse"]) => Effect.Effect<Result, never, Services<Provided>>;
 diff --git a/dist/interpreter/execute.js b/dist/interpreter/execute.js
-index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..a123a824a6af2c2a834bc1b0515f03b7ef3a1a90 100644
+index 3d7f507ef37117b1d3ca12a3fa1d9754abca4031..41edd0ae6527780c0c8d431b0965468d3ebc7799 100644
 --- a/dist/interpreter/execute.js
 +++ b/dist/interpreter/execute.js
+@@ -21,7 +21,7 @@ export const executeWithLimits = (options, limits, searchIndex) => {
+         const tools = ToolRuntime.make((options.tools ?? {}), limits.maxToolCalls, searchIndex, {
+             onToolCallStart: options.onToolCallStart,
+             onToolCallEnd: options.onToolCallEnd,
+-        });
++        }, options.search);
+         const logs = [];
+         const logged = () => (logs.length > 0 ? { logs: [...logs] } : {});
+         // Set only after copy-out so timeouts cannot report invalid values as completed.
 @@ -30,17 +30,21 @@ export const executeWithLimits = (options, limits, searchIndex) => {
              const program = parseProgram(options.code);
              const promises = new PromiseRuntime(scope);
@@ -510,10 +542,16 @@ index 996f9a5090879de5104b8ecb439ee15fecee6f40..55843d5d6d27b370a235d66e1a242ab2
      const box = {};
      const body = Effect.gen(function* () {
 diff --git a/dist/interpreter/runtime.d.ts b/dist/interpreter/runtime.d.ts
-index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3f66c18a470f9dac4ce55d655be9b5975a6da589 100644
+index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3ad5894d77df91678f8c219bf913799a868e939f 100644
 --- a/dist/interpreter/runtime.d.ts
 +++ b/dist/interpreter/runtime.d.ts
-@@ -16,6 +16,7 @@ export declare class Interpreter<R> {
+@@ -11,11 +11,12 @@ export declare class Interpreter<R> {
+     private generatorState?;
+     private generatorAsync;
+     private readonly runner;
+-    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => ReadonlyArray<string>, promises: PromiseRuntime<R>, logs?: Array<string>);
++    constructor(executeTool: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, invokeSearch: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>, toolKeys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>, promises: PromiseRuntime<R>, logs?: Array<string>);
+     run(program: ProgramNode): Effect.Effect<unknown, unknown, R>;
      private createToolCallPromise;
      private createPromise;
      private settlePromise;
@@ -522,7 +560,7 @@ index bd1bc708017c1a30b0c81d37639b55ff12a2e3bc..3f66c18a470f9dac4ce55d655be9b597
      private evaluateBlock;
      private createFunction;
 diff --git a/dist/interpreter/runtime.js b/dist/interpreter/runtime.js
-index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bddefabe402 100644
+index 8c1b549d3da8c2287e330e63d7370cd3838e57df..3575409543fcdd2227e03decae2aa71a9ba58ceb 100644
 --- a/dist/interpreter/runtime.js
 +++ b/dist/interpreter/runtime.js
 @@ -154,6 +154,8 @@ export class Interpreter {
@@ -618,7 +656,57 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
                  return yield* Effect.failCause(captured.cause);
              }
              if (awaiting)
-@@ -1730,7 +1737,7 @@ export class Interpreter {
+@@ -720,17 +727,18 @@ export class Interpreter {
+             return value;
+         throw new InterpreterRuntimeError(`${context} must be a function.`, node).as("TypeError");
+     }
++    // A tools reference's keys can load a lazy namespace, so every key list is an Effect.
+     enumerableKeys(value) {
+         if (value instanceof ToolReference) {
+-            return [...this.toolKeys(value.path)];
++            return Effect.map(this.toolKeys(value.path), (keys) => [...keys]);
+         }
+         if (Array.isArray(value)) {
+-            return Object.keys(value);
++            return Effect.succeed(Object.keys(value));
+         }
+         if (value !== null && typeof value === "object" && !isRuntimeReference(value)) {
+-            return Object.keys(value);
++            return Effect.succeed(Object.keys(value));
+         }
+-        return undefined;
++        return Effect.succeed(undefined);
+     }
+     evaluateForInStatement(node, labels) {
+         const left = getNode(node, "left");
+@@ -743,7 +751,7 @@ export class Interpreter {
+                 self.predeclarePattern(declared.pattern, declared.mutable, left);
+             const right = yield* self.evaluateExpression(getNode(node, "right"));
+             const body = getNode(node, "body");
+-            const keys = self.enumerableKeys(right);
++            const keys = yield* self.enumerableKeys(right);
+             if (keys === undefined) {
+                 throw new InterpreterRuntimeError("for...in requires a plain object, array, or tools reference. Use for...of for arrays/strings/Maps/Sets, or Object.keys(value) for a key list.", node);
+             }
+@@ -1592,7 +1600,7 @@ export class Interpreter {
+                 if (callable.namespace === "console")
+                     return self.invokeConsole(callable.name, args, node);
+                 if (callable.namespace === "Object" && args[0] instanceof ToolReference) {
+-                    return self.invokeObjectMethodOnTools(callable.name, args[0], node);
++                    return yield* self.invokeObjectMethodOnTools(callable.name, args[0], node);
+                 }
+                 if (callable.namespace === "Object" && objectMethodsPreservingIdentity.has(callable.name)) {
+                     if (callable.name === "fromEntries")
+@@ -1665,7 +1673,7 @@ export class Interpreter {
+     }
+     invokeObjectMethodOnTools(name, ref, node) {
+         if (name === "keys") {
+-            return boundedData(this.enumerableKeys(ref), "Object.keys result");
++            return Effect.map(this.enumerableKeys(ref), (keys) => boundedData(keys, "Object.keys result"));
+         }
+         throw new InterpreterRuntimeError(`Object.${name}(...) cannot read tool references: they are not plain data. Use Object.keys(tools) for names, or search({ query }) for signatures.`, node, "InvalidDataValue");
+     }
+@@ -1730,7 +1738,7 @@ export class Interpreter {
              return run;
          // The initial yield assigns the promise before the body can self-resolve.
          const box = {};
@@ -627,7 +715,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
              box.promise = promise;
              return promise;
          });
-@@ -1739,8 +1746,17 @@ export class Interpreter {
+@@ -1739,8 +1747,17 @@ export class Interpreter {
          const state = { started: false, completed: false, draining: false, pending: [], pendingIndex: 0 };
          invocation.generatorState = state;
          invocation.generatorAsync = asynchronous;
@@ -646,7 +734,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
              if (!asynchronous && state.active) {
                  return Effect.fail(new InterpreterRuntimeError("Generator is already running.", node).as("TypeError"));
              }
-@@ -1749,11 +1765,11 @@ export class Interpreter {
+@@ -1749,11 +1766,11 @@ export class Interpreter {
                  state.completed = true;
                  state.pending.push(request);
                  if (state.draining)
@@ -660,7 +748,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
              }
              if (state.completed) {
                  if (kind === "throw")
-@@ -1766,11 +1782,19 @@ export class Interpreter {
+@@ -1766,11 +1783,19 @@ export class Interpreter {
                      return Effect.fail(new ProgramThrow(value));
                  return Effect.succeed({ value, done: true });
              }
@@ -681,7 +769,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
              }
              if (!state.started) {
                  state.started = true;
-@@ -1789,10 +1813,10 @@ export class Interpreter {
+@@ -1789,10 +1814,10 @@ export class Interpreter {
                      yield* invocation.completeGeneratorRequests(state, asynchronous);
                      state.completed = true;
                  });
@@ -695,7 +783,7 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
          return generator;
      }
      completeGeneratorRequests(state, asynchronous) {
-@@ -1820,7 +1844,7 @@ export class Interpreter {
+@@ -1820,7 +1845,7 @@ export class Interpreter {
          if (next)
              return Effect.succeed(next);
          state.available = Deferred.makeUnsafe();
@@ -704,6 +792,53 @@ index 8c1b549d3da8c2287e330e63d7370cd3838e57df..c150a676e3bc6cc88246db9407ea7bdd
      }
      dequeueGeneratorRequest(state) {
          const request = state.pending[state.pendingIndex];
+diff --git a/dist/namespace.d.ts b/dist/namespace.d.ts
+index e4640762c1139d5a864f966035446f5d890040f0..220d15700f5e0f2d4dbee3f5500875ccbf3cb86d 100644
+--- a/dist/namespace.d.ts
++++ b/dist/namespace.d.ts
+@@ -1,9 +1,21 @@
++import type { Effect } from "effect";
+ import type { Tools } from "./tools.js";
+ /** A tool namespace with optional model-visible metadata. */
+ export type Namespace<R = never> = {
+     readonly _tag: "CodeModeNamespace";
+     readonly description?: string;
+     readonly tools: Tools<R>;
++    /**
++     * Tools added when a program first reaches the namespace: calls one of its tools or lists its
++     * keys. `undefined` leaves no such namespace. Until then the catalog and the built-in search
++     * index hold only `tools`.
++     */
++    readonly load?: Effect.Effect<Tools<R> | undefined, unknown, R>;
++};
++/** Options for declaring a namespace whose tools are loaded when a program first reaches it. */
++export type LazyOptions<R = never> = {
++    readonly description?: string;
++    readonly load: Effect.Effect<Tools<R> | undefined, unknown, R>;
+ };
+ /** Options for declaring one CodeMode namespace. */
+ export type Options<R = never> = {
+@@ -13,3 +25,5 @@ export type Options<R = never> = {
+ export declare const isNamespace: <R = never>(value: Namespace<R> | Tools<R>) => value is Namespace<R>;
+ /** Declares a namespace when descriptions or other namespace metadata are needed. */
+ export declare const make: <R = never>(options: Options<R>) => Namespace<R>;
++/** Declares a namespace whose tools are loaded when a program first reaches it. */
++export declare const lazy: <R = never>(options: LazyOptions<R>) => Namespace<R>;
+diff --git a/dist/namespace.js b/dist/namespace.js
+index 93db2408fe35817f6d53add795822e91dadcedfd..e0e44b0e8c823133cc390d3a12d7b87873006236 100644
+--- a/dist/namespace.js
++++ b/dist/namespace.js
+@@ -5,3 +5,10 @@ export const make = (options) => ({
+     ...(options.description === undefined ? {} : { description: options.description }),
+     tools: options.tools,
+ });
++/** Declares a namespace whose tools are loaded when a program first reaches it. */
++export const lazy = (options) => ({
++    _tag: "CodeModeNamespace",
++    ...(options.description === undefined ? {} : { description: options.description }),
++    tools: {},
++    load: options.load,
++});
 diff --git a/dist/openapi/index.js b/dist/openapi/index.js
 index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
 --- a/dist/openapi/index.js
@@ -755,10 +890,24 @@ index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88dd
 -import { HttpClient } from "effect/unstable/http";
 +import { HttpClient } from "effect/http";
 diff --git a/dist/tool-runtime.d.ts b/dist/tool-runtime.d.ts
-index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c6f1a8812 100644
+index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..98c08f773aeb548386a0b6d48ff26c72445d543c 100644
 --- a/dist/tool-runtime.d.ts
 +++ b/dist/tool-runtime.d.ts
-@@ -48,6 +48,10 @@ export declare const copyOut: (value: unknown, mode: CopyOutMode) => unknown;
+@@ -4,7 +4,12 @@ export type Services<T> = ServicesOf<T, []>;
+ type ServicesOf<T, Depth extends ReadonlyArray<unknown>> = Depth["length"] extends 8 ? never : T extends {
+     readonly _tag: "CodeModeTool";
+     readonly execute: (input: unknown) => Effect.Effect<unknown, unknown, infer R>;
+-} ? R : T extends object ? string extends keyof T ? ServicesOf<T[string], [...Depth, unknown]> : ServicesOf<T[keyof T], [...Depth, unknown]> : never;
++} ? R : T extends {
++    readonly _tag: "CodeModeNamespace";
++    readonly tools: infer N;
++} ? ServicesOf<N, [...Depth, unknown]> | (T extends {
++    readonly load: Effect.Effect<infer L, unknown, infer R>;
++} ? R | ServicesOf<L, [...Depth, unknown]> : never) : T extends object ? string extends keyof T ? ServicesOf<T[string], [...Depth, unknown]> : ServicesOf<T[keyof T], [...Depth, unknown]> : never;
+ export type ToolCall = {
+     readonly name: string;
+ };
+@@ -48,6 +53,10 @@ export declare const copyOut: (value: unknown, mode: CopyOutMode) => unknown;
  export type DiscoveryPlan = {
      readonly catalog: ReadonlyArray<ToolDescription>;
      readonly searchIndex: ReadonlyArray<SearchEntry>;
@@ -769,7 +918,7 @@ index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c
  };
  export type SearchEntry = {
      readonly description: ToolDescription;
-@@ -55,7 +59,7 @@ export type SearchEntry = {
+@@ -55,14 +64,31 @@ export type SearchEntry = {
  };
  /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
  export declare const searchSignature: string;
@@ -778,18 +927,91 @@ index 7b04d8e485966e56e673286c9ac9415ac5f60a7f..e44130a9e6ee52aef45c5e9c84f4c91c
  export declare const prepare: <R>(tools: Tools<R>) => DiscoveryPlan;
  export type ToolRuntime<R = never> = {
      readonly root: ToolReference;
-@@ -64,5 +68,5 @@ export type ToolRuntime<R = never> = {
+     readonly calls: Array<ToolCall>;
+     readonly execute: (path: ReadonlyArray<string>, args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
      readonly search: (args: Array<unknown>) => Effect.Effect<unknown, unknown, R>;
-     readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>;
+-    readonly keys: (path: ReadonlyArray<string>) => ReadonlyArray<string>;
++    readonly keys: (path: ReadonlyArray<string>) => Effect.Effect<ReadonlyArray<string>, unknown, R>;
  };
 -export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
-+export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>) => ToolRuntime<R>;
++/** Input of the built-in `search` function, as its signature documents it. */
++export type SearchRequest = {
++    readonly query?: string;
++    readonly namespace?: string;
++    readonly limit?: number;
++    readonly offset?: number;
++};
++/** One page of the built-in `search` function's results, as its signature documents it. */
++export type SearchPage = {
++    readonly items: ReadonlyArray<ToolDescription>;
++    readonly remaining: number;
++    readonly next: {
++        readonly offset: number;
++    } | null;
++};
++/** A host's implementation of the built-in `search` function, in place of the program's index. */
++export type Search<R = never> = (input: SearchRequest) => Effect.Effect<SearchPage, unknown, R>;
++export declare const make: <R>(tools: Tools<R>, maxToolCalls: number | undefined, searchIndex: () => ReadonlyArray<SearchEntry>, hooks?: ToolCallHooks<R>, search?: Search<R>) => ToolRuntime<R>;
  export * as ToolRuntime from "./tool-runtime.js";
 diff --git a/dist/tool-runtime.js b/dist/tool-runtime.js
-index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d87f8bb18 100644
+index f649a9a04eea271c852510a4deef6efa7b6252bc..3c24460cc7d5252af46590da8de9105c64b3f7ea 100644
 --- a/dist/tool-runtime.js
 +++ b/dist/tool-runtime.js
-@@ -227,18 +227,20 @@ const termForms = (term) => {
+@@ -172,29 +172,32 @@ export const copyOut = (value, mode) => {
+     }
+     return value;
+ };
++const insertTools = (node, group) => {
++    for (const [name, value] of Object.entries(group)) {
++        let current = node;
++        for (const segment of name.split(".")) {
++            if (segment === "")
++                throw new TypeError(`Tool name '${name}' contains an empty segment.`);
++            const child = current.children.get(segment) ?? { children: new Map() };
++            current.children.set(segment, child);
++            current = child;
++        }
++        if (isTool(value))
++            current.tool = value;
++        else if (isNamespace(value)) {
++            current.namespace = value;
++            // A lazy namespace's tools join the tree when a program first reaches it.
++            if (value.load !== undefined)
++                current.load = value.load;
++            insertTools(current, value.tools);
++        }
++        else
++            insertTools(current, value);
++    }
++};
+ const toolTrie = (tools) => {
+     const root = { children: new Map() };
+-    const insert = (node, group) => {
+-        for (const [name, value] of Object.entries(group)) {
+-            let current = node;
+-            for (const segment of name.split(".")) {
+-                if (segment === "")
+-                    throw new TypeError(`Tool name '${name}' contains an empty segment.`);
+-                const child = current.children.get(segment) ?? { children: new Map() };
+-                current.children.set(segment, child);
+-                current = child;
+-            }
+-            if (isTool(value))
+-                current.tool = value;
+-            else if (isNamespace(value)) {
+-                current.namespace = value;
+-                insert(current, value.tools);
+-            }
+-            else
+-                insert(current, value);
+-        }
+-    };
+-    insert(root, tools);
++    insertTools(root, tools);
+     return root;
+ };
+ const canonicalSegments = (path) => path.flatMap((segment) => segment.split("."));
+@@ -227,18 +230,20 @@ const termForms = (term) => {
          forms.push(term.slice(0, -1));
      return forms;
  };
@@ -812,7 +1034,7 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
                  entry.description.path.startsWith(`${request.namespace}.`));
          const trimmed = query.trim();
          const pathQuery = trimmed.startsWith("tools.") ? trimmed.slice("tools.".length) : trimmed;
-@@ -276,7 +278,7 @@ const makeSearchTool = (searchIndex) => ({
+@@ -276,7 +281,7 @@ const makeSearchTool = (searchIndex) => ({
  });
  /** Exact callable signature of the built-in `search` function, for host-owned instructions. */
  export const searchSignature = (() => {
@@ -821,7 +1043,7 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
      return `search(input: ${inputTypeScript(tool, true)}): ${outputTypeScript(tool, true)}`;
  })();
  const toSearchEntry = (visible) => ({
-@@ -290,12 +292,35 @@ const toSearchEntry = (visible) => ({
+@@ -290,40 +295,95 @@ const toSearchEntry = (visible) => ({
          .join("\n")
          .toLowerCase(),
  });
@@ -859,4 +1081,91 @@ index f649a9a04eea271c852510a4deef6efa7b6252bc..df7066d701b918ce0dc0e39cb64f6f0d
 +        signaturesRendered: () => rendered,
      };
  };
- const lookup = (root, segments) => segments.reduce((node, segment) => node?.children.get(segment), root);
+-const lookup = (root, segments) => segments.reduce((node, segment) => node?.children.get(segment), root);
++// Load a lazy namespace once its node is reached. Fibers that reach it before the first load
++// finishes each run the load; the first to finish inserts its tools. A load without tools removes
++// the namespace, so it is unknown as if it had never been declared.
++const loadNode = (parent, segment, node) => node.load === undefined
++    ? Effect.void
++    : Effect.map(node.load, (tools) => {
++        if (node.load === undefined)
++            return;
++        node.load = undefined;
++        if (tools !== undefined)
++            insertTools(node, tools);
++        else if (node.tool === undefined && node.children.size === 0)
++            parent.children.delete(segment);
++    });
++// The node at a path, after loading every lazy namespace on the way to it and the node itself.
++const reach = (root, segments) => Effect.gen(function* () {
++    let node = root;
++    for (const segment of segments) {
++        const child = node.children.get(segment);
++        if (child === undefined)
++            return undefined;
++        yield* loadNode(node, segment, child);
++        const next = node.children.get(segment);
++        if (next === undefined)
++            return undefined;
++        node = next;
++    }
++    return node;
++});
+ const namespaceKeys = (root, path) => {
+     const segments = canonicalSegments(path);
+-    const node = lookup(root, segments);
+-    if (node === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`);
+-    }
+-    return Array.from(node.children.keys());
++    return Effect.map(reach(root, segments), (node) => {
++        if (node === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Unknown tool namespace '${segments.join(".")}'.`);
++        }
++        return Array.from(node.children.keys());
++    });
+ };
+ const resolve = (root, path) => {
+     const segments = canonicalSegments(path);
+-    const node = lookup(root, segments);
+-    if (node === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Unknown tool '${segments.join(".")}'.`, [
+-            "The tool may have been removed or renamed. Use search to find available tools.",
+-        ]);
+-    }
+-    if (node.tool === undefined) {
+-        throw new ToolRuntimeError("UnknownTool", `Tool '${segments.join(".")}' is not callable.`);
+-    }
+-    return node.tool;
++    return Effect.map(reach(root, segments), (node) => {
++        if (node === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Unknown tool '${segments.join(".")}'.`, [
++                "The tool may have been removed or renamed. Use search to find available tools.",
++            ]);
++        }
++        if (node.tool === undefined) {
++            throw new ToolRuntimeError("UnknownTool", `Tool '${segments.join(".")}' is not callable.`);
++        }
++        return node.tool;
++    });
+ };
+-export const make = (tools, maxToolCalls, searchIndex, hooks) => {
++export const make = (tools, maxToolCalls, searchIndex, hooks, search) => {
+     const calls = [];
+     const root = toolTrie(tools);
+-    const searchTool = makeSearchTool(searchIndex);
++    // A host's search keeps the built-in function's input and output, so its signature holds.
++    const builtin = makeSearchTool(searchIndex);
++    const searchTool = search === undefined ? builtin : { ...builtin, execute: search };
+     const observeEnd = (effect, call) => {
+         const onEnd = hooks?.onToolCallEnd;
+         if (onEnd === undefined)
+@@ -383,7 +443,7 @@ export const make = (tools, maxToolCalls, searchIndex, hooks) => {
+         execute: (path, args) => Effect.gen(function* () {
+             const name = canonicalSegments(path).join(".");
+             const externalArgs = args.map((arg) => copyOut(copyIn(arg, `Arguments for tool '${name}'`), "json"));
+-            const tool = resolve(root, path);
++            const tool = yield* resolve(root, path);
+             return yield* executeTool(name, tool, externalArgs);
+         }),
+     };

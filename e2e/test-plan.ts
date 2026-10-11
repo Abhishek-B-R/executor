@@ -531,8 +531,7 @@ export const scenarios = plan({
   mcpExecuteSignatures: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",
-    title:
-      "MCP execute renders tool signatures only for a program that searches with CodeMode's search()",
+    title: "MCP execute renders tool signatures only for the results CodeMode's search() returns",
     targets: {
       "self-host": scheduled,
       cloud: na("Loopback MCP fixture; the shared execute path is covered on self-host"),
@@ -675,7 +674,29 @@ export const scenarios = plan({
   mcpExecuteReach: {
     fixtures: "actors",
     file: "mcp-execute-reach.spec.ts",
-    title: "MCP execute discovers every app a program reaches through dynamic access to tools",
+    title: "MCP execute discovers only the apps a program reaches through dynamic access to tools",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared execute path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpGlobalSearchLoadsNoListings: {
+    fixtures: "actors",
+    file: "mcp-execute-lazy.spec.ts",
+    title:
+      "MCP execute serves CodeMode's search() from the backend search, loads no tool listing for it, and loads only a called result's app",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared execute path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpDynamicToolsLoadOneApp: {
+    fixtures: "actors",
+    file: "mcp-execute-lazy.spec.ts",
+    title:
+      "MCP execute loads an app a program reaches through dynamic access to tools when it first uses it, and lists apps without loading them",
     targets: {
       "self-host": scheduled,
       cloud: na("Shared execute path; covered on self-host"),
@@ -5155,6 +5176,20 @@ export const scenarios = plan({
       ),
       cloud: na(
         "Hosted grants narrow search the same way; scopedConnectionAccess searches under a read-only rule.",
+      ),
+    },
+  },
+  localScopedLazyReach: {
+    file: "local-mcp-connections.spec.ts",
+    title:
+      "Local scoped connections reach no hidden tool through CodeMode's search() or dynamic access to tools",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Hosted grants narrow listings and search the same way; the lazy paths are shared.",
+      ),
+      cloud: na(
+        "Hosted grants narrow listings and search the same way; the lazy paths are shared.",
       ),
     },
   },

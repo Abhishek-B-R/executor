@@ -1,5 +1,5 @@
 /** Evaluated tool listings, reused across requests through the declaration store. */
-import { Cause, Clock, Effect, Exit, Fiber, Option } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Option, Semaphore } from "effect";
 import {
   defaultToolListingPolicy,
   durableHeadStartMillis,
@@ -62,6 +62,8 @@ interface ListingRead extends ToolListOptions {
    * accounts again, which would renew a grant inside its renewal window a second time.
    */
   readonly resolved?: Effect.Success<ReturnType<typeof resolve>>;
+  /** Do not retain a decoded listing after a cold search fill writes its rows. */
+  readonly retain?: boolean;
 }
 
 /** A kept listing. */
@@ -144,6 +146,9 @@ export const makeListings = (options: {
 }) => {
   const policy = options.policy ?? defaultToolListingPolicy;
   const { cache, background, search } = options;
+  /** Cold search fills evaluate through one small isolate-wide gate. */
+  const searchFillLimit = 2;
+  const searchFillGate = Semaphore.makeUnsafe(searchFillLimit);
   /**
    * Keep an evaluated listing as search rows. A failure is logged: `searchable` finds the rows
    * missing or older than the listing and writes them again before naming them.
@@ -180,13 +185,14 @@ export const makeListings = (options: {
           if (outcome instanceof Evaluated) {
             // What the evaluation's CPU, which a Workers I/O clock cannot time, grows with.
             yield* Effect.annotateCurrentSpan(outcome.sizes);
-            yield* cache.set(id, {
-              kind: "value",
-              app: state.app.id,
-              at: load.started,
-              value: outcome.listed,
-              bytes: outcome.bytes,
-            });
+            if (read.retain !== false)
+              yield* cache.set(id, {
+                kind: "value",
+                app: state.app.id,
+                at: load.started,
+                value: outcome.listed,
+                bytes: outcome.bytes,
+              });
             return;
           }
           if (!(outcome instanceof Failed)) return;
@@ -532,7 +538,29 @@ export const makeListings = (options: {
           "executor.search.rows",
           kept === undefined ? "missing" : kept.superseded !== null ? "removed" : "stale",
         );
-        const found = yield* readAt(state, evaluate, read);
+        // A cold fill evaluates through the shared gate and keeps no decoded listing: rows are
+        // what later searches read. Readers of the same listing share one evaluation, which the
+        // load bound stops like any other once nobody waits for it.
+        const gated: Evaluate =
+          kept === undefined
+            ? (context) =>
+                Effect.gen(function* () {
+                  const queued = yield* Clock.currentTimeMillis;
+                  return yield* searchFillGate.withPermits(1)(
+                    Effect.gen(function* () {
+                      yield* Effect.annotateCurrentSpan({
+                        "executor.search.fill.wait_ms": (yield* Clock.currentTimeMillis) - queued,
+                        "executor.search.fill.limit": searchFillLimit,
+                      });
+                      return yield* evaluate(context);
+                    }),
+                  );
+                }).pipe(Effect.withSpan("sdk.tools.searchable.cold-fill"))
+            : evaluate;
+        const found = yield* readAt(state, gated, {
+          ...read,
+          ...(kept === undefined ? { retain: false } : {}),
+        });
         yield* search
           .write(state, listing, found.listing, found.at)
           .pipe(

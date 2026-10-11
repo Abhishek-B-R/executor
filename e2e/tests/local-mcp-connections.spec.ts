@@ -325,6 +325,152 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
+  it.effect(scenarios.localScopedLazyReach.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          target = yield* Target,
+          evidence = yield* Evidence,
+          mcp = yield* McpClient;
+        const operator = yield* pairLocalOperator;
+        const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        const run = randomUUID().slice(0, 8);
+        const deploy = (name: string) =>
+          Effect.gen(function* () {
+            const deployed = yield* operator.send(
+              "POST",
+              "/v1/apps/deploy",
+              { owner: "local", name: `${name} ${run}`, files: readWriteAppFiles(randomUUID()) },
+              headers,
+            );
+            expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+            const { app } = yield* body(Schema.Struct({ app: App }), deployed);
+            yield* Effect.addFinalizer(() =>
+              operator.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
+            );
+            return app;
+          });
+        const app = yield* deploy("Lazy reach named");
+        const other = yield* deploy("Lazy reach left out");
+        const appPath = `tools[${JSON.stringify(app.slug)}]`;
+        const otherPath = `tools[${JSON.stringify(other.slug)}]`;
+        const Ran = Schema.Struct({
+          status: Schema.Literal("completed"),
+          execution: Schema.Struct({
+            ok: Schema.Boolean,
+            value: Schema.optional(Schema.Unknown),
+            error: Schema.optional(Schema.Struct({ kind: Schema.String, message: Schema.String })),
+          }),
+        });
+        const runner =
+          (client: Effect.Success<ReturnType<typeof mcp.connect>>) =>
+          (operation: string, code: string) =>
+            client
+              .use(operation, (client, signal) =>
+                client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Ran)(result.structuredContent),
+                ),
+                Effect.map(({ execution }) => execution),
+              );
+        const paths = (value: unknown) =>
+          Schema.decodeUnknownEffect(SearchPage)(value).pipe(
+            Effect.map(({ items }) => items.map((item) => item.path)),
+          );
+        // Computed names, so neither app is named statically.
+        const computed = (slug: string) => `[${JSON.stringify(slug)}][0]`;
+
+        // With full access, the dynamic path reaches the write tool.
+        const full = runner(
+          yield* mcp.connect(Redacted.make(Redacted.value(target.apiKey)), "local-lazy-full"),
+        );
+        expect(
+          yield* full(
+            "Write through a computed name with full access",
+            `return await tools[${computed(app.slug)}].write({ message: "full" });`,
+          ),
+        ).toMatchObject({ ok: true, value: { wrote: "full" } });
+
+        const clients: string[] = [];
+        yield* revokeClientGrants(operator, () => clients);
+        const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
+          id: randomUUID(),
+          name: "Read one app by name",
+          apps: [
+            {
+              app: app.id,
+              runsAs: [{ kind: "app" }],
+              tools: { kind: "selected", names: ["read"] },
+            },
+          ],
+        });
+        expect(created.status, JSON.stringify(created.body)).toBe(200);
+        const connection = yield* body(ConnectionView, created);
+        const consent = yield* evidence.step(
+          "Authorize a connection that names only one app's read tool",
+          consentTo(operator, connection.url),
+        );
+        clients.push(consent.clientId);
+        expect(consent.status).toBe(200);
+        const scoped = runner(
+          yield* mcp.connect(yield* consent.tokens, "local-lazy-scoped", {
+            connection: connection.id,
+          }),
+        );
+
+        yield* evidence.step(
+          "CodeMode's search() finds only the tool the connection names",
+          Effect.gen(function* () {
+            const named = yield* scoped(
+              "Search the named app",
+              `return await search({ query: ${JSON.stringify(app.name)} });`,
+            );
+            expect(yield* paths(named.value)).toEqual([`${appPath}.read`]);
+            const exact = yield* scoped(
+              "Search for the left-out tool's exact path",
+              `return await search({ query: ${JSON.stringify(`${appPath}.write`)} });`,
+            );
+            expect(yield* paths(exact.value)).not.toContain(`${appPath}.write`);
+            const left = yield* scoped(
+              "Search the left-out app",
+              `return await search({ query: ${JSON.stringify(other.name)} });`,
+            );
+            for (const path of yield* paths(left.value)) expect(path).not.toContain(otherPath);
+          }),
+        );
+
+        yield* evidence.step(
+          "Dynamic access reaches exactly what static access reaches",
+          Effect.gen(function* () {
+            const keys = yield* scoped(
+              "List the named app's tools",
+              `return Object.keys(tools[${computed(app.slug)}]);`,
+            );
+            expect(keys).toMatchObject({ ok: true, value: ["read"] });
+            for (const [label, slug, tool] of [
+              ["left-out tool", app.slug, "write"],
+              ["left-out app", other.slug, "read"],
+            ] as const) {
+              const input = tool === "write" ? `{ message: "scoped" }` : `{}`;
+              const direct = yield* scoped(
+                `Call the ${label} statically`,
+                `return await tools[${JSON.stringify(slug)}].${tool}(${input});`,
+              );
+              const dynamic = yield* scoped(
+                `Call the ${label} through a computed name`,
+                `return await tools[${computed(slug)}].${tool}(${input});`,
+              );
+              expect(direct.ok, label).toBe(false);
+              expect(dynamic, label).toEqual(direct);
+            }
+          }),
+        );
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
   it.effect(scenarios.localMcpOAuthWithoutResource.title, (context) =>
     withCase(
       context,

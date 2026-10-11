@@ -345,6 +345,9 @@ export const eventFixtures = Effect.gen(function* () {
           "content-type": "application/json",
           "mcp-protocol-version": revision,
           "mcp-method": method,
+          ...(method === "tools/call" && typeof params.name === "string"
+            ? { "mcp-name": params.name }
+            : {}),
           "x-executor-organization": actors.organization.id,
         }),
       );

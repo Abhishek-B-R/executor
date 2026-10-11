@@ -68,7 +68,10 @@ export interface McpBackend<E extends Error> {
    * Hosts still enforce owner access; this filter is never an authorization grant.
    */
   readonly listApps: (
-    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids">,
+    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids"> & {
+      /** Restrict the inventory to apps whose tools this caller may reach. */
+      readonly toolsOnly?: boolean;
+    },
   ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
   /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
   readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;

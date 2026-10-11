@@ -439,7 +439,12 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
  * compared with main, not the pull request's base, so the top of a stack counts every layer.
  */
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "@opencode-ai/codemode": ["mcp-catalog.spec.ts", "mcp-execute-concurrency.spec.ts"],
+  "@opencode-ai/codemode": [
+    "mcp-catalog.spec.ts",
+    "mcp-execute-concurrency.spec.ts",
+    "mcp-execute-lazy.spec.ts",
+    "local-mcp-connections.spec.ts",
+  ],
   effect: [
     "mcp-telemetry-privacy.spec.ts",
     "mcp-protocol-versions.spec.ts",
