@@ -1766,7 +1766,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
     title:
-      "Cloud MCP session objects hold their database connections across calls and close them when idle",
+      "Cloud MCP session objects hold their database connections across calls and pauses and close them when idle",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host MCP sessions run in its server process with its own pool."),

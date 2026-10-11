@@ -400,7 +400,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
           );
           // The session's first requests, from initialization on, are part of its first window.
           const opened = (yield* evidence.requests).length;
-          const client = yield* mcp.connect(key.key, "object-connections", {
+          let client = yield* mcp.connect(key.key, "object-connections", {
             organization: actors.organization.id,
           });
           // Six sequential tool calls: each is its own MCP operation inside the session object.
@@ -494,11 +494,32 @@ return out;`,
           expect(dropped.windows).toBe(0);
           expect(dropped.connects).toBeGreaterThan(0);
 
-          // Once the session has been idle, it holds no connection; the next call opens a window.
-          yield* Effect.sleep(Duration.seconds(32));
+          // A pause between an agent's tool calls keeps the window and its connections: the next
+          // call opens neither a window nor a connection.
+          yield* Effect.sleep(Duration.seconds(45));
+          expect(yield* objectConnections(owner)).toBeGreaterThan(0);
+          const paused = yield* sessionSpans(
+            yield* execute("Tool calls after a pause"),
+            (counts) => counts.operations >= 6 && counts.databases >= 6,
+          );
+          yield* evidence.json("after-pause.json", paused);
+          expect(paused.windows, "A 45 s pause keeps the window").toBe(0);
+          expect(paused.connects, "A 45 s pause keeps the connections").toBe(0);
+
+          // Once the session has been idle for the whole window (120 s), it holds no connection;
+          // the next call opens a window.
+          yield* Effect.sleep(Duration.seconds(122));
           expect(yield* objectConnections(owner)).toBe(0);
+          // Without the window's socket and timer, the idle object may be evicted with its MCP
+          // sessions, so the client starts a new session, as clients do on "session not found".
+          // The new session's own requests may open the window, so they are counted with the calls.
+          const idled = (yield* evidence.requests).length;
+          client = yield* mcp.connect(key.key, "object-connections-after-idle", {
+            organization: actors.organization.id,
+          });
+          yield* execute("Tool calls after idling");
           const reopened = yield* sessionSpans(
-            yield* execute("Tool calls after idling"),
+            (yield* evidence.requests).slice(idled).map((request) => request.traceId),
             (counts) => counts.operations >= 6 && counts.windows >= 1 && counts.connects >= 1,
           );
           yield* evidence.json("after-idle.json", reopened);
@@ -506,7 +527,7 @@ return out;`,
           expect(reopened.connects).toBeGreaterThan(0);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    { timeout: 120_000 },
+    { timeout: 300_000 },
   );
 
   it.effect(scenarios.cloudMcpObjectConnectRetry.title, (context) =>

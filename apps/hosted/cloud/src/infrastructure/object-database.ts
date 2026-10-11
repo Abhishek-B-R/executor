@@ -27,9 +27,17 @@ import {
 
 /**
  * An object closes its connections this long after its last call ends. PgBouncer pools in
- * transaction mode, so an idle client connection holds no Postgres backend meanwhile.
+ * transaction mode, so an idle client connection holds no Postgres backend meanwhile; it counts
+ * only toward PgBouncer's client limit (notes/database-pool.md).
+ *
+ * A new connection costs a TLS login of about 70 ms on the next call's critical path. MCP clients
+ * often pause longer than 30 seconds between tool calls, so a shorter window reconnects on most
+ * of their calls after a pause. Cloudflare keeps an idle Durable Object in memory for 70–140 s
+ * after its last request, and the window's open socket and timer keep it there until the window
+ * closes, so a window much longer than that would mostly hold objects in memory (billed duration)
+ * for calls that rarely come.
  */
-const idleWindow = Duration.seconds(30);
+const idleWindow = Duration.seconds(120);
 
 /**
  * Connections one object may hold, shared by the executor and Better Auth: enough that a
