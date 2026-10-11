@@ -78,12 +78,19 @@ const build = Effect.gen(function* () {
     output,
   );
   yield* installNodeRuntime(runtime);
+  // The backend restarts with each launch; Node's compile cache spares it recompiling the runtime.
+  // Node writes the cache only on an orderly exit, and on Windows the desktop's stop terminates
+  // the backend outright, so it is written once the runtime has loaded.
   yield* fs.writeFileString(
     path.join(runtime, "desktop-server.mjs"),
-    `import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
+    `import { flushCompileCache } from "node:module";
+import { enablePrivateCompileCache } from "./compile-cache.mjs";
+import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
 Object.assign(process.env, packagedRuntimeEnvironment(process.env));
 process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
-${yield* launcherAnalytics}await import("./runtime/desktop.mjs");
+${yield* launcherAnalytics}enablePrivateCompileCache();
+await import("./runtime/desktop.mjs");
+flushCompileCache();
 `,
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);

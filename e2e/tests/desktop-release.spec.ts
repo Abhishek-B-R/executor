@@ -34,6 +34,14 @@ it.live("packaged desktop starts without the workspace and retains apps after re
       const registry = yield* localNpmRegistry;
       const origin = `http://127.0.0.1:${port}`;
       const mcpUrl = new URL(`${origin}/mcp`);
+      // The backend keeps its compile cache in the OS per-user cache directory, pointed here.
+      const cacheHome = path.join(directory, "cache-home");
+      const cache = path.join(
+        process.platform === "darwin" ? path.join(cacheHome, "Library", "Caches") : cacheHome,
+        "executor",
+        "v2",
+        "compile-cache",
+      );
       const env = {
         ...Object.fromEntries(
           [
@@ -49,7 +57,12 @@ it.live("packaged desktop starts without the workspace and retains apps after re
           }),
         ),
         PATH: runtimePath,
-        HOME: process.env.HOME ?? "",
+        HOME: process.platform === "darwin" ? cacheHome : (process.env.HOME ?? ""),
+        ...(process.platform === "win32"
+          ? { LOCALAPPDATA: cacheHome }
+          : process.platform === "darwin"
+            ? {}
+            : { XDG_CACHE_HOME: cacheHome }),
         // Release scenarios never send product analytics, even from a build with a baked key.
         DO_NOT_TRACK: "1",
         EXECUTOR_API_KEY: apiKey,
@@ -389,6 +402,25 @@ createRoot(root).render(<App />);`,
           }),
         );
         yield* checkpoint("Desktop closed");
+        if (first) {
+          // The backend wrote its compiled code to the user's cache directory once the runtime
+          // loaded, even though Windows terminates it without an orderly exit.
+          const entries = (yield* fs.exists(cache))
+            ? yield* fs.readDirectory(cache, { recursive: true })
+            : [];
+          const files = yield* Effect.filter(entries, (entry) =>
+            fs.stat(path.join(cache, entry)).pipe(Effect.map(({ type }) => type === "File")),
+          );
+          expect(files.length, "compiled code is cached after the first launch").toBeGreaterThan(0);
+          if (process.platform !== "win32")
+            expect((yield* fs.stat(cache)).mode & 0o777, "only this user can use the cache").toBe(
+              0o700,
+            );
+          expect(
+            yield* fs.exists(path.join(directory, "data", "compile-cache")),
+            "the cache stays out of the data directory",
+          ).toBe(false);
+        }
       }
     }),
   ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),

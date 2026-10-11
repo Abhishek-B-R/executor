@@ -58,6 +58,10 @@ const build = Effect.gen(function* () {
     path.join(root, "scripts/releases/runtime-env.mjs"),
     path.join(stage, "runtime-env.mjs"),
   );
+  yield* fs.copyFile(
+    path.join(root, "scripts/releases/compile-cache.mjs"),
+    path.join(stage, "compile-cache.mjs"),
+  );
   yield* fs.copy(path.join(root, "scripts/releases/licenses"), path.join(stage, "licenses"), {
     overwrite: true,
   });
@@ -79,6 +83,7 @@ const build = Effect.gen(function* () {
     files: [
       "bin.mjs",
       "runtime-env.mjs",
+      "compile-cache.mjs",
       "apps",
       "packages",
       "licenses",
@@ -93,9 +98,11 @@ const build = Effect.gen(function* () {
     imports: { "#cloudflare-runtime-core-worker/*": "./alchemy-workers/*.mjs" },
   };
   yield* fs.writeFileString(path.join(stage, "package.json"), JSON.stringify(manifest, null, 2));
+  // Node's compile cache keeps the runtime's compiled code in the user's cache directory, so every
+  // launch after the first skips recompiling the bundled server (about 150 ms).
   yield* fs.writeFileString(
     path.join(stage, "bin.mjs"),
-    `#!/usr/bin/env node\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\n${yield* launcherAnalytics}await import("./runtime/cli.mjs");\n`,
+    `#!/usr/bin/env node\nimport { flushCompileCache } from "node:module";\nimport { homedir } from "node:os";\nimport { join } from "node:path";\nimport { enablePrivateCompileCache } from "./compile-cache.mjs";\nimport { packagedRuntimeEnvironment } from "./runtime-env.mjs";\nObject.assign(process.env, packagedRuntimeEnvironment(process.env));\nprocess.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");\nprocess.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};\n${yield* launcherAnalytics}enablePrivateCompileCache();\nawait import("./runtime/cli.mjs");\nflushCompileCache();\n`,
   );
   yield* fs.chmod(path.join(stage, "bin.mjs"), 0o755);
   yield* fs.copyFile(path.join(root, "scripts/releases/README.md"), path.join(stage, "README.md"));
