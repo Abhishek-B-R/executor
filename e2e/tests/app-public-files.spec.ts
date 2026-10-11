@@ -453,7 +453,7 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             browser = yield* Browser;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const slug = `public-files-${randomUUID().slice(0, 8)}`;
-          const name = `@${actors.organization.slug}/${slug}`;
+          const name = `@${actors.organization.slug}.executor.community/${slug}`;
           const versioned = (version: string, extra: ReadonlyArray<PublicFile>): PublicFile[] => [
             {
               path: "assets/main.js",

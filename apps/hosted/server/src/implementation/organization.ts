@@ -47,6 +47,7 @@ import {
   OrganizationRole,
   RequireOrganization,
   organizationOwner,
+  publishingScope,
 } from "../contracts/organization.ts";
 
 /** Read current membership once after native session verification; never retain roles between requests. */
@@ -138,11 +139,12 @@ export const withOrganizationRequest = <E, R>(
           "executor.api_key.id": grant.key.id,
           "executor.user.id": grant.userId,
         });
-      return (yield* response(Effect.succeed(grant.organizationSlug)).pipe(
+      const scope = Effect.succeed(publishingScope(grant.organizationSlug));
+      return (yield* response(scope).pipe(
         Effect.tapCause(ErrorReporter.report),
         Effect.provideService(CurrentAuthorization, grant.policy),
         Effect.provideService(CurrentOrganization, grant.access),
-        Effect.provideService(CurrentOrganizationNamespace, Effect.succeed(grant.organizationSlug)),
+        Effect.provideService(CurrentOrganizationNamespace, scope),
         Effect.provideService(CurrentUserId, grant.userId),
         Effect.provideService(CurrentUsage, { source: "api" }),
       )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
@@ -167,13 +169,11 @@ export const withOrganizationRequest = <E, R>(
       owner: organizationOwner(organization),
       role: membership.role,
     };
-    return (yield* response(auth.organizationSlug(headers, organization)).pipe(
+    const scope = auth.organizationSlug(headers, organization).pipe(Effect.map(publishingScope));
+    return (yield* response(scope).pipe(
       Effect.tapCause(ErrorReporter.report),
       Effect.provideService(CurrentOrganization, access),
-      Effect.provideService(
-        CurrentOrganizationNamespace,
-        auth.organizationSlug(headers, organization),
-      ),
+      Effect.provideService(CurrentOrganizationNamespace, scope),
       Effect.provideService(CurrentUserId, principal.userId),
       Effect.provideService(CurrentUsage, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),

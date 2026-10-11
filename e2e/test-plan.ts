@@ -181,6 +181,18 @@ export const scenarios = plan({
       local: na("Local does not serve the marketing site."),
     },
   },
+  packageScopes: {
+    fixtures: "actors",
+    file: "package-scopes.spec.ts",
+    title:
+      "Package names follow the organization's current slug, and a rename releases the old one to its next holder",
+    targets: {
+      // Publishing needs app Git storage, which a local Cloud Worker cannot reach.
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("Self-host does not publish apps."),
+      local: na("Local does not publish apps."),
+    },
+  },
   appGitRemotes: {
     fixtures: "actors",
     file: "app-git-remotes.spec.ts",

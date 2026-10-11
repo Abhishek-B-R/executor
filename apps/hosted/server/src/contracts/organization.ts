@@ -92,7 +92,18 @@ export type OrganizationForbidden = typeof OrganizationForbidden.Type;
 export class CurrentOrganization extends Context.Service<CurrentOrganization, OrganizationAccess>()(
   "hosted/CurrentOrganization",
 ) {}
-/** Lazy, authenticated publishing handle; routes that do not need it make no slug lookup. */
+/** Public packages are published under the organization's current slug on this domain. */
+export const publishingDomain = "executor.community";
+/** An organization's publishing scope. It follows renames; the slug it had is free to reuse. */
+export const publishingScope = (slug: string) => `${slug}.${publishingDomain}`;
+/** The slug a publishing scope names, or undefined for a scope on another domain. */
+export const publishingSlug = (scope: string) =>
+  scope.endsWith(`.${publishingDomain}`) ? scope.slice(0, -publishingDomain.length - 1) : undefined;
+
+/**
+ * Lazy, authenticated publishing scope, `<slug>.executor.community`; routes that do not need it
+ * make no slug lookup.
+ */
 export class CurrentOrganizationNamespace extends Context.Service<
   CurrentOrganizationNamespace,
   Effect.Effect<string, AuthenticationUnavailable | OrganizationForbidden>

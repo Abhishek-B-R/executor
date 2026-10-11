@@ -87,7 +87,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           browser = yield* Browser;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const slug = `site-apps-${randomUUID().slice(0, 8)}`;
-        const name = `@${actors.organization.slug}/${slug}`;
+        const name = `@${actors.organization.slug}.executor.community/${slug}`;
         const marker = `Listed from the API host ${randomUUID()}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Site apps ${slug}`,
@@ -158,7 +158,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           page.getByRole("heading", { name, exact: true }).click(),
         );
         yield* browser.use("The publication page opens", (page) =>
-          page.waitForURL(`${hosts.edge}/apps/${actors.organization.slug}/${slug}`),
+          page.waitForURL(
+            `${hosts.edge}/apps/${actors.organization.slug}.executor.community/${slug}`,
+          ),
         );
         yield* browser.use("The published index.ts is shown", (page) =>
           page

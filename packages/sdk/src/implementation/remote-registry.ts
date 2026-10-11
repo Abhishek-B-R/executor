@@ -152,6 +152,7 @@ export const remoteRegistry = (origin: string): Registry => {
   return {
     origin,
     file,
+    files: (name, commit) => Effect.succeed((path: string) => file(name, commit, path)),
     // A name selects one listing to install, so it is always read from the registry.
     list: (name) => (name === undefined ? listAll : list(name)),
     snapshot: (name, commit) =>

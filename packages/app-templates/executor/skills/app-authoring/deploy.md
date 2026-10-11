@@ -308,6 +308,9 @@ Running apps copy their deployed source and deploy the copy. Unfinished apps cop
 their working files and remain undeployed.
 
 Publishing reads a scoped `name` and optional `description` from `package.json`.
+The scope is the organization's current one, `<slug>.executor.community`, such as
+`@acme.executor.community/notes`. After the organization is renamed, change the
+scope to the new slug before publishing again; the listing keeps its label.
 The public listing points to the selected Git commit. Normal npm `dependencies`
 are supported; `version` is optional author metadata and does not select an
 Executor release. Apps cannot depend on other Executor apps; include the source

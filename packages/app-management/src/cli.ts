@@ -117,7 +117,7 @@ const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
 const publication = {
   package: Flag.String("package").pipe(
     Flag.withSchema(PackageName),
-    Flag.withDescription("Published package name, for example @owner/app"),
+    Flag.withDescription("Published package name, for example @owner.executor.community/app"),
   ),
   commit: commit("of the published version to install"),
 };

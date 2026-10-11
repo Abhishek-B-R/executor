@@ -1,4 +1,5 @@
 import { makeRegistryStorage } from "@executor-js/app-registry";
+import { organizationPublishers } from "./publishers.ts";
 /** The same explicit Postgres migration operation is used locally and in deployment jobs. */
 import { PgClient, PgTypes } from "@effect/sql-pg";
 import {
@@ -132,7 +133,7 @@ export const migrateCloudDatabase = Effect.scoped(
       encode: (value) => PgTypes.encode(value, PgTypes.OID.oid),
     });
     const cloudMigrations = Effect.gen(function* () {
-      const registry = yield* makeRegistryStorage;
+      const registry = yield* makeRegistryStorage(yield* organizationPublishers);
       yield* registry.migrate.pipe(Effect.mapError(migrationFailed("product")));
       yield* migrateProductSteps("private_cloud_migrations", {
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),

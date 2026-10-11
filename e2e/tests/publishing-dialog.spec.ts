@@ -52,16 +52,16 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
         yield* browser.use("Allow clipboard access in the isolated browser", (page) =>
           page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
         );
-        const suggestedName = `@${actors.organization.slug}/axiom`;
+        const suggestedName = `@${actors.organization.slug}.executor.community/axiom`;
         for (const fixture of [
-          { reason: "unscoped-name", name: "axiom", title: "Add your publishing handle" },
+          { reason: "unscoped-name", name: "axiom", title: "Add your publishing scope" },
           { reason: "missing-name", name: null, title: "Add a package name" },
           { reason: "invalid-json", name: null, title: "Fix package.json" },
           { reason: "invalid-name", name: "@bad/Invalid Name", title: "Use a valid public name" },
           {
             reason: "forbidden-scope",
-            name: "@original/axiom",
-            title: "This name uses another publishing handle",
+            name: "@original.executor.community/axiom",
+            title: "Update the publishing scope",
           },
           { reason: "name-taken", name: suggestedName, title: "Choose a different public name" },
         ] as const) {
@@ -176,16 +176,16 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
                 expect(prompt).toContain("Don't deploy or publish the app.");
               }
               if (fixture.reason === "forbidden-scope") {
-                yield* browser.use("Name both handles", (page) =>
+                yield* browser.use("Name both scopes", (page) =>
                   page
                     .getByRole("alert")
                     .getByText(
-                      `Apps from this organization are published under @${actors.organization.slug}. The name in package.json starts with @original, which this organization cannot publish under.`,
+                      `Apps from this organization are published under @${actors.organization.slug}.executor.community. The name in package.json starts with @original.executor.community.`,
                       { exact: true },
                     )
                     .waitFor(),
                 );
-                yield* browser.checkpoint("Another handle names both handles and offers a rename");
+                yield* browser.checkpoint("Another scope names both scopes and offers a rename");
               }
               yield* browser.use("Close the repair message", (page) =>
                 page

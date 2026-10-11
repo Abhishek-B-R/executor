@@ -11,11 +11,18 @@ import { SourceCommit, SourceFilePath, SourceFiles, SourceRevision, isTextFile }
  */
 export const hostedExecutorOrigin = "https://api.executor.sh";
 
-/** Public name inside a publishing owner's namespace. */
+/**
+ * Public name inside a publishing owner's scope, such as `@acme.executor.community/notes`. The
+ * scope is the owner's current one; the label after it identifies the listing within the owner.
+ */
 export const PackageName = Schema.String.check(
-  Schema.isPattern(/^@[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,62}$/u),
+  Schema.isPattern(/^@[a-z0-9][a-z0-9.-]{0,119}\/[a-z0-9][a-z0-9-]{0,62}$/u),
 );
 export type PackageName = typeof PackageName.Type;
+/** The scope of a package name, without its `@`. */
+export const packageScope = (name: PackageName) => name.slice(1, name.indexOf("/"));
+/** The label of a package name: what stays when its owner's scope changes. */
+export const packageLabel = (name: PackageName) => name.slice(name.indexOf("/") + 1);
 /** Standard npm metadata remains source; only name and description identify a public listing. */
 export const PackageManifest = Schema.Struct({
   name: PackageName,
@@ -24,7 +31,7 @@ export const PackageManifest = Schema.Struct({
 export type PackageManifest = typeof PackageManifest.Type;
 /** Derive a public name from an authenticated publishing namespace and an app label. */
 export const publicPackageName = (namespace: string, name: string) => {
-  const label = Schema.is(PackageName)(name) ? name.slice(name.indexOf("/") + 1) : name;
+  const label = Schema.is(PackageName)(name) ? packageLabel(name) : name;
   return Schema.decodeUnknownOption(PackageName)(`@${namespace}/${appSlug(label)}`);
 };
 
@@ -75,7 +82,7 @@ export const PublicationReference = Schema.Struct({
 export type PublicationReference = typeof PublicationReference.Type;
 const registryFailures = {
   "not-found": "The public app listing or its selected commit does not exist.",
-  forbidden: "This publisher may not use this package scope or change this public listing.",
+  forbidden: "This package name is not in the publisher's current scope.",
   conflict: "Another app already publishes this package name.",
   changed:
     "The public listing changed since its commit was reviewed. Review the current listing before copying it.",
@@ -139,13 +146,24 @@ export interface Registry {
     commit: string,
     path: string,
   ) => Effect.Effect<Uint8Array, RegistryError>;
+  /**
+   * Read many files of one listing's selected commit. The listing is resolved once, so an install
+   * reading its public files does not look it up again for each one.
+   */
+  readonly files: (
+    name: string,
+    commit: string,
+  ) => Effect.Effect<(path: string) => Effect.Effect<Uint8Array, RegistryError>, RegistryError>;
 }
 
 /** A public listing has one stable URL even when its selected commit changes. */
 export const registryPublicationPath = (name: string): string =>
   `/apps/${name.slice(1).split("/").map(encodeURIComponent).join("/")}`;
 
-/** Catalog rows point to retained Git source. Installed copies do not depend on these rows. */
+/**
+ * One listing with its owner and retained source. The name is the owner's current scope and the
+ * listing's label; storage keeps only the label, so an owner's new scope renames every listing.
+ */
 export const StoredPublication = Schema.Struct({
   name: PackageName,
   owner: OwnerId,
@@ -156,7 +174,6 @@ export const StoredPublication = Schema.Struct({
 export type StoredPublication = typeof StoredPublication.Type;
 /** Host-owned catalog persistence; public callers only see catalog metadata and selected source. */
 export interface RegistryStorage {
-  readonly scopeOwner: (scope: string) => Effect.Effect<OwnerId | null, RegistryError>;
   readonly get: (name: string) => Effect.Effect<StoredPublication, RegistryError>;
   readonly list: (name?: string) => Effect.Effect<ReadonlyArray<Publication>, RegistryError>;
   readonly owned: (owner: OwnerId) => Effect.Effect<ReadonlyArray<Publication>, RegistryError>;

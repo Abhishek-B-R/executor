@@ -41,11 +41,15 @@ A new app whose source and history start from another app and can change
 independently. Its accounts and data are separate.
 
 **Package name**:
-The scoped name used to discover a public app listing.
+The scoped name used to discover a public app listing, such as
+`@acme.executor.community/notes`. Its label, `notes`, identifies the listing
+within its publisher.
 
 **Publisher scope**:
-An organization's publishing namespace. Existing ownership survives changes to
-the organization's name or address.
+An organization's publishing namespace, `<slug>.executor.community`. It follows
+the organization's current slug and is never claimed: a rename moves every
+listing to the new scope, and the old one is free for the next organization
+that takes the slug.
 
 **Publication**:
 A public listing pointing to one selected Git commit. Republishing changes the

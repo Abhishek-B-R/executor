@@ -22,8 +22,8 @@ authentication from catalog hints.
 
 Generated source includes `package.json` with an npm-safe name derived from the
 import name. An explicit scoped name is preserved. Hosted import flows add the
-authenticated organization’s handle before saving these files:
-`@organization/app-name`. The manifest declares the exact `apps` release this host
+authenticated organization’s publishing scope before saving these files:
+`@organization.executor.community/app-name`. The manifest declares the exact `apps` release this host
 ships (`packages/apps/package.json`) and `@modelcontextprotocol/sdk` at the version
 that release is built with. Every app declares `apps`; see
 [publishing apps](../../notes/apps-publishing.md#framework-selection).

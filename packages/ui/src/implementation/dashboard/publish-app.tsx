@@ -35,7 +35,7 @@ const scopeOf = (name: string) => name.slice(0, name.indexOf("/"));
 
 const nameTask = (reason: PublicationIssue["reason"], suggestedName: string | null) =>
   suggestedName === null
-    ? 'Set "name" in package.json to a public name of the form @handle/app-name, using this organization’s publishing handle.'
+    ? 'Set "name" in package.json to a public name of the form @scope/app-name, using this organization’s publishing scope.'
     : reason === "missing-manifest"
       ? `Add a package.json file whose "name" is "${suggestedName}".`
       : `Set "name" in package.json to "${suggestedName}" and leave the other fields unchanged.`;
@@ -64,25 +64,25 @@ function publicationRepair(issue: PublicationIssue, suggestedName: string | null
       };
     case "unscoped-name":
       return {
-        title: "Add your publishing handle",
-        detail: "This package has a name, but public names also need your organization’s handle.",
+        title: "Add your publishing scope",
+        detail: "This package has a name, but public names also need your organization’s scope.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };
     case "invalid-name":
       return {
         title: "Use a valid public name",
-        detail: "Public names use @handle/app-name with lowercase letters, numbers, and hyphens.",
+        detail: "Public names use @scope/app-name with lowercase letters, numbers, and hyphens.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };
     case "forbidden-scope":
       return {
-        title: "This name uses another publishing handle",
+        title: "Update the publishing scope",
         detail:
           issue.name !== null && suggestedName !== null
-            ? `Apps from this organization are published under ${scopeOf(suggestedName)}. The name in package.json starts with ${scopeOf(issue.name)}, which this organization cannot publish under.`
-            : "The name in package.json starts with a handle this organization cannot publish under.",
+            ? `Apps from this organization are published under ${scopeOf(suggestedName)}. The name in package.json starts with ${scopeOf(issue.name)}.`
+            : "The name in package.json does not start with this organization’s current publishing scope.",
         rename: true,
         task: nameTask(issue.reason, suggestedName),
       };

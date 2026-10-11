@@ -18,7 +18,11 @@ import { Effect, Layer, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import { ApiAuthentication, Authentication } from "./contracts/auth.ts";
 import { OrganizationTombstones } from "./contracts/organization-removal.ts";
-import { OrganizationReference, CurrentOrganization } from "./contracts/organization.ts";
+import {
+  OrganizationReference,
+  CurrentOrganization,
+  publishingScope,
+} from "./contracts/organization.ts";
 
 /**
  * Capture only the host database; identity and group grants are checked for every authoring
@@ -147,7 +151,7 @@ export const hostedAppGitAccess = Layer.effect(
             actor: grant.userId,
             readOwner: grant.access.owner,
             scope: grant.access.organization,
-            namespace: grant.organizationSlug,
+            namespace: publishingScope(grant.organizationSlug),
             canWrite: permitsAction(grant.policy, "manage"),
             appIds: permittedAppIds(grant.policy),
             protectedApps: [],

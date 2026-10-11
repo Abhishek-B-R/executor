@@ -571,10 +571,15 @@ export const makeApps = (
           ? "package" in from
             ? {
                 ...(yield* resolvePublication(registry, from)),
-                stored: ({ path }) =>
-                  registry
-                    .file(from.package, from.commit, path)
-                    .pipe(Effect.mapError(() => new SourceError({ reason: "not-found" }))),
+                stored: yield* registry.files(from.package, from.commit).pipe(
+                  Effect.map(
+                    (read): StoredBytes =>
+                      ({ path }) =>
+                        read(path).pipe(
+                          Effect.mapError(() => new SourceError({ reason: "not-found" })),
+                        ),
+                  ),
+                ),
               }
             : from
           : yield* Effect.gen(function* () {

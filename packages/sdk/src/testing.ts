@@ -96,4 +96,5 @@ export const memoryRegistry = (): Registry => ({
   list: () => Effect.succeed([]),
   snapshot: () => Effect.fail(new RegistryError({ reason: "not-found" })),
   file: () => Effect.fail(new RegistryError({ reason: "not-found" })),
+  files: () => Effect.fail(new RegistryError({ reason: "not-found" })),
 });
