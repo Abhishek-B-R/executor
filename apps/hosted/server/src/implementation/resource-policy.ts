@@ -114,13 +114,14 @@ const MemberAppPolicy = Schema.Struct({
   granted: Schema.Boolean,
 });
 /**
- * {@link resourceAuthority} followed by {@link applicationAccess}, read in one statement.
- * Membership is still read live, and its failures precede a missing app policy.
+ * {@link resourceAuthority} followed by {@link applicationAccesses}, read in one statement so
+ * membership and every policy come from the same snapshot. Membership failures precede missing
+ * policies; apps without a policy in the organization are omitted, and callers deny them.
  */
-export const resourceAuthorityForApp = (
+export const resourceAuthorityForApps = (
   organization: OrganizationId,
   user: string | undefined,
-  app: AppId,
+  apps: readonly AppId[],
 ) =>
   Effect.gen(function* () {
     if (user === undefined) return yield* new OrganizationForbidden();
@@ -133,31 +134,50 @@ export const resourceAuthorityForApp = (
     exists(select 1 from hosted_app_groups g join hosted_group_members gm on gm.group_id = g.group_id
       where g.app_id = p.id and gm.member_id = m.id) as granted
     from member m
-    left join hosted_app_access p on p.id = ${app} and p.organization_id = m."organizationId"
+    left join hosted_app_access p on ${sql.in("p.id", apps)} and p.organization_id = m."organizationId"
     where m."organizationId" = ${organization} and m."userId" = ${user}`;
     const found = yield* Schema.decodeUnknownEffect(Schema.Array(MemberAppPolicy))(rows);
     const row = found[0];
-    if (found.length !== 1 || row === undefined) return yield* new OrganizationForbidden();
-    const actor = { organization, user, member: row.id, role: row.role };
-    if (row.app === null || row.audience === null || row.revision === null || row.groups === null)
+    // Every row repeats the one membership; a second membership is ambiguous, as before.
+    if (row === undefined || found.some((other) => other.id !== row.id))
       return yield* new OrganizationForbidden();
-    return {
-      actor,
-      access: appAccessOf(
-        {
-          app: row.app,
-          creator: row.creator,
-          audience: row.audience,
-          revision: row.revision,
-          groups: row.groups,
-          granted: row.granted,
-        },
-        actor,
-      ),
-    };
+    const actor = { organization, user, member: row.id, role: row.role };
+    const access = found.flatMap((policy) =>
+      policy.app === null ||
+      policy.audience === null ||
+      policy.revision === null ||
+      policy.groups === null
+        ? []
+        : [
+            appAccessOf(
+              {
+                app: policy.app,
+                creator: policy.creator,
+                audience: policy.audience,
+                revision: policy.revision,
+                groups: policy.groups,
+                granted: policy.granted,
+              },
+              actor,
+            ),
+          ],
+    );
+    return { actor, access };
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
+/** {@link resourceAuthorityForApps} for one app; a missing policy denies access. */
+export const resourceAuthorityForApp = (
+  organization: OrganizationId,
+  user: string | undefined,
+  app: AppId,
+) =>
+  Effect.gen(function* () {
+    const { actor, access } = yield* resourceAuthorityForApps(organization, user, [app]);
+    const [policy] = access;
+    if (policy === undefined) return yield* new OrganizationForbidden();
+    return { actor, access: policy };
+  });
 
 const MemberSelectionPolicy = Schema.Struct({ ...MemberAppPolicy.fields, accounts: Schema.String });
 /**

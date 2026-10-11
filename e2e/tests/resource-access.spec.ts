@@ -3,7 +3,7 @@ import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, Inventory } from "../support/contracts.ts";
@@ -11,6 +11,7 @@ import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
 import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { freeSeat } from "../support/seats.ts";
 
 const Access = Schema.Struct({
   revision: Schema.String,
@@ -308,6 +309,30 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           (yield* api.request(actors.admin, "POST", `${prefix}/apps/${app.id}/tools/call`, call))
             .status,
         ).toBe(200);
+        // The app list checks current membership with every app's policy, so an app shared with
+        // everyone after a member is removed stays hidden from that member.
+        const listed = (actor: Session) => api.request(actor, "GET", `${prefix}/apps`);
+        const listedIds = (actor: Session) =>
+          Effect.flatMap(listed(actor), (response) =>
+            Effect.map(body(Schema.Array(App), response), (apps) => apps.map((item) => item.id)),
+          );
+        expect(yield* listedIds(actors.member)).not.toContain(app.id);
+        const seat = yield* freeSeat;
+        const grouped = yield* body(
+          Access,
+          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/access`),
+        );
+        expect(
+          (yield* api.request(actors.owner, "PATCH", `${prefix}/apps/${app.id}/access`, {
+            revision: grouped.revision,
+            audience: { kind: "everyone" },
+          })).status,
+        ).toBe(200);
+        const removed = yield* listed(actors.member);
+        expect(removed.status).toBe(403);
+        expect(JSON.stringify(removed.body)).not.toContain(app.id);
+        yield* seat.rejoin;
+        expect(yield* listedIds(actors.member)).toContain(app.id);
       }),
     ),
   );

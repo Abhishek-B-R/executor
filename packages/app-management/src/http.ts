@@ -12,7 +12,7 @@ export {
   frameworkRoutes,
 } from "./implementation/framework.ts";
 /** Product-authorized app authoring, release discovery, and ordinary Git access. */
-import { Context, Effect, Layer, Schema } from "effect";
+import { Array as Arr, Context, Effect, Layer, Schema } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   HttpApi,
@@ -47,11 +47,14 @@ export class AppManagementHost extends Context.Service<
   Effect.Effect<
     {
       readonly executor: Executor;
-      /** The product's policy for each app; every host states it, even when it allows all. */
+      /**
+       * The product's policy for each app; every host states it, even when it allows all.
+       * Answers each app in order, so a list is checked in one read; any denied app fails it.
+       */
       readonly access: (
-        app: App,
+        apps: ReadonlyArray<App>,
         identity: Context.Service.Shape<typeof AppIdentity>,
-      ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>;
+      ) => Effect.Effect<ReadonlyArray<AppCapabilities>, AppAccessDenied | StorageError>;
     },
     StorageError
   >
@@ -91,11 +94,33 @@ const writeIdentity = AppIdentity.pipe(
   ),
 );
 type ManagementHost = Effect.Success<Context.Service.Shape<typeof AppManagementHost>>;
+const capabilitiesOf = (
+  host: ManagementHost,
+  apps: ReadonlyArray<App>,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+) =>
+  host
+    .access(apps, identity)
+    .pipe(
+      Effect.flatMap((access) =>
+        access.length === apps.length ? Effect.succeed(access) : Effect.fail(new StorageError()),
+      ),
+    );
+const capabilities = (
+  host: ManagementHost,
+  app: App,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+) =>
+  capabilitiesOf(host, [app], identity).pipe(
+    Effect.flatMap(([access]) =>
+      access === undefined ? Effect.fail(new StorageError()) : Effect.succeed(access),
+    ),
+  );
 const projectApp = <A extends App>(
   host: ManagementHost,
   app: A,
   identity: Context.Service.Shape<typeof AppIdentity>,
-) => host.access(app, identity).pipe(Effect.as(app));
+) => capabilities(host, app, identity).pipe(Effect.as(app));
 const ownedSource = (
   host: ManagementHost,
   identity: Context.Service.Shape<typeof AppIdentity>,
@@ -108,7 +133,7 @@ const ownedSource = (
     const app = yield* host.executor.apps.get(
       identity.readOwner === null ? { app: id } : { owner: identity.readOwner, app: id },
     );
-    const access = yield* host.access(app, identity);
+    const access = yield* capabilities(host, app, identity);
     if (!access.manage || (edit && !access.edit))
       return yield* new AppAccessDenied({ reason: "forbidden" });
     return { app, access };
@@ -160,7 +185,7 @@ const nameAddressHolder = (
       (identity.appIds !== undefined && !identity.appIds.includes(holder.id))
     )
       return error;
-    const access = yield* host.access(holder, identity);
+    const access = yield* capabilities(host, holder, identity);
     return access.visible
       ? new AppSlugTaken({ ...error, existing: { app: holder.id, name: holder.name } })
       : error;
@@ -203,9 +228,8 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             ...(identity.readOwner === null ? {} : { owner: identity.readOwner }),
             ids: identity.appIds,
           });
-          return (yield* Effect.forEach(apps, (app) =>
-            host.access(app, identity).pipe(Effect.map((access) => (access.visible ? [app] : []))),
-          )).flat();
+          const access = yield* capabilitiesOf(host, apps, identity);
+          return Arr.zip(apps, access).flatMap(([app, { visible }]) => (visible ? [app] : []));
         }),
       )
       .handle("create", ({ payload }) =>

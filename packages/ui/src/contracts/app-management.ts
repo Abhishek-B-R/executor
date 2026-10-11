@@ -4,7 +4,7 @@ import { isTextFile, type App, type AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
 import type { HttpApiClient } from "effect/http-api";
-import { hydratedResult, requestKey } from "./http.ts";
+import { browserOnly, hydratedResult, requestKey } from "./http.ts";
 import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, readInto } from "./mutations.ts";
 
@@ -40,11 +40,13 @@ export const makeAppManagementAtoms = <R, E>(
   params: { readonly organization?: string },
   retainFailure?: (cause: Cause.Cause<E>) => boolean,
 ) => {
+  /**
+   * Public listings come from a remote registry on local and self-host, so no document waits for
+   * them: the server renders the list's loading state and the browser reads it after hydration.
+   */
   const catalog = runtime
     .atom(Effect.flatMap(client, (api) => api.catalog({ params, query: {} })))
-    .pipe(hydrate("catalog", params), revalidated, (source) =>
-      acknowledgedQuery(source, retainFailure),
-    );
+    .pipe(revalidated, browserOnly, (source) => acknowledgedQuery(source, retainFailure));
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
     .pipe(hydrate("published", params), (source) => acknowledgedQuery(source, retainFailure));

@@ -6266,6 +6266,17 @@ export const scenarios = plan({
       local: na("Local uses the same relay; only self-host starts a scenario-owned server."),
     },
   },
+  addAppRegistry: {
+    file: "add-app-registry.spec.ts",
+    title: "Add app renders without waiting for the public registry and reuses a fresh listing",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
+      local: na(
+        "Local uses the same registry client; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",

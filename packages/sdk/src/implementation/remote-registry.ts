@@ -1,5 +1,5 @@
 /** Browser-safe public registry reads shared with server-side discovery. */
-import { Effect, Option, Schema, Stream } from "effect";
+import { Clock, Duration, Effect, Option, Schema, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
@@ -15,6 +15,12 @@ import {
 } from "../contracts/registry.ts";
 
 const maxResponseBytes = 32 * 1024 * 1024;
+
+/**
+ * How long the complete public listing is reused before the registry is read again. Publishing
+ * reaches other executors within this time. A failed read is never kept.
+ */
+const publicListingFreshness = Duration.minutes(5);
 
 /** Read a bounded response body; a stream failure is a network failure. */
 const readBody = (response: HttpClientResponse.HttpClientResponse) =>
@@ -52,7 +58,10 @@ const parseJson = (bytes: Uint8Array): Option.Option<unknown> => {
   }
 };
 
-/** Read the public catalog through its configured HTTPS origin; installation validates the selected revision. */
+/**
+ * Read the public catalog through its configured HTTPS origin; installation validates the selected
+ * revision. The complete listing is reused for {@link publicListingFreshness}.
+ */
 export const remoteRegistry = (origin: string): Registry => {
   const read = <A>(operation: string, path: string, schema: Schema.Decoder<A>) => {
     const url = new URL(path, origin);
@@ -124,15 +133,27 @@ export const remoteRegistry = (origin: string): Registry => {
       }),
     );
   };
+  const list = (name?: string) =>
+    read(
+      "list",
+      `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
+      Schema.Array(Publication),
+    );
+  // Only a settled listing is shared. Concurrent reads of an expired listing each fetch it, so no
+  // request ever waits on another's fetch; a Worker isolate cannot resume one request from another.
+  let kept: { readonly listings: ReadonlyArray<Publication>; readonly until: number } | undefined;
+  const listAll = Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (kept !== undefined && now < kept.until) return kept.listings;
+    const listings = yield* list();
+    kept = { listings, until: now + Duration.toMillis(publicListingFreshness) };
+    return listings;
+  });
   return {
     origin,
     file,
-    list: (name) =>
-      read(
-        "list",
-        `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
-        Schema.Array(Publication),
-      ),
+    // A name selects one listing to install, so it is always read from the registry.
+    list: (name) => (name === undefined ? listAll : list(name)),
     snapshot: (name, commit) =>
       read(
         "snapshot",
