@@ -47,6 +47,9 @@ const App = Schema.Struct({
 });
 const HostedApp = Schema.Struct({ id: Schema.String });
 const SetupStatus = Schema.Struct({ status: Schema.String });
+const Inventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+});
 const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   value: Schema.Json,
@@ -135,12 +138,48 @@ interface Selection {
   readonly query: (name: string, input?: object) => Effect.Effect<unknown, unknown, never>;
 }
 
+/**
+ * Wait until the organization's own setup stops calling app Workers. Once the actors join, member
+ * setup installs the default Executor app with a profile for the owner and one for the admin, and
+ * profile setup then calls that app's Workers in the background. They count against the same limit
+ * as the scenario's Workers and unload whichever of those is idle, so the scenario starts once both
+ * profiles are set up.
+ */
+const organizationSetUp = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  for (const actor of [actors.owner, actors.admin]) {
+    const status = yield* api.request(actor, "GET", `${prefix}/inventory`).pipe(
+      Effect.flatMap((response) => body(Inventory, response)),
+      Effect.flatMap((inventory) => {
+        const app = inventory.apps.find((app) => app.name === "Executor");
+        return app === undefined
+          ? Effect.fail(new Error("The default Executor app is not installed yet"))
+          : api.request(actor, "GET", `${prefix}/apps/${app.id}/profiles`);
+      }),
+      Effect.flatMap((response) => body(Schema.Array(SetupStatus), response)),
+      Effect.flatMap(([profile]) =>
+        profile === undefined || profile.status === "pending"
+          ? Effect.fail(new Error("The default profile has not been set up"))
+          : Effect.succeed(profile.status),
+      ),
+      Effect.retry({
+        schedule: Schedule.spaced("200 millis"),
+        times: 100,
+      }),
+    );
+    expect(status, "the default Executor profile was set up").toBe("ready");
+  }
+});
+
 /** Self-host: apps, accounts and profiles through one organization's routes. */
 const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
     const prefix = `/api/organizations/${actors.organization.id}`;
+    yield* organizationSetUp;
     const selections: Selection[] = [];
     for (let index = 0; index < apps; index++) {
       const name = `Worker budget ${index} ${randomUUID().slice(0, 8)}`;
