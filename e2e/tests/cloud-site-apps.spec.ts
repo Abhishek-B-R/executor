@@ -149,13 +149,18 @@ layer(HostedLive, { excludeTestServices: true })("Cloud site Apps publication", 
           page.getByRole("searchbox", { name: "Search apps" }).fill(slug),
         );
         yield* browser.use("The publication is listed", (page) =>
-          page.getByRole("heading", { name, exact: true }).waitFor(),
+          // A row names the app by its label and its publisher by the organization's slug.
+          page
+            .getByRole("link", { name: new RegExp(`^${slug} by ${actors.organization.slug}\\b`) })
+            .waitFor(),
         );
         yield* browser.checkpoint("Apps directory lists the publication");
 
         // Its page shows the published source, read from the same registry.
         yield* browser.use("Open the publication", (page) =>
-          page.getByRole("heading", { name, exact: true }).click(),
+          page
+            .getByRole("heading", { name: `${slug} by ${actors.organization.slug}`, exact: true })
+            .click(),
         );
         yield* browser.use("The publication page opens", (page) =>
           page.waitForURL(
