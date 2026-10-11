@@ -3,9 +3,9 @@
  * dynamic access to `tools` loads an app when the program first reaches it.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Clock, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
-import { scenarios } from "../test-plan.ts";
+import { lazyStallTimeoutMs, scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App } from "../support/contracts.ts";
@@ -47,6 +47,13 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
 const brokenAppSource = `import { defineApp } from "apps";
 export default defineApp({ accounts: {} }, async () => {
   throw new Error("Synthetic evaluation failure");
+});`;
+
+// This app's listing never finishes within a scenario, so a program that reaches it waits on it.
+const stalledAppSource = `import { defineApp, query, object, router } from "apps";
+export default defineApp({ accounts: {} }, async () => {
+  await new Promise((resolve) => setTimeout(resolve, 120_000));
+  return { tools: router({ echo: query({ input: object({}), description: "Never listed" }, async () => "late") }) };
 });`;
 
 const Completed = Schema.Struct({
@@ -297,5 +304,49 @@ return await tools[name].echo({ text: "x" });`,
         expect(touched(dynamicBroken)).toBe(true);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
+  );
+
+  it.effect(
+    scenarios.mcpDynamicToolsStallTimesOut.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const { apps, execute } = yield* setup("Dynamic stall", [
+            { name: "Lazy stalled", source: stalledAppSource },
+          ]);
+          const stalled = apps[0]!;
+
+          // A program that only waits ends at the execution's budget.
+          const waited = yield* execute("Program that outlives its budget", `while (true) {}`);
+          expect(waited.execution).toMatchObject({ ok: false, error: { kind: "TimeoutExceeded" } });
+
+          // The program reaches the app only once it runs, so discovery waits for nothing and the
+          // load runs until the execution's own deadline, past discovery's 10 s wait.
+          const began = yield* Clock.currentTimeMillis;
+          const reached = yield* execute(
+            "Computed call into a stalled app",
+            `const name = [${JSON.stringify(stalled.slug)}][0];
+return await tools[name].echo({});`,
+          );
+          expect((yield* Clock.currentTimeMillis) - began).toBeGreaterThanOrEqual(
+            lazyStallTimeoutMs - 1_000,
+          );
+          expect(reached.execution).toMatchObject({
+            ok: false,
+            error: {
+              kind: "TimeoutExceeded",
+              message: `Execution timed out after ${lazyStallTimeoutMs}ms; earlier tool calls may have completed.`,
+            },
+          });
+          expect(reached.spans("mcp.catalog")[0]).toMatchObject({
+            "executor.discovery.reach_reason": "dynamic",
+          });
+          expect(reached.spans("mcp.execute")[0]).toMatchObject({
+            "executor.timeout.phase": "program",
+          });
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 120_000 },
   );
 });

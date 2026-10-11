@@ -538,29 +538,24 @@ export const makeListings = (options: {
           "executor.search.rows",
           kept === undefined ? "missing" : kept.superseded !== null ? "removed" : "stale",
         );
-        // A cold fill evaluates through the shared gate and keeps no decoded listing: rows are
-        // what later searches read. Readers of the same listing share one evaluation, which the
-        // load bound stops like any other once nobody waits for it.
-        const gated: Evaluate =
-          kept === undefined
-            ? (context) =>
-                Effect.gen(function* () {
-                  const queued = yield* Clock.currentTimeMillis;
-                  return yield* searchFillGate.withPermits(1)(
-                    Effect.gen(function* () {
-                      yield* Effect.annotateCurrentSpan({
-                        "executor.search.fill.wait_ms": (yield* Clock.currentTimeMillis) - queued,
-                        "executor.search.fill.limit": searchFillLimit,
-                      });
-                      return yield* evaluate(context);
-                    }),
-                  );
-                }).pipe(Effect.withSpan("sdk.tools.searchable.cold-fill"))
-            : evaluate;
-        const found = yield* readAt(state, gated, {
-          ...read,
-          ...(kept === undefined ? { retain: false } : {}),
-        });
+        // Rows missing, stale or removed are filled from an evaluation through the shared gate,
+        // which keeps no decoded listing: rows are what later searches read. Readers of the same
+        // listing share one evaluation, which the load bound stops like any other once nobody
+        // waits for it.
+        const gated: Evaluate = (context) =>
+          Effect.gen(function* () {
+            const queued = yield* Clock.currentTimeMillis;
+            return yield* searchFillGate.withPermits(1)(
+              Effect.gen(function* () {
+                yield* Effect.annotateCurrentSpan({
+                  "executor.search.fill.wait_ms": (yield* Clock.currentTimeMillis) - queued,
+                  "executor.search.fill.limit": searchFillLimit,
+                });
+                return yield* evaluate(context);
+              }),
+            );
+          }).pipe(Effect.withSpan("sdk.tools.searchable.cold-fill"));
+        const found = yield* readAt(state, gated, { ...read, retain: false });
         yield* search
           .write(state, listing, found.listing, found.at)
           .pipe(

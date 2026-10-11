@@ -11,16 +11,24 @@ import {
   makeHostedMcp,
   mcpSessionKey,
 } from "@executor-js/hosted-server";
+import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
 import { PgliteClient } from "@effect/sql-pglite";
-import { Effect, RcMap } from "effect";
+import { Config, Effect, RcMap, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 
 /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
+  // Decoded as McpLimits, so a budget that is not a positive integer stops startup.
+  const limits = yield* Schema.decodeUnknownEffect(McpLimits)({
+    ...defaultMcpLimits,
+    timeoutMs: yield* Config.Number("EXECUTOR_MCP_TIMEOUT_MS").pipe(
+      Config.withDefault(defaultMcpLimits.timeoutMs),
+    ),
+  });
   const sessions = yield* RcMap.make({
     // Each session keeps what its callers' last tool calls read (CallStateCache).
     lookup: (_key: string) =>
-      Effect.map(makeHostedMcp(), (handler) => ({
+      Effect.map(makeHostedMcp(undefined, limits), (handler) => ({
         ...handler,
         calls: new Map<string, CallState>(),
       })),

@@ -64,6 +64,11 @@ const cloudOnboarding = {
 
 /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
 export const appWorkerBudgetLimit = 2;
+/**
+ * The execute budget of the lazy stall scenario: longer than execute's 10 s discovery wait, so a
+ * stalled app reached during the program is told apart from one discovery gave up on.
+ */
+export const lazyStallTimeoutMs = 15_000;
 /** Seconds an idle app Worker stays loaded in the idle unloading scenario. */
 export const appWorkerIdleSeconds = 4;
 /** A relay callback in a valid form other than its serialization, which the SDK sends. */
@@ -708,6 +713,18 @@ export const scenarios = plan({
     file: "mcp-execute-lazy.spec.ts",
     title:
       "MCP execute loads an app a program reaches through dynamic access to tools when it first uses it, and lists apps without loading them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared execute path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpDynamicToolsStallTimesOut: {
+    fixtures: "actors",
+    file: "mcp-execute-lazy.spec.ts",
+    title:
+      "MCP execute reports a program reaching a stalled app through dynamic access to tools as timed out at its own deadline, not as a failed app",
+    serverEnvironment: { EXECUTOR_MCP_TIMEOUT_MS: String(lazyStallTimeoutMs) },
     targets: {
       "self-host": scheduled,
       cloud: na("Shared execute path; covered on self-host"),
