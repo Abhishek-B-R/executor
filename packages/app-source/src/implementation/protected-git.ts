@@ -117,11 +117,12 @@ const flush = new TextEncoder().encode("0000");
 /**
  * Refuse a push the way Git reports it: every ref is rejected with its reason, so the client
  * prints `! [remote rejected] main -> main (reason)` and the message on a `remote:` line.
- * Nothing was forwarded, so no ref moved.
  */
 const refusePush = (
   commands: ReadonlyArray<PushCommand>,
   capabilities: ReadonlyArray<string>,
+  reason: (update: PushCommand) => string,
+  message: string,
 ): Response | undefined => {
   // report-status-v2 reports a refused ref with the same `ng` line.
   if (!capabilities.includes("report-status") && !capabilities.includes("report-status-v2"))
@@ -129,15 +130,9 @@ const refusePush = (
   const encode = (text: string) => new TextEncoder().encode(text);
   const report = concat([
     packet(encode("unpack ok\n")),
-    ...commands.map((update) =>
-      packet(
-        encode(`ng ${update.ref} ${refusal(update) ?? "another ref in this push is protected"}\n`),
-      ),
-    ),
+    ...commands.map((update) => packet(encode(`ng ${update.ref} ${reason(update)}\n`))),
     flush,
   ]);
-  const message =
-    "Executor refused this push. Branches named __executor/... hold retained deployments, and main cannot be deleted. No ref was changed.\n";
   const band = capabilities.includes("side-band-64k")
     ? 65515
     : capabilities.includes("side-band")
@@ -146,7 +141,7 @@ const refusePush = (
   const parts: Uint8Array[] = [];
   if (band === undefined) parts.push(report);
   else {
-    parts.push(packet(concat([Uint8Array.of(2), encode(message)])));
+    parts.push(packet(concat([Uint8Array.of(2), encode(`${message}\n`)])));
     for (let offset = 0; offset < report.length; offset += band)
       parts.push(packet(concat([Uint8Array.of(1), report.subarray(offset, offset + band)])));
     parts.push(flush);
@@ -213,7 +208,13 @@ export const protectGit = (backend: RepositoryBackend): RepositoryBackend => ({
         }
       } else if (parsed.commands.some((update) => refusal(update) !== undefined)) {
         yield* release;
-        const refused = refusePush(parsed.commands, parsed.capabilities);
+        // Nothing was forwarded, so no ref moved.
+        const refused = refusePush(
+          parsed.commands,
+          parsed.capabilities,
+          (update) => refusal(update) ?? "another ref in this push is protected",
+          "Executor refused this push. Branches named __executor/... hold retained deployments, and main cannot be deleted. No ref was changed.",
+        );
         if (refused === undefined) return yield* new SourceError({ reason: "protected" });
         return refused;
       }
@@ -234,6 +235,24 @@ export const protectGit = (backend: RepositoryBackend): RepositoryBackend => ({
         body,
         duplex: "half",
       };
-      return yield* backend.request(id, new Request(request.url, init));
+      const forwarded = backend.request(id, new Request(request.url, init));
+      if (parsed.commands.length === 0) return yield* forwarded;
+      // The backend failed before the repository answered, for example when it refused the
+      // repository token after the pack had started streaming. Git reports a failed request only
+      // as an HTTP status; a report names the refs and tells the person to push again.
+      return yield* forwarded.pipe(
+        Effect.catchIf(
+          (error) => error.reason === "git",
+          (error) =>
+            Effect.fromNullishOr(
+              refusePush(
+                parsed.commands,
+                parsed.capabilities,
+                () => "Executor could not reach the repository; push again",
+                "Executor could not reach the app's repository, so this push may not have been saved. Push again.",
+              ),
+            ).pipe(Effect.mapError(() => error)),
+        ),
+      );
     }),
 });

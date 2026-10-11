@@ -226,6 +226,13 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
     }),
   ).pipe(Effect.catchTag("PlatformError", authError));
 
+/**
+ * A session is refreshed this long before its access token expires, so a token handed out has at
+ * least this long left. The Git helper reports the same point as the token's expiry, so a copy
+ * another credential helper keeps is dropped when this one would refresh it.
+ */
+export const sessionRefreshMarginMs = 60_000;
+
 /** Read and refresh one explicitly selected organization grant. The credential store owns refresh-token custody. */
 export const registrySession = (host: string) =>
   withSessionLock(
@@ -237,7 +244,7 @@ export const registrySession = (host: string) =>
       const saved = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Session))(raw).pipe(
         Effect.mapError(authError),
       );
-      if (saved.expiresAt > Date.now() + 60000) return Redacted.make(saved);
+      if (saved.expiresAt > Date.now() + sessionRefreshMarginMs) return Redacted.make(saved);
       const endpoints = yield* discover(host);
       const fresh = yield* request(
         endpoints.token,

@@ -100,6 +100,12 @@ const failure = (cause?: unknown) => {
   }
   return error;
 };
+/** Artifacts refused the repository token; the failure records it, and Git never sees it. */
+const rejectedToken = (status: number) => {
+  const error = new SourceError({ reason: "git" });
+  failures.set(error, { type: "RejectedToken", status });
+  return error;
+};
 const observeFailure = (error: SourceError) =>
   Effect.gen(function* () {
     const details = failures.get(error);
@@ -149,8 +155,10 @@ export const cloudflareRepositories = (
     });
   // Artifacts rejects invalid/expired/revoked credentials with this exact 403 body.
   // Other denials and provider failures retain their original semantics and push reconciliation.
-  // A streamed body cannot be sent twice: a rejected one refreshes the token for the next
-  // request and fails as retryable instead of resending.
+  // A rejected token is replaced once per access. A streamed body cannot be sent twice, so its
+  // request fails as retryable after the refresh; the next request uses the new token. A rejection
+  // is never passed on: Git reports a 401 as the caller's own sign-in failing, and this token is
+  // the host's, not the caller's.
   const authenticatedRequest = (
     value: RepositoryAccess,
     http: HttpClient.HttpClient,
@@ -174,8 +182,8 @@ export const cloudflareRepositories = (
             );
           return { response, scope };
         });
-        let { response, scope } = yield* send;
-        if (!refreshed) {
+        for (;;) {
+          const { response, scope } = yield* send;
           const denial =
             response.status === 403
               ? new Uint8Array(yield* response.arrayBuffer.pipe(Effect.mapError(failure)))
@@ -185,32 +193,34 @@ export const cloudflareRepositories = (
             (denial !== undefined &&
               new TextDecoder().decode(denial) === "Invalid or expired token");
           if (rejected) {
-            refreshed = true;
             yield* Scope.close(scope, Exit.void);
+            if (refreshed) return yield* rejectedToken(response.status);
+            refreshed = true;
             token = yield* value.refresh.pipe(
               Effect.withSpan("source.repository.token.refresh", {
                 attributes: { "source.token.rejected_status": response.status },
               }),
             );
-            if (body === "streamed") return yield* new SourceError({ reason: "git" });
-            ({ response, scope } = yield* send);
-          } else if (denial !== undefined) {
+            if (body === "streamed") return yield* rejectedToken(response.status);
+            continue;
+          }
+          if (denial !== undefined) {
             // Inspection consumed the body; preserve every byte of an unrelated denial.
             yield* Scope.close(scope, Exit.void);
             return { response, body: Stream.succeed(denial) };
           }
-        }
-        return {
-          response,
-          body: response.stream.pipe(
-            Stream.catch((error) =>
-              error.reason instanceof HttpClientError.EmptyBodyError
-                ? Stream.empty
-                : Stream.fail(failure(error)),
+          return {
+            response,
+            body: response.stream.pipe(
+              Stream.catch((error) =>
+                error.reason instanceof HttpClientError.EmptyBodyError
+                  ? Stream.empty
+                  : Stream.fail(failure(error)),
+              ),
+              Stream.onExit((exit) => Scope.close(scope, exit)),
             ),
-            Stream.onExit((exit) => Scope.close(scope, exit)),
-          ),
-        };
+          };
+        }
       });
   };
   const client = (
@@ -708,6 +718,6 @@ export const cloudflareRepositories = (
             ).pipe(Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))));
           }),
         );
-      }).pipe(Effect.provide(FetchHttpClient.layer)),
+      }).pipe(Effect.provide(FetchHttpClient.layer), Effect.tapError(observeFailure)),
   });
 };

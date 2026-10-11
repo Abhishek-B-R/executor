@@ -188,6 +188,17 @@ export const scenarios = plan({
       local: na("Local signs the CLI in with an API key, not a saved session."),
     },
   },
+  appGitKeptCredentials: {
+    fixtures: "actors",
+    file: "app-git-remotes.spec.ts",
+    title:
+      "Git does not send a copy of the CLI's token that another credential helper kept past the point where the CLI refreshes it, and gets a refreshed one instead",
+    targets: {
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": scheduled,
+      local: na("Local signs the CLI in with an API key, not a saved session."),
+    },
+  },
   deviceLoginCli: {
     fixtures: "actors",
     file: "device-login.spec.ts",

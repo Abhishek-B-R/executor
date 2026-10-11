@@ -79,7 +79,7 @@ export class AppGitAccess extends Context.Service<
     readonly authenticate: (
       request: HttpServerRequest.HttpServerRequest,
       scope: string,
-    ) => Effect.Effect<Context.Service.Shape<typeof AppIdentity>, AppAccessDenied>;
+    ) => Effect.Effect<Context.Service.Shape<typeof AppIdentity>, AppAccessDenied | StorageError>;
   }
 >()("apps/GitAccess") {}
 

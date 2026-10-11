@@ -135,11 +135,18 @@ between, the commit is rejected. Read the source again and reconcile before
 retrying. A commit alone does not change the running app.
 
 On hosted Executor you can also use Git. `executor apps git --app <app-id>`
-prints the clone URL. Configure the credential helper for the clone:
+prints the clone URL. Clone with the credential helper configured in the clone, so later
+pushes and fetches use it too:
 
 ```sh
-git -c credential.helper='!executor apps credential' -c credential.useHttpPath=true clone <url>
+git clone -c credential.helper= -c credential.helper='!executor apps credential' \
+  -c credential.useHttpPath=true <url>
 ```
+
+The empty `credential.helper` stops other helpers, such as the macOS keychain, from keeping
+copies of the helper's short-lived tokens. In a clone made without it, run
+`git config credential.helper ''` and then
+`git config --add credential.helper '!executor apps credential'`.
 
 Pushes save source but do not deploy it. Deploy the pushed commit with
 `executor apps deploy --app <app-id> --commit "$(git rev-parse HEAD)"`.

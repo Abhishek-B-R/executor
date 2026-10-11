@@ -6,7 +6,7 @@
  * (`v2.executor.sh`) keep working. Self-host serves all of these on its one origin.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Duration, Effect, Schema } from "effect";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -226,5 +226,103 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
     // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP,
     // including a 42 MiB push.
     { timeout: 240_000 },
+  );
+
+  // Git sends a stored credential from every helper before asking the next one, and stores what
+  // the CLI's helper returns in all of them, as Git's default macOS configuration does with the
+  // keychain. A copy kept past the access token's expiry is refused as a failed sign-in.
+  it.effect(
+    scenarios.appGitKeptCredentials.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const hosts = targetHosts(yield* Target);
+          const api = yield* Api,
+            actors = yield* Actors;
+          const tools = yield* appsCli;
+          const login = yield* tools.login(hosts.api);
+          expect(login.finished.code, login.finished.stderr).toBe(0);
+          const prefix = `/api/organizations/${actors.organization.id}/apps`;
+          const created = yield* api.request(actors.owner, "POST", prefix, {
+            name: `Kept credential ${randomUUID().slice(0, 8)}`,
+            files: [{ path: "index.ts", content: 'export default "kept";' }],
+          });
+          expect(created.status).toBe(200);
+          const app = yield* body(App, created);
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+          );
+          const remote = `${hosts.edge}/git/${actors.organization.id}/${app.slug}.git`;
+
+          // A helper that keeps whatever Git stores, every attribute included, as the keychain
+          // does. Repository configuration comes before the CLI's helper, as system configuration
+          // does for a user's own.
+          const kept = tools.path.join(tools.home, "..", "kept-credential");
+          const keeper = tools.path.join(tools.home, "..", "keeping-helper");
+          yield* tools.fs.writeFileString(
+            keeper,
+            [
+              "#!/bin/sh",
+              'case "$1" in',
+              `  get) [ -f '${kept}' ] && grep -E '^(username|password|password_expiry_utc)=' '${kept}' ;;`,
+              `  store) cat > '${kept}' ;;`,
+              `  erase) rm -f '${kept}' ;;`,
+              "esac",
+              "exit 0",
+              "",
+            ].join("\n"),
+            { mode: 0o755 },
+          );
+          expect((yield* tools.git(["init", "--quiet"])).code).toBe(0);
+          expect((yield* tools.git(["config", "credential.helper", keeper])).code).toBe(0);
+
+          // The CLI's saved session nears the point where it refreshes: twenty seconds remain
+          // before its last minute.
+          const store = tools.path.join(tools.home, "..", "store.json");
+          const sessionKey = `Executor Registry\n${hosts.api}`;
+          const Store = Schema.Record(Schema.String, Schema.String);
+          const Session = Schema.Struct({ accessToken: Schema.String, expiresAt: Schema.Number });
+          const readStore = Effect.flatMap(
+            tools.fs.readFileString(store),
+            Schema.decodeUnknownEffect(Schema.fromJsonString(Store)),
+          );
+          const session = Effect.flatMap(readStore, (entries) =>
+            Schema.decodeUnknownEffect(Schema.fromJsonString(Session))(entries[sessionKey]),
+          );
+          const entries = yield* readStore;
+          const saved = JSON.parse(entries[sessionKey] ?? "{}");
+          yield* tools.fs.writeFileString(
+            store,
+            JSON.stringify({
+              ...entries,
+              [sessionKey]: JSON.stringify({ ...saved, expiresAt: Date.now() + 80_000 }),
+            }),
+          );
+          const before = yield* session;
+
+          const first = yield* tools.git(["ls-remote", remote]);
+          expect(first.code, first.stderr).toBe(0);
+          // The keeping helper now holds the CLI's token. Compared as booleans so a failure never
+          // prints a token.
+          const keeps = (token: string) =>
+            Effect.map(tools.fs.readFileString(kept), (text) =>
+              text.split("\n").includes(`password=${token}`),
+            );
+          expect(yield* keeps(before.accessToken), "the kept copy is the CLI's token").toBe(true);
+
+          // Past the CLI's refresh point Git must not send the kept copy, which the host would
+          // refuse once the token expires; the CLI's helper refreshes the session instead.
+          yield* Effect.sleep(Duration.millis(before.expiresAt - 60_000 + 2000 - Date.now()));
+          const second = yield* tools.git(["ls-remote", remote]);
+          expect(second.code, second.stderr).toBe(0);
+          const after = yield* session;
+          expect(after.accessToken === before.accessToken, "the session was refreshed").toBe(false);
+          expect(after.expiresAt).toBeGreaterThan(before.expiresAt);
+          expect(yield* keeps(after.accessToken), "Git kept the refreshed token").toBe(true);
+        }),
+      ),
+    // Signs in, waits about twenty seconds for the CLI's refresh point, and runs Git twice.
+    { timeout: 120_000 },
   );
 });

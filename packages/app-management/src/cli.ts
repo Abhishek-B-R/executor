@@ -74,6 +74,7 @@ import {
   gitSession,
   registryLogin,
   registrySession,
+  sessionRefreshMarginMs,
 } from "./implementation/node-auth.ts";
 
 /** Skill lookups report the host's failure tag or the missing option; never a response body. */
@@ -845,7 +846,7 @@ export const appsCommand = (platform: string) =>
         Command.withExamples([
           {
             command:
-              "git -c credential.helper='!executor apps credential' -c credential.useHttpPath=true clone \"$(executor apps git --app <app-id>)\"",
+              "git clone -c credential.helper= -c credential.helper='!executor apps credential' -c credential.useHttpPath=true \"$(executor apps git --app <app-id>)\"",
             description: "Clone the app's source; pushes save source but do not deploy it",
           },
         ]),
@@ -1075,7 +1076,9 @@ export const appsCommand = (platform: string) =>
           ),
         ),
       }).pipe(
-        Command.withDescription("Git credential helper; set credential.useHttpPath=true"),
+        Command.withDescription(
+          "Git credential helper; set credential.useHttpPath=true, after an empty credential.helper so other helpers do not keep its short-lived tokens",
+        ),
         Command.withHandler(({ action }) =>
           Effect.gen(function* () {
             if (action !== "get") return;
@@ -1091,9 +1094,14 @@ export const appsCommand = (platform: string) =>
             if (!Schema.is(RegistryOrigin)(origin)) return;
             const session = Redacted.value(yield* gitSession(origin));
             if (!fields.get("path")?.startsWith(`git/${session.organization}/`)) return;
-            yield* Stream.succeed(`username=executor\npassword=${session.accessToken}\n\n`).pipe(
-              Stream.run(stdio.stdout()),
-            );
+            // Git stores what a helper returns with every other helper it has, such as macOS's
+            // keychain, and asks them first next time. With the expiry, Git (2.41 and later)
+            // drops a kept copy when this helper would refresh it, instead of sending an expired
+            // token that the host refuses as a failed sign-in.
+            const expiry = Math.floor((session.expiresAt - sessionRefreshMarginMs) / 1000);
+            yield* Stream.succeed(
+              `username=executor\npassword=${session.accessToken}\npassword_expiry_utc=${expiry}\n\n`,
+            ).pipe(Stream.run(stdio.stdout()));
           }),
         ),
       ),

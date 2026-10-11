@@ -137,8 +137,15 @@ export const hostedAppGitAccess = Layer.effect(
             protectedApps: [],
           };
         }).pipe(
+          // Git reports a 401 as a failed sign-in, so only a credential the host refused is one.
+          // A session check that could not run is retryable and leaves the credential in place.
+          Effect.catchTags({
+            Unauthorized: () => Effect.fail(new AppAccessDenied({ reason: "authentication" })),
+            OrganizationForbidden: () => Effect.fail(new AppAccessDenied({ reason: "forbidden" })),
+            AuthenticationUnavailable: () => Effect.fail(new StorageError()),
+          }),
           Effect.mapError((error) =>
-            Schema.is(AppAccessDenied)(error)
+            Schema.is(AppAccessDenied)(error) || Schema.is(StorageError)(error)
               ? error
               : new AppAccessDenied({ reason: "authentication" }),
           ),
