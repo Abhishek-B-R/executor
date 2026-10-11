@@ -488,12 +488,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
           );
 
           yield* evidence.step(
-            "A session its object no longer holds is not found, and the client starts a new one",
+            "A signed id for a session the object never opened is not found, and the client starts a new one",
             Effect.gen(function* () {
-              // An evicted object keeps no sessions: it answers ids it signed before as unknown.
-              // Local workerd keeps an idle session object alive, so this signs an id for a session
-              // the object never held, which reaches the same answer. A deployed stage checks a
-              // real eviction (findings F-035).
+              // The gateway accepts the id's signature and routes it; the object has no such session
+              // in memory or in its storage. Sessions that outlive an eviction are covered by
+              // cloud-mcp-session-restore.spec.ts.
               const forgotten = randomUUID();
               const lost = `${victim.objectId}.${mac(yield* currentKey, victim.objectId, forgotten)}.${forgotten}`;
               const answer = yield* listTools(owner.key, lost);

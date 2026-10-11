@@ -126,10 +126,12 @@ const requestBackend: McpBackend<RequestError> = {
 export const makeHostedMcp = (
   beforeExecute?: McpOptions["beforeExecute"],
   limits: McpOptions["limits"] = defaultMcpLimits,
+  sessions?: McpOptions["sessions"],
 ) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
+    ...(sessions === undefined ? {} : { sessions }),
     caller: requestCaller,
     instructions: executorIntro,
     limits,

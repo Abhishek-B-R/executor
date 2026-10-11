@@ -1,9 +1,10 @@
 /** Compose the public MCP surface from its area contracts. */
 import type { Effect } from "effect";
-import { Toolkit } from "effect/ai";
+import { type McpServer, Toolkit } from "effect/ai";
 import type { BrowserDelivery } from "./browser.ts";
 import { BrowserExecuteTool, BrowserResumeTool } from "./browser-tools.ts";
 import type { McpBackend } from "./backend.ts";
+import type { ElicitationMode } from "./elicitation.ts";
 import {
   ExecuteTool,
   NativeExecuteTool,
@@ -38,4 +39,10 @@ export interface McpOptions {
    * own skills; any other app's skill names are customer data and stay out of telemetry.
    */
   readonly annotateSkillRead: (document: typeof SkillDocument.Type) => Effect.Effect<void>;
+  /**
+   * Keeps each mode's protocol sessions beyond the host's memory, so a client continues its
+   * session after the host restarts. A session belongs to the mode it was opened in. Without
+   * one, a restart forgets every session and clients initialize again.
+   */
+  readonly sessions?: (mode: ElicitationMode) => McpServer.SessionStore;
 }

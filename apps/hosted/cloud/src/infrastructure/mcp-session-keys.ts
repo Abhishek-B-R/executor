@@ -3,10 +3,11 @@
  * once per stage and binds it into the API Worker, which verifies, and the MCP server Worker, whose
  * session objects sign. Nothing else receives them.
  *
- * Changing a key's binding deploys a new MCP server Worker version, which restarts the session
- * objects; their protocol sessions live in memory, so no id outlives the keys that were bound when
- * it was issued. `previous` matters only while the API Worker and the MCP server Worker, which
- * deploy separately, run different key lists during one deploy. Rotation takes three deploys:
+ * Session objects keep their protocol sessions in storage, so an id outlives deploys. The gateway
+ * accepts an id only while the key that signed it is `current` or `previous`: after a rotation
+ * retires that key, the id is refused (404) and the client initializes again, which issues an id
+ * signed by a current key. `previous` covers the deploy skew between the API Worker and the MCP
+ * server Worker, which deploy separately, and ids issued before the swap. Rotation takes three deploys:
  * 1. Give `previous` a new logical id. Alchemy mints a fresh key that only verifies.
  * 2. Swap the two ids: the fresh key signs, the old one still verifies through the deploy's skew.
  * 3. Give `previous` another new id, which retires the old key everywhere.

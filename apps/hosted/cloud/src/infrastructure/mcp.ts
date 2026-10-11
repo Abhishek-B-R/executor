@@ -26,8 +26,9 @@ import { McpServer } from "./mcp-server-worker.ts";
 
 /**
  * The gateway selects one private object per authenticated user/client/organization. The MCP
- * server Worker hosts them, so a wake never starts the API Worker. Objects keep no storage: an
- * MCP session lives in the object's memory until it is evicted.
+ * server Worker hosts them, so a wake never starts the API Worker. An object keeps its MCP
+ * sessions' negotiated protocol state in its storage (`mcp-session-store.ts`), so a session
+ * continues after the object is evicted or redeployed; programs and connections live in memory.
  */
 export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionObject>()(
   "McpSession",

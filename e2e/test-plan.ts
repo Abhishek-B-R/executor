@@ -1861,6 +1861,19 @@ export const scenarios = plan({
       local: na("Local serves MCP sessions in its server process, with no gateway hop."),
     },
   },
+  cloudMcpSessionRestore: {
+    fixtures: "actors",
+    file: "cloud-mcp-session-restore.spec.ts",
+    title:
+      "Cloud MCP sessions continue after their session object is evicted, restored from its storage only for a bearer that names the object",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves MCP sessions in its server process, with no session object.",
+      ),
+      local: na("Local serves MCP sessions in its server process, with no session object."),
+    },
+  },
   cloudMcpStreamLifetime: {
     fixtures: "actors",
     file: "cloud-mcp-stream-lifetime.spec.ts",

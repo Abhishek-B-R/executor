@@ -275,6 +275,7 @@ export const makeMcp = (options: McpOptions) =>
               instructions: options.instructions,
               path: "/mcp",
               protocols: served,
+              sessions: options.sessions?.(mode),
             }),
           ),
           HttpRouter.toHttpEffect,

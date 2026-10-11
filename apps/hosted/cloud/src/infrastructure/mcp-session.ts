@@ -34,6 +34,7 @@ import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import type { cloudServingProduct } from "./serving-product.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+import { mcpSessionStore } from "./mcp-session-store.ts";
 
 /**
  * The isolate's executor and MCP identity, built once and shared by every session object in
@@ -74,7 +75,10 @@ export const makeMcpSession = Effect.fn(function* ({
     });
     // What each caller's last tool call read, by app and profile (CallStateCache).
     const callState = new Map<string, CallState>();
-    const handler = yield* makeHostedMcp().pipe(Effect.provide(HttpServer.layerServices));
+    // Protocol sessions are kept in the object's storage, so they outlive its eviction.
+    const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
+      Effect.provide(HttpServer.layerServices),
+    );
     const objectId = state.id.toString();
     /**
      * A request may reach this object by a session id alone, so before any work it must carry a
