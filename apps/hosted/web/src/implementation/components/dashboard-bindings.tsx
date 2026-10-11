@@ -17,12 +17,12 @@ import { Alert } from "@executor-js/ui/components/alert";
 import { Button } from "@executor-js/ui/components/button";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
-import { catalogIconsAtom } from "../../contracts/api.ts";
+import { catalogAtom } from "../../contracts/api.ts";
 import { useOrganizationRoute } from "./organization.tsx";
 import { appError } from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 
-const iconDomains = catalogIconDomainsAtom(catalogIconsAtom);
+const iconDomains = catalogIconDomainsAtom(catalogAtom);
 /** Organization-aware atoms stay inside the hosted product. */
 export function useDashboardAtoms() {
   return dashboardAtoms(useOrganizationRoute().organization);

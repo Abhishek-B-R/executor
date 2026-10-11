@@ -24,15 +24,11 @@ export class HostedClient extends AtomHttpApi.Service<HostedClient>()("HostedCli
 
 /** Catalog metadata for the signed-in dashboard; no credential or installation reads. */
 /**
- * The full catalog is large and only the add-app page lists it, so the browser loads it there,
- * after the page is interactive, instead of the server embedding it in every document.
+ * The full catalog is large and only decorates icons and the add-app page, so the browser loads
+ * it after the page is interactive instead of the server embedding it in every document.
  */
 export const catalogAtom = browserOnly(
   HostedClient.query("catalog", "list", {}).pipe(Atom.setIdleTTL("30 minutes")),
-);
-/** Logo domains for app and account names: a small projection, so icons never load the catalog. */
-export const catalogIconsAtom = browserOnly(
-  HostedClient.query("catalog", "icons", {}).pipe(Atom.setIdleTTL("30 minutes")),
 );
 /** Show whether this dashboard can reach its own hosted API. */
 export const healthAtom = HostedClient.query("health", "get", hydrated({}));

@@ -11,7 +11,6 @@
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "effect": "4.0.1",
-    "tldts": "^7.4.13"
+    "effect": "4.0.1"
   }
 }

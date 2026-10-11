@@ -103,54 +103,14 @@ export interface CatalogHost {
   readonly feedUrl?: string | undefined;
 }
 
-/**
- * The registrable domain for each lower-cased catalog name that names exactly one domain, as
- * `[name, domain]` pairs. Dashboards read this to decorate apps and accounts with logos, instead
- * of downloading the whole catalog; ambiguous names are left out rather than guessed.
- */
-export const CatalogIcons = Schema.Array(Schema.Tuple([Schema.String, Schema.String]));
-export type CatalogIcons = typeof CatalogIcons.Type;
-
-/**
- * How long a process keeps the published catalog. A read within `freshMillis` of the last fetch
- * uses the kept copy. A later read still answers from it, until `maxStaleMillis`, while one refresh
- * runs beside it; a failed refresh is retried after `retryMillis`. Past `maxStaleMillis` a read
- * waits for the feed. A fetch that has not settled after `loadMillis` no longer holds back others.
- */
-export const catalogFreshness = {
-  freshMillis: 10 * 60 * 1000,
-  maxStaleMillis: 24 * 60 * 60 * 1000,
-  retryMillis: 60 * 1000,
-  loadMillis: 45 * 1000,
-} as const;
-
 /** Published metadata, replaceable without changing the import workflow. */
 export interface CatalogSource {
   readonly list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable>;
 }
 
-/**
- * Runs a catalog refresh beside the request that noticed the kept copy was stale, within the
- * host's lifetime for background work. Returns false when the host refuses the work.
- */
-export type CatalogBackground = (work: Effect.Effect<void>) => Effect.Effect<boolean>;
-
-/** One process's copy of a catalog source, shared by every request the process serves. */
-export interface KeptCatalog {
-  readonly read: (
-    background: CatalogBackground | undefined,
-  ) => Effect.Effect<KeptCatalogSnapshot, CatalogUnavailable>;
-}
-export interface KeptCatalogSnapshot {
-  readonly entries: readonly CatalogEntry[];
-  readonly icons: CatalogIcons;
-}
-
 /** Read a catalog and prepare source. The caller owns access checks and installation. */
 export interface Catalog {
   readonly list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable>;
-  /** Logo domains by catalog name; a small projection of `list`. */
-  readonly icons: Effect.Effect<CatalogIcons, CatalogUnavailable>;
   readonly prepare: (
     input: CatalogImport,
   ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;

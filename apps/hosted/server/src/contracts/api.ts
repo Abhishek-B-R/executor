@@ -5,7 +5,7 @@ import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
 /** Common hosted contracts. Product reads require a hosted session. */
-import { CatalogEntry, CatalogIcons, CatalogUnavailable } from "@executor-js/catalog/contracts";
+import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
 import { HostedMcpConnections } from "./mcp-connections.ts";
@@ -209,12 +209,6 @@ export const HostedApi = HttpApi.make("executor-hosted")
       .add(
         HttpApiEndpoint.get("list", "/api/catalog", {
           success: Schema.Array(CatalogEntry),
-          error: CatalogUnavailable,
-        }),
-      )
-      .add(
-        HttpApiEndpoint.get("icons", "/api/catalog/icons", {
-          success: CatalogIcons,
           error: CatalogUnavailable,
         }),
       )

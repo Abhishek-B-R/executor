@@ -3,10 +3,10 @@ import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type { AppLinkProps, AccountLinkProps } from "@executor-js/ui/contracts/dashboard";
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { catalogIconsAtom } from "../contracts/onboarding.ts";
+import { dashboardAtoms } from "../contracts/dashboard-bindings.ts";
 import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
 
-const iconDomains = catalogIconDomainsAtom(catalogIconsAtom);
+const iconDomains = catalogIconDomainsAtom(dashboardAtoms.catalog);
 
 const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
   const location = useRouterState({ select: (state) => state.location });

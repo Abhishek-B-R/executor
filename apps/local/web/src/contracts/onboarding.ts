@@ -10,12 +10,10 @@ import { selectedIds } from "@executor-js/ui/contracts/dashboard";
 
 /** Catalog metadata is loaded independently of installed apps. */
 /**
- * The full catalog is large and only the add-app page lists it, so the browser loads it there,
- * after the page is interactive, instead of the server embedding it in every document.
+ * The full catalog is large and only decorates icons and the add-app page, so the browser loads
+ * it after the page is interactive instead of the server embedding it in every document.
  */
 export const catalogAtom = browserOnly(DashboardClient.query("dashboard", "catalog", {}));
-/** Logo domains for app and account names: a small projection, so icons never load the catalog. */
-export const catalogIconsAtom = browserOnly(DashboardClient.query("dashboard", "catalogIcons", {}));
 /** Generate ordinary app source from a user-supplied endpoint or API definition. */
 export const importCustomAppAtom = DashboardClient.mutation("dashboard", "importCustomApp");
 /** Delete one configured copy without deleting its reusable accounts or other apps. */

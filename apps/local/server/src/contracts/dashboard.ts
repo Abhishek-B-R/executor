@@ -86,7 +86,6 @@ import {
 } from "@executor-js/sdk";
 import {
   CatalogEntry,
-  CatalogIcons,
   CatalogImportFailed,
   CatalogUnavailable,
   CatalogImport,
@@ -543,12 +542,6 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
     .add(
       HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", {
         success: Schema.Array(CatalogEntry),
-        error: CatalogUnavailable,
-      }),
-    )
-    .add(
-      HttpApiEndpoint.get("catalogIcons", "/dashboard/api/catalog/icons", {
-        success: CatalogIcons,
         error: CatalogUnavailable,
       }),
     )

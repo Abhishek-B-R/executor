@@ -1,5 +1,5 @@
 /** Prepare source without a product server, account, database or workspace. */
-import { createCatalog, keepCatalog } from "@executor-js/catalog";
+import { createCatalog } from "@executor-js/catalog";
 import { httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
 import { Console, Effect } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -14,18 +14,16 @@ const egress = {
 const catalog = createCatalog(
   { egress },
   {
-    kept: keepCatalog({
-      list: Effect.succeed([
-        {
-          id: "example/deepwiki",
-          kind: "mcp",
-          name: "DeepWiki",
-          description: "Public documentation MCP server",
-          domain: "deepwiki.com",
-          connectUrl: "https://mcp.deepwiki.com/mcp",
-        },
-      ]),
-    }),
+    list: Effect.succeed([
+      {
+        id: "example/deepwiki",
+        kind: "mcp",
+        name: "DeepWiki",
+        description: "Public documentation MCP server",
+        domain: "deepwiki.com",
+        connectUrl: "https://mcp.deepwiki.com/mcp",
+      },
+    ]),
   },
 );
 

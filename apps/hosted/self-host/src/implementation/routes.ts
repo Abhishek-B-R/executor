@@ -41,8 +41,7 @@ import { AppUiApi } from "apps/ui/contracts";
 import { HttpApiBuilder } from "effect/http-api";
 import { appUiBaseUrl, catalogFeedUrl } from "../contracts/config.ts";
 import { type HostEgress } from "@executor-js/utils/url-policy";
-import { Config, Effect, Layer, Option, Scope } from "effect";
-import { catalogSource, keepCatalog } from "@executor-js/catalog";
+import { Config, Effect, Layer, Option } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { selfHostApi } from "./api.ts";
@@ -103,14 +102,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
     const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
-    // One kept catalog serves every request; a stale copy refreshes on the server's own lifetime.
-    const catalog = keepCatalog(
-      catalogSource(egress.client, Option.getOrUndefined(yield* catalogFeedUrl)),
-    );
-    const server = yield* Scope.Scope;
-    const catalogRefresh = Effect.succeed((work: Effect.Effect<void>) =>
-      Effect.forkIn(work, server).pipe(Effect.as(true)),
-    );
     const api = selfHostApi(document).pipe(
       Layer.provide(frameworkDocumentation(Effect.succeed(skills))),
       HttpRouter.provideRequest(localSourceFormatter),
@@ -122,8 +113,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
           egress,
           clientMetadata,
           auth.origin,
-          catalog,
-          catalogRefresh,
+          Option.getOrUndefined(yield* catalogFeedUrl),
         ),
       ),
       Layer.provide(hostedMiddlewareLive),

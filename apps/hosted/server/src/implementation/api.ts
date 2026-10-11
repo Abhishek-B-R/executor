@@ -34,9 +34,7 @@ const health = HttpApiBuilder.group(HostedApi, "health", (handlers) =>
 );
 
 const catalog = HttpApiBuilder.group(HostedApi, "catalog", (handlers) =>
-  handlers
-    .handle("list", () => Effect.flatMap(HostedCatalog, (catalog) => catalog.list))
-    .handle("icons", () => Effect.flatMap(HostedCatalog, (catalog) => catalog.icons)),
+  handlers.handle("list", () => Effect.flatMap(HostedCatalog, (catalog) => catalog.list)),
 );
 
 const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
