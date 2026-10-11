@@ -1,7 +1,3 @@
-import { Publication } from "@executor-js/sdk";
-import type { Query } from "../../contracts/dashboard.ts";
-import type { ComponentType } from "react";
-import type { FailureProps } from "../../contracts/dashboard.ts";
 import { AppCreateForm } from "./app-create.tsx";
 import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
@@ -29,65 +25,35 @@ const catalogKind = (entry: CatalogEntry) => {
       return entry.kind.toUpperCase();
   }
 };
-/** One discovery list combines published apps and integration templates, with independent failure states. */
-export function CatalogPage<E, P>({
+/** Integration templates available to add. Published registry apps are not listed here. */
+export function CatalogPage<E>({
   query,
   Failure,
-  publications,
-  PublicationFailure,
   back,
   action,
   onSelect,
-  onPublication,
 }: QueryProps<readonly CatalogEntry[], E> & {
-  readonly publications: Query<ReadonlyArray<typeof Publication.Type>, P>;
-  readonly PublicationFailure: ComponentType<FailureProps<NoInfer<P>>>;
   readonly back: ReactNode;
   readonly action?: ReactNode;
   readonly onSelect?: ((entry: CatalogEntry) => void) | undefined;
-  readonly onPublication?: ((publication: typeof Publication.Type) => void) | undefined;
 }) {
   const result = useAtomValue(query);
   const retry = useAtomRefresh(query);
-  const publicResult = useAtomValue(publications);
-  const retryPublic = useAtomRefresh(publications);
   const [search, setSearch] = useState("");
   const [limit, setLimit] = useState(50);
   const templates = AsyncResult.value(result);
-  const published = AsyncResult.value(publicResult);
-  type Row =
-    | { readonly kind: "template"; readonly entry: CatalogEntry }
-    | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
-  const rows: Row[] = [
-    ...(Option.isSome(published) ? published.value : []).map((publication): Row => ({
-      kind: "publication",
-      publication,
-    })),
-    ...(Option.isSome(templates)
-      ? templates.value
-          .filter((entry) => entry.kind !== "cli")
-          .map((entry): Row => ({ kind: "template", entry }))
-      : []),
-  ];
-  const title = (row: Row) => (row.kind === "publication" ? row.publication.name : row.entry.name);
-  const entries = rows
-    .filter((row) =>
-      (row.kind === "publication"
-        ? `${row.publication.name} ${row.publication.description} published app`
-        : `${row.entry.name} ${row.entry.domain} ${row.entry.kind}`
-      )
-        .toLowerCase()
-        .includes(search.toLowerCase()),
+  const entries = (Option.isSome(templates) ? templates.value : [])
+    .filter(
+      (entry) =>
+        entry.kind !== "cli" &&
+        `${entry.name} ${entry.domain} ${entry.kind}`.toLowerCase().includes(search.toLowerCase()),
     )
     .sort(
       (a, b) =>
-        Number(b.kind === "publication") - Number(a.kind === "publication") ||
-        (a.kind === "template" && b.kind === "template"
-          ? Number(b.entry.feeds?.includes("curated") ?? false) -
-              Number(a.entry.feeds?.includes("curated") ?? false) ||
-            (b.entry.popularity ?? 0) - (a.entry.popularity ?? 0)
-          : 0) ||
-        title(a).localeCompare(title(b)),
+        Number(b.feeds?.includes("curated") ?? false) -
+          Number(a.feeds?.includes("curated") ?? false) ||
+        (b.popularity ?? 0) - (a.popularity ?? 0) ||
+        a.name.localeCompare(b.name),
     );
   return (
     <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
@@ -97,7 +63,7 @@ export function CatalogPage<E, P>({
           <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
             Add app
           </h1>
-          <p>Find a published app or connect a service.</p>
+          <p>Find a service to connect.</p>
         </div>
         {action}
       </div>
@@ -116,14 +82,9 @@ export function CatalogPage<E, P>({
         </span>
       </div>
       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
-      {AsyncResult.isFailure(publicResult) && (
-        <PublicationFailure cause={publicResult.cause} retry={retryPublic} />
-      )}
-      {!entries.length && (AsyncResult.isInitial(result) || AsyncResult.isInitial(publicResult)) ? (
+      {!entries.length && AsyncResult.isInitial(result) ? (
         <LoadingRows />
-      ) : !entries.length &&
-        (AsyncResult.isFailure(result) ||
-          AsyncResult.isFailure(publicResult)) ? null : !entries.length ? (
+      ) : !entries.length && AsyncResult.isFailure(result) ? null : !entries.length ? (
         <Empty
           title={search ? "No matching apps" : "No apps available"}
           action={
@@ -143,39 +104,25 @@ export function CatalogPage<E, P>({
       ) : (
         <>
           <div className="catalog-list border-t border-t-border">
-            {entries.slice(0, limit).map((row) => {
-              const name = title(row);
-              const published = row.kind === "publication";
-              return (
-                <button
-                  type="button"
-                  className="catalog-row w-full flex items-center gap-4 min-h-18.5 text-left py-[15px] px-[12px] border-b border-b-border cursor-pointer [&:hover:not(:disabled)]:bg-muted disabled:cursor-default max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:py-[15px] max-[740px]:px-0 max-[740px]:[&_>_svg]:col-[3] max-[740px]:[&_>_svg]:row-[1_/_3]"
-                  key={published ? `package:${row.publication.name}` : row.entry.id}
-                  disabled={published ? onPublication === undefined : onSelect === undefined}
-                  onClick={() => {
-                    if (row.kind === "publication") onPublication?.(row.publication);
-                    else onSelect?.(row.entry);
-                  }}
-                >
-                  <ProviderIcon
-                    name={name}
-                    url={row.kind === "template" ? row.entry.domain : undefined}
-                  />
-                  <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
-                    <strong>{name}</strong>
-                    <span>
-                      {row.kind === "publication"
-                        ? row.publication.description || "Public app"
-                        : row.entry.domain}
-                    </span>
-                  </div>
-                  <span className="catalog-kind text-[12px] text-muted-foreground min-w-18.75 max-[740px]:col-[2] max-[740px]:text-[11px]">
-                    {row.kind === "publication" ? "App" : catalogKind(row.entry)}
-                  </span>
-                  <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={2} aria-hidden size={15} />
-                </button>
-              );
-            })}
+            {entries.slice(0, limit).map((entry) => (
+              <button
+                type="button"
+                className="catalog-row w-full flex items-center gap-4 min-h-18.5 text-left py-[15px] px-[12px] border-b border-b-border cursor-pointer [&:hover:not(:disabled)]:bg-muted disabled:cursor-default max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:py-[15px] max-[740px]:px-0 max-[740px]:[&_>_svg]:col-[3] max-[740px]:[&_>_svg]:row-[1_/_3]"
+                key={entry.id}
+                disabled={onSelect === undefined}
+                onClick={() => onSelect?.(entry)}
+              >
+                <ProviderIcon name={entry.name} url={entry.domain} />
+                <div className="catalog-row-title flex-1 flex flex-col gap-1.25 min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_span]:text-[12px] [&_span]:text-muted-foreground wrap-anywhere max-[740px]:col-[2]">
+                  <strong>{entry.name}</strong>
+                  <span>{entry.domain}</span>
+                </div>
+                <span className="catalog-kind text-[12px] text-muted-foreground min-w-18.75 max-[740px]:col-[2] max-[740px]:text-[11px]">
+                  {catalogKind(entry)}
+                </span>
+                <HugeiconsIcon icon={ArrowRight02Icon} strokeWidth={2} aria-hidden size={15} />
+              </button>
+            ))}
           </div>
           {entries.length > limit && (
             <Button

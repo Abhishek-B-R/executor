@@ -1,35 +1,25 @@
 import { useMcpOrigin } from "../resource-origin.ts";
 import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
-import { appManagement } from "../../contracts/app-management.ts";
 import { useAtomMount } from "@effect/atom-react";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
 import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
-import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
-import { type AppAcknowledgement } from "@executor-js/ui/contracts/app-management";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { Publication } from "@executor-js/sdk";
 import type { App } from "@executor-js/sdk";
 import { useState } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { useOrganizationRoute } from "../components/organization.tsx";
-import { acknowledgeApp } from "../../contracts/apps.ts";
 
-type Selection =
-  | { readonly kind: "catalog"; readonly entry: CatalogEntry }
-  | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
-/** Public publications and integration templates share Add app and the same organization-owned app records. */
+/** Integration templates install into the same organization-owned app records. */
 export function AddAppPage() {
   const mcpOrigin = useMcpOrigin();
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);
-  const { organization, slug: organizationSlug } = useOrganizationRoute();
+  const { slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
-  const management = appManagement(organization);
-  const [selection, setSelection] = useState<Selection>();
-  const onApp: AppAcknowledgement = (get, app) => acknowledgeApp(get, organization, app);
+  const [selection, setSelection] = useState<CatalogEntry>();
   const installed = (app: App) =>
     navigate({
       to: "/org/$organizationSlug/apps/$appId",
@@ -40,25 +30,13 @@ export function AddAppPage() {
     reportBrowserUsage({ area: "apps", action: "install", outcome: "cancelled" });
     setSelection(undefined);
   };
-  if (selection?.kind === "publication")
-    return (
-      <InstallPublication
-        key={`${selection.publication.name}:${selection.publication.commit}`}
-        Failure={HostedFailure}
-        publication={selection.publication}
-        atoms={management}
-        onApp={onApp}
-        onInstalled={installed}
-        onBack={back}
-      />
-    );
-  if (selection?.kind === "catalog")
+  if (selection)
     return (
       <CatalogInstall
         mutation={atoms.install}
         Failure={HostedFailure}
-        key={selection.entry.id}
-        entry={selection.entry}
+        key={selection.id}
+        entry={selection}
         endpoint={`${mcpOrigin}/mcp`}
         onBack={back}
         onInstalled={installed}
@@ -67,16 +45,10 @@ export function AddAppPage() {
   return (
     <Catalog
       query={atoms.catalog}
-      publications={management.catalog}
-      PublicationFailure={HostedFailure}
       Failure={HostedFailure}
       onSelect={(entry) => {
         reportBrowserUsage({ area: "apps", action: "select_template", outcome: "started" });
-        setSelection({ kind: "catalog", entry });
-      }}
-      onPublication={(publication) => {
-        reportBrowserUsage({ area: "apps", action: "select_publication", outcome: "started" });
-        setSelection({ kind: "publication", publication });
+        setSelection(entry);
       }}
       back={
         <Link

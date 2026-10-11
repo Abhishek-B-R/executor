@@ -1,15 +1,14 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
 import { revalidated } from "./refresh.ts";
 import { isTextFile, type App, type AppId } from "@executor-js/sdk";
-import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
+import { AppAccess, appManagementApi } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
 import type { HttpApiClient } from "effect/http-api";
-import { browserOnly, hydratedResult, requestKey } from "./http.ts";
+import { hydratedResult, requestKey } from "./http.ts";
 import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, readInto } from "./mutations.ts";
 
 class OwnedCopy extends Data.Class<{ readonly app: AppId }> {}
-class PublicCopy extends Data.Class<{ readonly package: string; readonly commit: string }> {}
 class SourceFileKey extends Data.Class<{
   readonly app: AppId;
   readonly commit: string;
@@ -40,13 +39,6 @@ export const makeAppManagementAtoms = <R, E>(
   params: { readonly organization?: string },
   retainFailure?: (cause: Cause.Cause<E>) => boolean,
 ) => {
-  /**
-   * Public listings come from a remote registry on local and self-host, so no document waits for
-   * them: the server renders the list's loading state and the browser reads it after hydration.
-   */
-  const catalog = runtime
-    .atom(Effect.flatMap(client, (api) => api.catalog({ params, query: {} })))
-    .pipe(revalidated, browserOnly, (source) => acknowledgedQuery(source, retainFailure));
   const published = runtime
     .atom(Effect.flatMap(client, (api) => api.published({ params })))
     .pipe(hydrate("published", params), (source) => acknowledgedQuery(source, retainFailure));
@@ -174,7 +166,7 @@ export const makeAppManagementAtoms = <R, E>(
         ),
     ),
   );
-  const copies = Atom.family((from: typeof CopyApp.Type.from) =>
+  const copies = Atom.family((from: OwnedCopy) =>
     runtime.fn((input: { name: string; onApp: AppAcknowledgement }, get) =>
       Effect.flatMap(client, (api) =>
         api.copy({ params, payload: { from, name: input.name } }),
@@ -188,11 +180,10 @@ export const makeAppManagementAtoms = <R, E>(
       ).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
-            for (const query of [published, catalog])
-              acknowledge(get, query, (rows) => [
-                ...rows.filter((row) => row.name !== saved.name),
-                saved,
-              ]);
+            acknowledge(get, published, (rows) => [
+              ...rows.filter((row) => row.name !== saved.name),
+              saved,
+            ]);
           }),
         ),
       ),
@@ -203,15 +194,13 @@ export const makeAppManagementAtoms = <R, E>(
       Effect.flatMap(client, (api) => api.unpublish({ params, payload: { package: name } })).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
-            for (const query of [published, catalog])
-              acknowledge(get, query, (rows) => rows.filter((row) => row.name !== saved.name));
+            acknowledge(get, published, (rows) => rows.filter((row) => row.name !== saved.name));
           }),
         ),
       ),
     ),
   );
   return {
-    catalog,
     published,
     authoring,
     source,
@@ -222,8 +211,7 @@ export const makeAppManagementAtoms = <R, E>(
     workspace,
     commitFile,
     deploy,
-    copy: (from: typeof CopyApp.Type.from) =>
-      copies("app" in from ? new OwnedCopy(from) : new PublicCopy(from)),
+    copy: (from: { readonly app: AppId }) => copies(new OwnedCopy(from)),
     publish,
     unpublish,
   };

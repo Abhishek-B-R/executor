@@ -1,51 +1,31 @@
 import { Failure } from "../components/common.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
-import { acknowledgeApp } from "../../contracts/apps.ts";
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { Publication } from "@executor-js/sdk";
 import type { App } from "@executor-js/sdk";
 import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
-import { InstallPublication } from "@executor-js/ui/dashboard/install-publication";
-import { appManagement } from "../../contracts/app-management.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 
-type Selection =
-  | { readonly kind: "catalog"; readonly entry: CatalogEntry }
-  | { readonly kind: "publication"; readonly publication: typeof Publication.Type };
 /** Discovery and installation use the existing local app and account setup routes. */
 export function CatalogPage() {
-  const [selection, setSelection] = useState<Selection>();
+  const [selection, setSelection] = useState<CatalogEntry>();
   const navigate = useNavigate();
-  const management = appManagement;
   const installed = (app: App) =>
     navigate({
       to: Object.keys(app.requirements.accounts).length ? "/apps/$appId/setup" : "/apps/$appId",
       params: { appId: app.id },
     });
   const back = () => setSelection(undefined);
-  if (selection?.kind === "publication")
-    return (
-      <InstallPublication
-        key={`${selection.publication.name}:${selection.publication.commit}`}
-        Failure={Failure}
-        publication={selection.publication}
-        atoms={management}
-        onApp={acknowledgeApp}
-        onInstalled={installed}
-        onBack={back}
-      />
-    );
-  if (selection?.kind === "catalog")
+  if (selection)
     return (
       <CatalogInstall
         mutation={dashboardAtoms.install}
         Failure={Failure}
-        key={selection.entry.id}
-        entry={selection.entry}
+        key={selection.id}
+        entry={selection}
         onBack={back}
         onInstalled={installed}
       />
@@ -53,11 +33,8 @@ export function CatalogPage() {
   return (
     <Catalog
       query={dashboardAtoms.catalog}
-      publications={management.catalog}
-      PublicationFailure={Failure}
       Failure={Failure}
-      onSelect={(entry) => setSelection({ kind: "catalog", entry })}
-      onPublication={(publication) => setSelection({ kind: "publication", publication })}
+      onSelect={setSelection}
       back={
         <Link
           to="/apps"

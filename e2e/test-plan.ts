@@ -6299,7 +6299,7 @@ export const scenarios = plan({
   },
   addAppRegistry: {
     file: "add-app-registry.spec.ts",
-    title: "Add app renders without waiting for the public registry and reuses a fresh listing",
+    title: "Add app lists integration templates and never reads the public registry",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
