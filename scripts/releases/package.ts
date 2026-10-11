@@ -1,7 +1,7 @@
-/** Build a portable, platform-specific npm package. Nothing is published. */
+/** Build the platform's release install and its npm package. Nothing is published. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, FileSystem, Path } from "effect";
+import { Config, Console, Effect, FileSystem, Path } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { bundleLocalRuntime } from "./runtime-bundle.ts";
 import {
@@ -13,7 +13,7 @@ import {
 } from "./config.ts";
 import { installWindowsGitHttpBackend } from "./windows-git.ts";
 import { launcherAnalytics } from "./analytics.ts";
-import { npmCommand } from "./npm.ts";
+import { buildStandalone } from "./standalone.ts";
 
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -22,7 +22,8 @@ const build = Effect.gen(function* () {
   const root = yield* path.fromFileUrl(new URL("../../", import.meta.url));
   const version = release.version;
   const target = nativePlatform(process.platform, process.arch);
-  if (process.argv[2] !== undefined && process.argv[2] !== version)
+  const requested = process.argv.slice(2).find((argument) => !argument.startsWith("--"));
+  if (requested !== undefined && requested !== version)
     return yield* Effect.die(new Error("Build the version recorded in apps/cli/package.json."));
   const output = path.join(
     root,
@@ -77,7 +78,6 @@ const build = Effect.gen(function* () {
       access: "public",
       tag: `${release.channel}-${target.platform}-${target.arch}`,
     },
-    engines: { node: `>=${release.minimumNodeVersion}` },
     os: [process.platform],
     cpu: [process.arch],
     files: [
@@ -134,12 +134,19 @@ if (backend.status !== 0 || !backend.stdout.includes("Status: 404")) {
     ],
     stage,
   );
-  const npm = yield* npmCommand;
-  yield* run(
-    npm.command,
-    [...npm.prefix, "pack", "--ignore-scripts", "--pack-destination", output],
-    stage,
-  );
+  // The npm package is the release install: the executable and the files beside it. The staged
+  // runtime stays for the desktop app, which runs it with its own Node.
+  // Signing is a deliberate choice per build, and notarizing implies signing. A published macOS
+  // build must be notarized.
+  const notarize = process.argv.includes("--notarize");
+  const signing = notarize ? "notarize" : process.argv.includes("--sign") ? "sign" : "unsigned";
+  if (
+    target.platform === "darwin" &&
+    signing !== "notarize" &&
+    (yield* Config.String("EXECUTOR_RELEASE_PUBLISH").pipe(Config.withDefault(""))) === "true"
+  )
+    return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
+  yield* buildStandalone(root, output, stage, target, signing);
   // Guard each native target before its offline tests or any publication can run.
   const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
   const budgetBytes = npmArchiveBudgetBytes;

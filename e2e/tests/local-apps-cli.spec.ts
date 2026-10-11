@@ -12,6 +12,7 @@ import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Workspace, helloIndex, helloPackage } from "../support/app-authoring.ts";
 import { appsVersion, declaredApps } from "../support/apps-release.ts";
+import { localEntryCommand } from "../support/local-entry.ts";
 
 const Catalogs = Schema.fromJsonString(
   Schema.Struct({
@@ -91,21 +92,25 @@ const cli = Effect.gen(function* () {
       Effect.scoped(
         Effect.gen(function* () {
           const child = yield* processes.spawn(
-            ChildProcess.make("node", [entry, "apps", ...args], {
-              cwd,
-              extendEnv: false,
-              env: {
-                PATH: process.env.PATH ?? "",
-                HOME: home,
-                // Release scenarios never send product analytics, even from a build with a baked key.
-                DO_NOT_TRACK: "1",
-                ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
-                ...extra,
+            ChildProcess.make(
+              localEntryCommand(entry, ["apps", ...args]).command,
+              localEntryCommand(entry, ["apps", ...args]).args,
+              {
+                cwd,
+                extendEnv: false,
+                env: {
+                  PATH: process.env.PATH ?? "",
+                  HOME: home,
+                  // Release scenarios never send product analytics, even from a build with a baked key.
+                  DO_NOT_TRACK: "1",
+                  ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
+                  ...extra,
+                },
+                stdout: "pipe",
+                stderr: "pipe",
+                forceKillAfter: "3 seconds",
               },
-              stdout: "pipe",
-              stderr: "pipe",
-              forceKillAfter: "3 seconds",
-            }),
+            ),
           );
           const [code, stdout, stderr] = yield* Effect.all(
             [

@@ -1,5 +1,5 @@
 /**
- * Tell a person running the npm CLI that a newer release is on its channel, and how this copy was
+ * Tell a person running the CLI that a newer release is on its channel, and how this copy was
  * installed. It only reports; `executor upgrade` installs on request. The desktop app updates itself.
  */
 import {
@@ -30,12 +30,17 @@ export const GlobalInstaller = Schema.Literals(["npm", "pnpm", "bun", "yarn"]);
 export type GlobalInstaller = typeof GlobalInstaller.Type;
 /** Runners that fetch the release each time instead of keeping an installed copy. */
 export type OneShotRunner = "npx" | "bunx" | "pnpm dlx";
-/** How this copy was installed. `unknown` when its location matches no package manager's layout. */
-export type InstallMethod = GlobalInstaller | OneShotRunner | "unknown";
+/**
+ * How this copy was installed: a package manager, a one-shot runner, the install script's
+ * standalone layout, or Homebrew. `unknown` when its location matches none of them.
+ */
+export type InstallMethod = GlobalInstaller | OneShotRunner | "standalone" | "brew" | "unknown";
 
 /** Classify a CLI file's location by the directory layout each package manager uses. */
 const classify = (location: string): InstallMethod => {
   const file = location.replaceAll("\\", "/").toLowerCase();
+  if (/\/runtime\/versions\/[^/]+\/executor(?:\.exe)?$/u.test(file)) return "standalone";
+  if (/\/cellar\/executor(?:-beta)?\//u.test(file)) return "brew";
   if (file.includes("/_npx/")) return "npx";
   if (/\/bunx-[^/]*executor@/u.test(file)) return "bunx";
   if (file.includes("/dlx/") && file.includes("/.pnpm/")) return "pnpm dlx";
@@ -48,8 +53,9 @@ const classify = (location: string): InstallMethod => {
 };
 
 /**
- * How the running CLI was installed, read from the script Node started. Command shims are often
- * symlinks into the package, so the script's real path is the one that shows the layout.
+ * How the running CLI was installed, read from the file that started it: the npm launcher, the
+ * release executable, or the script Node started. Command shims are often symlinks into the
+ * package, so the real path is the one that shows the layout.
  */
 export const installMethod = (entry: string | undefined) =>
   Effect.gen(function* () {
@@ -66,7 +72,9 @@ export const isOneShot = (method: InstallMethod): method is OneShotRunner =>
 const updateCommand = (method: InstallMethod, version: typeof ReleaseVersion.Type) =>
   isOneShot(method)
     ? `Run it with: ${method} executor@${releaseChannel(version)}`
-    : "Run: executor upgrade";
+    : method === "brew"
+      ? `Run: brew upgrade ${releaseChannel(version) === "beta" ? "executor-beta" : "executor"}`
+      : "Run: executor upgrade";
 
 const releaseTag = (tags: typeof DistTags.Type, name: string) =>
   Schema.decodeUnknownOption(ReleaseVersion)(tags[name]).pipe(Option.getOrUndefined);

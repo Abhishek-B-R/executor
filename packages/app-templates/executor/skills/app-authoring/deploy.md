@@ -3,10 +3,12 @@
 Use this path when you can run shell commands and `executor apps --help` works.
 If the command is missing, or it has no `framework` subcommand, install the
 current release. An older CLI can also fail against a newer host with `NotFound`
-or `UnexpectedResponse`. It needs Node.js 24.14.0 or newer:
+or `UnexpectedResponse`. Install it with npm, or without Node on macOS or Linux
+with the install script:
 
 ```sh
 npm i -g executor@beta --include=optional
+curl -fsSL https://executor.sh/docs/install.sh | sh
 ```
 
 The `beta` tag is required. The `latest` tag installs the previous Executor,

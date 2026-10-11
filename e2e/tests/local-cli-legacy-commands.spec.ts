@@ -5,6 +5,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
+import { localEntryCommand } from "../support/local-entry.ts";
 
 const dashboard =
   "In Executor 2, run `executor` to start the local server and open its dashboard. If the server is already running, run `executor pair` and open the link it prints.";
@@ -80,20 +81,24 @@ layer(TestLive, { excludeTestServices: true })("Local CLI legacy commands", (it)
               Effect.scoped(
                 Effect.gen(function* () {
                   const child = yield* processes.spawn(
-                    ChildProcess.make("node", [entry, ...args], {
-                      extendEnv: false,
-                      env: {
-                        PATH: process.env.PATH ?? "",
-                        HOME: home,
-                        USERPROFILE: home,
-                        // Release scenarios never send product analytics, even from a build with a baked key.
-                        DO_NOT_TRACK: "1",
-                        EXECUTOR_DATA_DIR: data,
+                    ChildProcess.make(
+                      localEntryCommand(entry, args).command,
+                      localEntryCommand(entry, args).args,
+                      {
+                        extendEnv: false,
+                        env: {
+                          PATH: process.env.PATH ?? "",
+                          HOME: home,
+                          USERPROFILE: home,
+                          // Release scenarios never send product analytics, even from a build with a baked key.
+                          DO_NOT_TRACK: "1",
+                          EXECUTOR_DATA_DIR: data,
+                        },
+                        stdout: "pipe",
+                        stderr: "pipe",
+                        forceKillAfter: "3 seconds",
                       },
-                      stdout: "pipe",
-                      stderr: "pipe",
-                      forceKillAfter: "3 seconds",
-                    }),
+                    ),
                   );
                   const [code, stdout, stderr] = yield* Effect.all(
                     [

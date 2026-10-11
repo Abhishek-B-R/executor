@@ -21,6 +21,7 @@ import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { freePort, holdPort, refusingPort } from "../support/ports.ts";
+import { localEntryCommand } from "../support/local-entry.ts";
 
 const nothingChanged = "Nothing was changed.";
 const desktopHint =
@@ -55,28 +56,32 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
             port: number,
             extra: Readonly<Record<string, string>> = {},
           ) =>
-            ChildProcess.make("node", [entry, ...args], {
-              // A working directory inside the scenario's folder could not be removed on Windows
-              // while a stopped child finishes exiting.
-              cwd: path.dirname(entry),
-              extendEnv: false,
-              env: {
-                PATH: process.env.PATH ?? "",
-                // Release scenarios never send product analytics, even from a build with a baked key.
-                DO_NOT_TRACK: "1",
-                EXECUTOR_ENVIRONMENT: "e2e",
-                // Keys stay in keys.json so no run touches the machine's OS credential store.
-                EXECUTOR_KEY_STORAGE: "file",
-                EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
-                ...(Option.isSome(registry) ? { EXECUTOR_NPM_REGISTRY: registry.value } : {}),
-                EXECUTOR_DATA_DIR: directory,
-                EXECUTOR_PORT: String(port),
-                ...extra,
+            ChildProcess.make(
+              localEntryCommand(entry, args).command,
+              localEntryCommand(entry, args).args,
+              {
+                // A working directory inside the scenario's folder could not be removed on Windows
+                // while a stopped child finishes exiting.
+                cwd: path.dirname(entry),
+                extendEnv: false,
+                env: {
+                  PATH: process.env.PATH ?? "",
+                  // Release scenarios never send product analytics, even from a build with a baked key.
+                  DO_NOT_TRACK: "1",
+                  EXECUTOR_ENVIRONMENT: "e2e",
+                  // Keys stay in keys.json so no run touches the machine's OS credential store.
+                  EXECUTOR_KEY_STORAGE: "file",
+                  EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
+                  ...(Option.isSome(registry) ? { EXECUTOR_NPM_REGISTRY: registry.value } : {}),
+                  EXECUTOR_DATA_DIR: directory,
+                  EXECUTOR_PORT: String(port),
+                  ...extra,
+                },
+                stdout: "pipe",
+                stderr: "pipe",
+                forceKillAfter: "3 seconds",
               },
-              stdout: "pipe",
-              stderr: "pipe",
-              forceKillAfter: "3 seconds",
-            });
+            );
           /** Run one CLI command to exit and return its code and complete output. */
           const run = (
             args: ReadonlyArray<string>,
@@ -304,8 +309,9 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
           // and one that reads each request and never answers.
           for (const [name, onConnection] of [
             ["resets-connection", (socket) => socket.resetAndDestroy()],
-            // Reading each request lets the connection close when pair gives up.
-            ["never-answers", (socket) => socket.resume()],
+            // Reading each request lets the connection close when pair gives up. A client may
+            // reset it rather than close it, as a Bun-compiled CLI does on exit.
+            ["never-answers", (socket) => socket.on("error", () => {}).resume()],
           ] as const satisfies ReadonlyArray<readonly [string, Parameters<typeof holdPort>[1]]>) {
             const other = yield* Effect.scoped(
               Effect.gen(function* () {

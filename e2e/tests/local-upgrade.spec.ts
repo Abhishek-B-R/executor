@@ -3,9 +3,14 @@
  * against a fake npm registry and fake package managers on PATH. The fakes record how they were
  * called and install an `executor` command that prints the version they were asked for, so the
  * scenario sees what the CLI ran and what it verified without touching this machine's installs.
+ *
+ * A release executable is also run from the install script's layout, upgrading from a fake release
+ * download: it checks the archive against SHA256SUMS, switches `current`, keeps the version it
+ * replaced and rolls back to it.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { Config, Deferred, Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
@@ -14,6 +19,8 @@ import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { freePort } from "../support/ports.ts";
+import { isScript, localEntryCommand } from "../support/local-entry.ts";
+import { shadowInstall } from "../support/stand-in-package.ts";
 
 const Call = Schema.fromJsonString(
   Schema.Struct({ name: Schema.String, args: Schema.Array(Schema.String) }),
@@ -46,6 +53,137 @@ if (process.platform === "win32") {
   chmodSync(join(directory, "executor"), 0o755);
 }
 `;
+
+/**
+ * A release executable in the install script's layout upgrades from a fake release download,
+ * refuses an archive that does not match SHA256SUMS, and rolls back to the version it replaced.
+ */
+const standaloneUpgrade = (options: {
+  readonly root: string;
+  readonly entry: string;
+  readonly version: string;
+  readonly environment: (extra: Readonly<Record<string, string>>) => Record<string, string>;
+  readonly downloads: Map<string, Uint8Array>;
+  readonly registryUrl: string;
+}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const evidence = yield* Evidence;
+    const windows = process.platform === "win32";
+    const executableName = windows ? "executor.exe" : "executor";
+    const runtime = path.join(options.root, "home", ".executor", "v2", "runtime");
+    const versions = path.join(runtime, "versions");
+    yield* shadowInstall(options.entry, path.join(versions, options.version));
+    const current = path.join(runtime, "current");
+    yield* fs.symlink(path.join(versions, options.version), current);
+    const exec = (command: string, args: ReadonlyArray<string>, cwd = options.root) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const child = yield* processes.spawn(
+            ChildProcess.make(command, args, {
+              cwd,
+              extendEnv: false,
+              env: options.environment({
+                EXECUTOR_DOWNLOAD_URL: `${options.registryUrl}/download`,
+                HOME: path.join(options.root, "home"),
+                USERPROFILE: path.join(options.root, "home"),
+                PATH: process.env.PATH ?? "",
+              }),
+              stdout: "pipe",
+              stderr: "pipe",
+              forceKillAfter: "3 seconds",
+            }),
+          );
+          const [code, stdout, stderr] = yield* Effect.all(
+            [
+              child.exitCode,
+              child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+              child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+            ],
+            { concurrency: 3 },
+          ).pipe(Effect.timeout("120 seconds"));
+          return { code: Number(code), stdout, stderr };
+        }),
+      );
+    /** Publish a release whose executable prints `reports`, with `listed` as its SHA256SUMS digest. */
+    const publish = (release: string, reports: string, listed?: string) =>
+      Effect.gen(function* () {
+        const work = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-" });
+        yield* fs.makeDirectory(path.join(work, "package"));
+        yield* fs.writeFileString(
+          path.join(work, "stub.mjs"),
+          `console.log(${JSON.stringify(`executor v${reports}`)});\n`,
+        );
+        const built = yield* exec(
+          "bun",
+          ["build", "--compile", "stub.mjs", "--outfile", path.join("package", executableName)],
+          work,
+        );
+        expect(built.code, built.stderr).toBe(0);
+        const file = `executor-${release}-${process.platform}-${process.arch}.tgz`;
+        // Windows' own tar reads relative paths; Git's would read a drive letter as a host.
+        const tar = windows
+          ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe")
+          : "tar";
+        const packed = yield* exec(tar, ["-czf", file, "package"], work);
+        expect(packed.code, packed.stderr).toBe(0);
+        const bytes = yield* fs.readFile(path.join(work, file));
+        const digest = createHash("sha256").update(bytes).digest("hex");
+        options.downloads.set(`executor@${release}/${file}`, bytes);
+        options.downloads.set(
+          `executor@${release}/SHA256SUMS`,
+          new TextEncoder().encode(`${listed ?? digest}  ./${file}\n`),
+        );
+      });
+    const linked = (name: "current" | "previous") =>
+      fs.readLink(path.join(runtime, name)).pipe(
+        Effect.map((target) => path.basename(path.resolve(runtime, target))),
+        Effect.orElseSucceed(() => undefined),
+      );
+
+    // The command on PATH starts current/executor, which resolves to its version directory.
+    yield* publish("2.999.0", "2.999.0");
+    const upgraded = yield* exec(path.join(current, executableName), ["upgrade", "2.999.0"]);
+    yield* evidence.json("standalone-upgrade.json", upgraded);
+    expect(upgraded.code, upgraded.stderr).toBe(0);
+    expect(upgraded.stdout).toContain(
+      `Upgraded Executor from v${options.version} to v2.999.0. v${options.version} stays installed`,
+    );
+    expect(yield* linked("current")).toBe("2.999.0");
+    expect(yield* linked("previous")).toBe(options.version);
+    const switched = yield* exec(path.join(current, executableName), ["--version"]);
+    expect(switched.stdout.trim()).toBe("executor v2.999.0");
+
+    // An archive that does not match SHA256SUMS is deleted and nothing changes.
+    yield* publish("2.998.0", "2.998.0", "0".repeat(64));
+    const previous = path.join(versions, options.version, executableName);
+    const tampered = yield* exec(previous, ["upgrade", "2.998.0", "--yes"]);
+    yield* evidence.json("standalone-checksum.json", tampered);
+    expect(tampered.code).toBe(1);
+    expect(tampered.stderr).toContain("does not match the SHA256SUMS of the v2.998.0 release");
+    expect(yield* fs.exists(path.join(versions, "2.998.0"))).toBe(false);
+    expect(yield* linked("current")).toBe("2.999.0");
+
+    // An archive whose executable does not report its version is removed.
+    yield* publish("2.997.0", "2.0.0");
+    const broken = yield* exec(previous, ["upgrade", "2.997.0", "--yes"]);
+    expect(broken.code).toBe(1);
+    expect(broken.stderr).toContain("did not start");
+    expect(yield* fs.exists(path.join(versions, "2.997.0"))).toBe(false);
+    expect(yield* linked("current")).toBe("2.999.0");
+
+    // Rollback returns to the version the upgrade replaced, and can be undone the same way.
+    const rolledBack = yield* exec(previous, ["upgrade", "--rollback", "--yes"]);
+    yield* evidence.json("standalone-rollback.json", rolledBack);
+    expect(rolledBack.code, rolledBack.stderr).toBe(0);
+    expect(rolledBack.stdout).toContain(`back to v${options.version}`);
+    expect(yield* linked("current")).toBe(options.version);
+    expect(yield* linked("previous")).toBe("2.999.0");
+    const restored = yield* exec(path.join(current, executableName), ["--version"]);
+    expect(restored.stdout.trim()).toBe(`executor v${options.version}`);
+  });
 
 layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
   it.effect(
@@ -96,6 +234,8 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           // The registry's dist-tags and the Node range each release declares.
           let published: Record<string, string> = {};
           let nodeRange = ">=24.14.0";
+          // Release downloads by tag, as the public release serves them.
+          const downloads = new Map<string, Uint8Array>();
           const services = yield* Layer.build(
             HttpRouter.serve(
               Layer.mergeAll(
@@ -118,6 +258,19 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                     });
                   }).pipe(Effect.orDie),
                 ),
+                HttpRouter.add(
+                  "GET",
+                  "/download/:tag/:file",
+                  Effect.gen(function* () {
+                    const { tag, file } = yield* HttpRouter.schemaPathParams(
+                      Schema.Struct({ tag: Schema.String, file: Schema.String }),
+                    );
+                    const bytes = downloads.get(`${decodeURIComponent(tag)}/${file}`);
+                    return bytes === undefined
+                      ? HttpServerResponse.empty({ status: 404 })
+                      : HttpServerResponse.uint8Array(bytes);
+                  }).pipe(Effect.orDie),
+                ),
               ),
               { disableLogger: true, disableListenLog: true },
             ).pipe(
@@ -131,15 +284,38 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             return yield* Effect.die("Registry must listen on TCP");
           const registryUrl = `http://127.0.0.1:${registry.address.port}`;
 
-          /** A launcher at `location` that starts the CLI, as a package manager's install would. */
+          const platformPackage = `executor-${process.platform}-${process.arch}`;
+          /**
+           * A launcher at `location` that starts the CLI, as a package manager's install would: the
+           * npm launcher with the release executable's package beside it, or a script that imports
+           * the source entry.
+           */
           const installedAt = (location: string) =>
             Effect.gen(function* () {
               const directory = path.join(root, location);
               yield* fs.makeDirectory(directory, { recursive: true });
               const launcher = path.join(directory, "bin.mjs");
+              if (isScript(entry)) {
+                yield* fs.writeFileString(
+                  launcher,
+                  `await import(${JSON.stringify((yield* path.toFileUrl(entry)).href)});\n`,
+                );
+                return launcher;
+              }
+              yield* fs.copyFile(path.resolve("scripts/releases/npm-launcher.mjs"), launcher);
               yield* fs.writeFileString(
-                launcher,
-                `await import(${JSON.stringify((yield* path.toFileUrl(entry)).href)});\n`,
+                path.join(directory, "package.json"),
+                JSON.stringify({
+                  name: "executor",
+                  version: "2.0.0-beta.2",
+                  type: "module",
+                  optionalDependencies: { [platformPackage]: "*" },
+                }),
+              );
+              yield* fs.makeDirectory(path.join(directory, "node_modules"));
+              yield* fs.symlink(
+                path.dirname(entry),
+                path.join(directory, "node_modules", platformPackage),
               );
               return launcher;
             });
@@ -320,8 +496,12 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           );
           yield* Effect.scoped(
             Effect.gen(function* () {
+              // The server records its own process, which the npm launcher is not.
+              const serve = isScript(entry)
+                ? { command: process.execPath, args: [npm, "serve"] }
+                : localEntryCommand(entry, ["serve"]);
               const server = yield* processes.spawn(
-                ChildProcess.make(process.execPath, [npm, "serve"], {
+                ChildProcess.make(serve.command, serve.args, {
                   cwd: root,
                   extendEnv: false,
                   env: {
@@ -389,6 +569,16 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           expect(same.code, same.stderr).toBe(0);
           expect(same.stdout).toContain(`Executor v${version} is already installed.`);
           expect(yield* calls).toEqual([]);
+
+          // Only the install script's layout keeps a previous version.
+          const notStandalone = yield* run(npm, ["upgrade", "--rollback"]);
+          expect(notStandalone.code).toBe(1);
+          expect(notStandalone.stderr).toContain(
+            "Only an install from the Executor install script",
+          );
+
+          if (isScript(entry)) return;
+          yield* standaloneUpgrade({ root, entry, version, environment, downloads, registryUrl });
         }),
       ),
     // Server readiness and every command have their own timeouts.

@@ -1,4 +1,7 @@
-/** Build the small npm launcher with exact native runtime aliases. Nothing is published. */
+/**
+ * Build the `executor` npm package: a launcher that starts the executable from the platform package
+ * it names as an exact optional dependency. Nothing is published.
+ */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path } from "effect";
@@ -35,38 +38,17 @@ const build = Effect.gen(function* () {
       2,
     ),
   );
-  yield* fs.writeFileString(
+  // The launcher reads its platform packages and channel from this package.json.
+  yield* fs.copyFile(
+    path.join(root, "scripts/releases/npm-launcher.mjs"),
     path.join(directory, "bin.mjs"),
-    `#!/usr/bin/env node
-const name = "executor-" + process.platform + "-" + process.arch;
-const supported = ${JSON.stringify(platforms.map(platformPackage))};
-const minimumNode = ${JSON.stringify(release.minimumNodeVersion.split(".").map(Number))};
-const currentNode = process.versions.node.split(".").map(Number);
-const difference = minimumNode.findIndex((part, index) => currentNode[index] !== part);
-if (difference !== -1 && currentNode[difference] < minimumNode[difference]) {
-  console.error("Executor requires Node.js ${release.minimumNodeVersion} or newer. You are running " + process.version + ".");
-  console.error("Upgrade Node.js, then reinstall: ${release.npmInstall} --include=optional");
-  process.exitCode = 1;
-} else if (!supported.includes(name)) {
-  console.error("Executor does not support " + process.platform + "/" + process.arch + ".");
-  process.exitCode = 1;
-} else {
-  let entry;
-  try { entry = import.meta.resolve(name + "/bin.mjs"); }
-  catch {
-    console.error("Executor's native runtime is missing. Reinstall with: ${release.npmInstall} --include=optional");
-    process.exitCode = 1;
-  }
-  if (entry !== undefined) await import(entry);
-}
-`,
   );
   yield* fs.chmod(path.join(directory, "bin.mjs"), 0o755);
   // Executor 1 declared bin/executor. Command shims outlive the package they were made for: an
   // upgrade that does not relink them, such as `bun add executor@beta` inside Bun's global
   // directory, leaves them starting this path. Keep every published entry point working.
   // The extensionless file is CommonJS: Node 20.0 to 20.9 refuse one that the package's
-  // "type": "module" makes ESM, before bin.mjs could name the Node version Executor needs.
+  // "type": "module" makes ESM.
   yield* fs.makeDirectory(path.join(directory, "bin"));
   yield* fs.writeFileString(
     path.join(directory, "bin/package.json"),

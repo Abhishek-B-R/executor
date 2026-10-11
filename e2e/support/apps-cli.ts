@@ -20,6 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { Evidence } from "./evidence.ts";
+import { withStandInPackage } from "./stand-in-package.ts";
 
 /** A finished process: its exit code and complete output. */
 export interface Finished {
@@ -72,8 +73,10 @@ export const appsCli = Effect.gen(function* () {
   yield* fs.makeDirectory(bin);
   yield* fs.makeDirectory(noBrowser);
   yield* fs.makeDirectory(checkout);
-  yield* fs.writeFileString(
-    path.join(root, "keyring.mjs"),
+  const launch = yield* withStandInPackage(
+    entry,
+    root,
+    "@napi-rs/keyring",
     [
       'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
       "const file = process.env.EXECUTOR_E2E_STAND_IN_FILE;",
@@ -97,21 +100,6 @@ export const appsCli = Effect.gen(function* () {
       "}",
     ].join("\n"),
   );
-  yield* fs.writeFileString(
-    path.join(root, "hooks.mjs"),
-    [
-      'const standIn = new URL("./keyring.mjs", import.meta.url).href;',
-      "export async function resolve(specifier, context, next) {",
-      '  if (specifier === "@napi-rs/keyring") return { url: standIn, shortCircuit: true };',
-      "  return next(specifier, context);",
-      "}",
-    ].join("\n"),
-  );
-  yield* fs.writeFileString(
-    path.join(root, "register.mjs"),
-    'import { register } from "node:module";\nregister("./hooks.mjs", import.meta.url);\n',
-  );
-  const register = (yield* path.toFileUrl(path.join(root, "register.mjs"))).href;
   for (const opener of ["open", "xdg-open"])
     yield* fs.writeFileString(
       path.join(bin, opener),
@@ -168,11 +156,11 @@ export const appsCli = Effect.gen(function* () {
     );
   /** Run `executor apps <args>`. */
   const cli = (args: ReadonlyArray<string>) =>
-    run(`executor apps ${args.join(" ")}`, "node", ["--import", register, entry, "apps", ...args], {
+    run(`executor apps ${args.join(" ")}`, launch.command, [...launch.prefix, "apps", ...args], {
       env,
     });
   // Git runs the CLI as its credential helper, configured as the docs configure it.
-  const helper = `!node --import '${register}' '${entry}' apps credential`;
+  const helper = `!${[launch.command, ...launch.prefix].map((part) => `'${part}'`).join(" ")} apps credential`;
   /** Run Git in the working copy with the CLI as its credential helper and no prompts. */
   const git = (args: ReadonlyArray<string>, input?: string) =>
     run(`git ${args[0] ?? ""}`, "git", args, {
@@ -211,7 +199,7 @@ export const appsCli = Effect.gen(function* () {
           Effect.scoped(
             Effect.gen(function* () {
               const child = yield* processes.spawn(
-                ChildProcess.make("node", ["--import", register, entry, "apps", ...args], {
+                ChildProcess.make(launch.command, [...launch.prefix, "apps", ...args], {
                   cwd: checkout,
                   extendEnv: false,
                   env:

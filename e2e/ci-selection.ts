@@ -566,11 +566,13 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
+  "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
+  "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
 };

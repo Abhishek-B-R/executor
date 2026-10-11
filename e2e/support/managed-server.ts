@@ -37,6 +37,7 @@ import {
 } from "./legacy-storage.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
+import { localEntryCommand } from "./local-entry.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
@@ -201,6 +202,8 @@ export const startManagedServer = (
       const scope = yield* Scope.make();
       current = scope;
       yield* Effect.gen(function* () {
+        // Self-host runs under Bun, which loads the runner's hooks as preloads. The local CLI owns
+        // the same hooks (see e2e-process.ts): a release executable runs no preload.
         const preloads = ["./wall-clock.mjs", "./stop-request.mjs"].map(
           (file) => new URL(file, import.meta.url),
         );
@@ -211,47 +214,53 @@ export const startManagedServer = (
             : path.join(coverageDirectory, String(generation++));
         // The product's workerd logs its function events here; see workerd-coverage.ts.
         if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
+        const [program = "", ...programArgs] = entry.command;
+        const launch =
+          target.metadata.target === "local"
+            ? localEntryCommand(program, programArgs)
+            : {
+                command: "bun",
+                args:
+                  coverage !== undefined && mode === "product"
+                    ? [
+                        "test",
+                        "--coverage",
+                        "--coverage-reporter=lcov",
+                        `--coverage-dir=${coverage}`,
+                        "--timeout=0",
+                        ...(yield* Effect.forEach(preloads, path.fromFileUrl).pipe(
+                          Effect.orDie,
+                        )).flatMap((file) => ["--preload", file]),
+                        "./apps/hosted/self-host/scripts/coverage-main.ts",
+                      ]
+                    : [
+                        // Bun accepts Node's --import preload, so self-host can advance wall time too.
+                        ...preloads.flatMap((url) => ["--import", url.href]),
+                        ...entry.command,
+                      ],
+              };
         const child = yield* processes.spawn(
-          ChildProcess.make(
-            target.metadata.target === "local" ? "node" : "bun",
-            coverage !== undefined && target.metadata.target === "self-host" && mode === "product"
-              ? [
-                  "test",
-                  "--coverage",
-                  "--coverage-reporter=lcov",
-                  `--coverage-dir=${coverage}`,
-                  "--timeout=0",
-                  ...(yield* Effect.forEach(preloads, path.fromFileUrl).pipe(Effect.orDie)).flatMap(
-                    (file) => ["--preload", file],
-                  ),
-                  "./apps/hosted/self-host/scripts/coverage-main.ts",
-                ]
-              : [
-                  // Bun accepts Node's --import preload, so self-host can advance wall time too.
-                  ...preloads.flatMap((url) => ["--import", url.href]),
-                  ...entry.command,
-                ],
-            {
-              extendEnv: false,
-              ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
-              env: {
-                ...env,
-                ...(coverage === undefined
-                  ? {}
-                  : { ALCHEMY_WORKERD_V8_FLAGS: workerdCoverageFlags(coverage) }),
-                ...(coverage !== undefined && target.metadata.target === "local"
-                  ? { NODE_V8_COVERAGE: coverage }
-                  : {}),
-              },
-              // Stays open for clock moves while the process runs.
-              stdin: { stream: "pipe", endOnDone: false },
-              stdout: "pipe",
-              stderr: "pipe",
-              additionalFds: { fd3: { type: "input" } },
-              killSignal: "SIGTERM",
-              forceKillAfter: "15 seconds",
+          ChildProcess.make(launch.command, launch.args, {
+            extendEnv: false,
+            ...(entry.cwd === undefined ? {} : { cwd: entry.cwd }),
+            env: {
+              ...env,
+              ...(target.metadata.target === "local" ? { EXECUTOR_TEST_STOP_FD: "3" } : {}),
+              ...(coverage === undefined
+                ? {}
+                : { ALCHEMY_WORKERD_V8_FLAGS: workerdCoverageFlags(coverage) }),
+              ...(coverage !== undefined && target.metadata.target === "local"
+                ? { NODE_V8_COVERAGE: coverage }
+                : {}),
             },
-          ),
+            // Stays open for clock moves while the process runs.
+            stdin: { stream: "pipe", endOnDone: false },
+            stdout: "pipe",
+            stderr: "pipe",
+            additionalFds: { fd3: { type: "input" } },
+            killSignal: "SIGTERM",
+            forceKillAfter: "15 seconds",
+          }),
         );
         running = child;
         yield* Scope.addFinalizer(

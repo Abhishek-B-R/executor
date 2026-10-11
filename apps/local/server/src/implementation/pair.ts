@@ -8,11 +8,15 @@ import { PairFailed } from "../contracts/startup.ts";
 import { LocalConfigurationError, savedApiKey } from "./bootstrap.ts";
 
 /**
- * fetch reports a refused connection as its cause's code. Only that means nothing listens on the
- * port; a reset, a closed connection or a reply that is not HTTP comes from another service.
+ * Node's fetch reports a refused connection as its cause's code; Bun's, which the release
+ * executable runs, as the error's own code. Only that means nothing listens on the port; a reset,
+ * a closed connection or a reply that is not HTTP comes from another service.
  */
 const connectionRefused = Schema.is(
-  Schema.Struct({ cause: Schema.Struct({ code: Schema.Literal("ECONNREFUSED") }) }),
+  Schema.Union([
+    Schema.Struct({ cause: Schema.Struct({ code: Schema.Literal("ECONNREFUSED") }) }),
+    Schema.Struct({ code: Schema.Literal("ConnectionRefused") }),
+  ]),
 );
 /** A running Executor server answers at once, so a listener that stays silent is something else. */
 const answerWithin = "10 seconds";

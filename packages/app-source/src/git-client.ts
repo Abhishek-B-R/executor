@@ -8,7 +8,8 @@ import * as nodePath from "node:path";
 import { Effect, Schema, type Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import * as Git from "isomorphic-git";
-import http from "isomorphic-git/http/node";
+// The fetch client: the Node one parses URLs with the deprecated url.parse, which Bun reports.
+import http from "isomorphic-git/http/web";
 import { SourceError } from "@executor-js/sdk/core";
 import {
   buildTrees,

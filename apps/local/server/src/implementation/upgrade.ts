@@ -1,6 +1,8 @@
 /**
- * `executor upgrade`: install a newer release with the package manager that installed this copy.
- * It runs only on request, checks Node before changing anything, confirms the new command works,
+ * `executor upgrade`: install a newer release the way this copy was installed. A standalone install
+ * downloads the release archive, checks it, and switches to it, keeping the version it replaced for
+ * `--rollback`. An npm-family install runs its package manager, after checking that the release's
+ * launcher supports this Node. Either way it runs only on request, confirms the new command works,
  * and says when a running server still uses the old version. It never restarts a server.
  */
 import {
@@ -28,6 +30,12 @@ import { dataDirectoryConfig } from "../contracts/config.ts";
 import { UpgradeFailed } from "../contracts/startup.ts";
 import { runningServer } from "./server-record.ts";
 import {
+  installVersion,
+  linkedVersion,
+  standaloneInstall,
+  switchVersion,
+} from "./standalone-install.ts";
+import {
   currentRelease,
   fetchReleases,
   type GlobalInstaller,
@@ -39,17 +47,24 @@ import {
 
 /** The process facts the entry point supplies. */
 export interface UpgradeHost {
-  /** The script Node started, whose location shows how the CLI was installed. */
+  /** The file that started the CLI, whose location shows how it was installed. */
   readonly entry: string | undefined;
-  /** The running Node.js version, without the leading v. */
-  readonly node: string;
+  /**
+   * The Node.js version, without the leading v, that runs the npm launcher or the CLI; none for a
+   * release executable started directly, which needs no Node.
+   */
+  readonly node: string | undefined;
+  /** The running executable, which a standalone install keeps under its versions directory. */
+  readonly executable: string;
   readonly platform: string;
+  readonly arch: string;
 }
 
 export interface UpgradeOptions {
   readonly version: Option.Option<string>;
   readonly method: Option.Option<GlobalInstaller>;
   readonly yes: boolean;
+  readonly rollback: boolean;
 }
 
 /**
@@ -117,6 +132,21 @@ const meetsNode = (node: string, range: string) => {
   return true;
 };
 
+/**
+ * Windows package managers and command shims are .cmd scripts that only cmd.exe starts. It is named
+ * from ComSpec rather than found on PATH, as Bun's `shell` option looks for it. The arguments here
+ * are package specs and flags, which need no quoting.
+ */
+const throughShell = (platform: string, command: string, args: ReadonlyArray<string>) =>
+  platform === "win32"
+    ? {
+        // An empty value, as a stripped environment can pass, names no shell either.
+        command:
+          process.env.ComSpec || `${process.env.SystemRoot || "C:\\Windows"}\\System32\\cmd.exe`,
+        args: ["/d", "/s", "/c", [command, ...args].join(" ")],
+      }
+    : { command, args };
+
 /** Run one command with its output streamed through; resolves to its exit code and stderr. */
 const runStreaming = (command: string, args: ReadonlyArray<string>, platform: string) =>
   Effect.scoped(
@@ -125,10 +155,9 @@ const runStreaming = (command: string, args: ReadonlyArray<string>, platform: st
       const stdio = yield* Stdio.Stdio;
       const captured = yield* Ref.make("");
       const decoder = new TextDecoder();
+      const shell = throughShell(platform, command, args);
       const child = yield* spawner.spawn(
-        ChildProcess.make(command, args, {
-          // Windows package managers are .cmd scripts that only a shell starts.
-          shell: platform === "win32",
+        ChildProcess.make(shell.command, shell.args, {
           extendEnv: true,
           stdin: "inherit",
           stdout: "inherit",
@@ -156,9 +185,9 @@ const installedVersion = (platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const shell = throughShell(platform, "executor", ["--version"]);
       const child = yield* spawner.spawn(
-        ChildProcess.make("executor", ["--version"], {
-          shell: platform === "win32",
+        ChildProcess.make(shell.command, shell.args, {
           extendEnv: true,
           stdout: "pipe",
           stderr: "pipe",
@@ -200,13 +229,64 @@ const confirm = (
     if (!accepted) return yield* failed("cancelled", "Upgrade cancelled. Nothing was changed.");
   });
 
-export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
+/** Say when a server from this data directory still runs another version. */
+const restartNotice = (target: string) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
+    const server = yield* runningServer(path.resolve(yield* dataDirectoryConfig));
+    if (server !== undefined && server.version !== target)
+      yield* Console.log(
+        `The Executor server at ${server.url} (process ${server.pid}) is still running ${server.version === undefined ? "a development build" : `v${server.version}`}. Stop it, then start it again with \`${server.command}\` to use v${target}.`,
+      );
+  });
+
+/** Switch a standalone install back to the version it ran before its last upgrade. */
+const rollback = (options: UpgradeOptions, host: UpgradeHost) =>
+  Effect.gen(function* () {
+    const install = yield* standaloneInstall(host.executable, host.platform);
+    if (Option.isNone(install))
+      return yield* failed(
+        "not-standalone",
+        "Only an install from the Executor install script keeps a previous version to roll back to. Install the version you want with the package manager you used, such as: npm install -g executor@<version> --include=optional. Nothing was changed.",
+      );
+    const previous = yield* linkedVersion(install.value.root, "previous");
+    if (Option.isNone(previous))
+      return yield* failed(
+        "no-previous-version",
+        `${install.value.root} has no previous version to roll back to. Nothing was changed.`,
+      );
+    const current = Option.getOrElse(
+      yield* linkedVersion(install.value.root, "current"),
+      () => install.value.version,
+    );
+    yield* confirm(
+      `Switch Executor from v${current} back to v${previous.value}?`,
+      true,
+      options.yes,
+      undefined,
+    );
+    yield* switchVersion(install.value, previous.value, host.platform);
+    yield* Console.log(
+      `Switched Executor from v${current} back to v${previous.value}. Run executor upgrade --rollback again to return to v${current}.`,
+    );
+    yield* restartNotice(previous.value);
+  });
+
+export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
+  Effect.gen(function* () {
+    if (options.rollback) return yield* rollback(options, host);
+    const path = yield* Path.Path;
     const current = yield* currentRelease;
-    const method = Option.isSome(options.method)
-      ? options.method.value
-      : yield* installMethod(host.entry);
+    const detected = yield* installMethod(host.entry);
+    const method = Option.isSome(options.method) ? options.method.value : detected;
+    if (method === "brew") {
+      const formula =
+        /\/Cellar\/(executor(?:-beta)?)\//iu.exec(host.entry ?? "")?.[1] ?? "executor";
+      yield* Console.log(
+        `This Executor was installed with Homebrew, which keeps it up to date. Run: brew upgrade ${formula}`,
+      );
+      return;
+    }
     const given = Option.getOrUndefined(options.version);
     const requested =
       given === undefined
@@ -268,8 +348,9 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         `${registry} has no Executor release v${target}. Nothing was changed.`,
       );
 
+    // A standalone install carries its own runtime. The npm launcher runs on the person's Node.
     const range = release.engines?.node;
-    if (range !== undefined) {
+    if (method !== "standalone" && host.node !== undefined && range !== undefined) {
       const meets = meetsNode(host.node, range);
       if (meets === undefined)
         return yield* failed(
@@ -281,6 +362,42 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
           "node-too-old",
           `Executor v${target} requires Node.js ${range}, and this is Node.js v${host.node}. Upgrade Node.js, then run executor upgrade again. Nothing was changed.`,
         );
+    }
+
+    if (method === "standalone") {
+      const install = yield* standaloneInstall(host.executable, host.platform);
+      if (Option.isNone(install))
+        return yield* failed(
+          "not-standalone",
+          `${host.executable} is not in an install script's versions directory, so executor upgrade cannot replace it. Reinstall with the Executor install script, or with npm: npm install -g executor@${target} --include=optional. Nothing was changed.`,
+        );
+      if (compareReleaseVersions(target, current.value) < 0)
+        yield* confirm(
+          `Downgrade Executor from v${current.value} to v${target}?`,
+          false,
+          options.yes,
+          failed(
+            "downgrade-unconfirmed",
+            `v${target} is older than the installed v${current.value}. To downgrade, run: executor upgrade ${target} --yes. Nothing was changed.`,
+          ),
+        );
+      else
+        yield* confirm(
+          `Upgrade Executor from v${current.value} to v${target}?`,
+          true,
+          options.yes,
+          undefined,
+        );
+      yield* Console.log(
+        `Downloading Executor v${target} for ${host.platform}/${host.arch} into ${install.value.root}`,
+      );
+      yield* installVersion(install.value, target, host.platform, host.arch);
+      yield* switchVersion(install.value, target, host.platform);
+      yield* Console.log(
+        `Upgraded Executor from v${current.value} to v${target}. v${current.value} stays installed: run executor upgrade --rollback to switch back.`,
+      );
+      yield* restartNotice(target);
+      return;
     }
 
     if (method === "unknown")
@@ -352,10 +469,5 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         `\`executor --version\` printed "${check.success.stdout}". Another installation may come first on your PATH.`,
       );
     yield* Console.log(`Upgraded Executor from v${current.value} to v${target}.`);
-
-    const server = yield* runningServer(path.resolve(yield* dataDirectoryConfig));
-    if (server !== undefined && server.version !== target)
-      yield* Console.log(
-        `The Executor server at ${server.url} (process ${server.pid}) is still running ${server.version === undefined ? "a development build" : `v${server.version}`}. Stop it, then start it again with \`${server.command}\` to use v${target}.`,
-      );
+    yield* restartNotice(target);
   });

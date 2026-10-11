@@ -8,6 +8,8 @@ import { testCredential } from "../support/os-credential.ts";
 import { freePort } from "../support/ports.ts";
 import { localNpmRegistry } from "../support/npm-registry.ts";
 import { scenarios } from "../test-plan.ts";
+import { localEntryCommand } from "../support/local-entry.ts";
+import { withStandInPackage } from "../support/stand-in-package.ts";
 
 const Record = Schema.Struct({
   version: Schema.Literal(1),
@@ -22,9 +24,8 @@ const optIn = "set EXECUTOR_KEY_STORAGE=file";
 const leakedHex = "ab".repeat(32);
 
 /**
- * Write a stand-in for @napi-rs/keyring and return the node arguments that load it.
- * The child resolves the stand-in only when EXECUTOR_E2E_STAND_IN is set, so other
- * starts keep the real module. Errors copy the package's keyring-core text:
+ * A stand-in for @napi-rs/keyring. It acts only when EXECUTOR_E2E_STAND_IN is set; otherwise it
+ * finds nothing and refuses writes. Errors copy the package's keyring-core text:
  * - absent: the constructor throws, as Linux does without D-Bus or a Secret Service.
  * - denied: reads reject, as a cancelled macOS Keychain prompt does.
  * - denied-noisy: reads reject with a control character and a long hex run, which the
@@ -35,66 +36,42 @@ const leakedHex = "ab".repeat(32);
  * - granted: a working store kept in EXECUTOR_E2E_STAND_IN_FILE.
  * The real store is never touched.
  */
-const standInKeyring = (root: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    yield* fs.writeFileString(
-      path.join(root, "stand-in-keyring.mjs"),
-      [
-        'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
-        "const mode = process.env.EXECUTOR_E2E_STAND_IN;",
-        "const file = process.env.EXECUTOR_E2E_STAND_IN_FILE;",
-        "const reject = (message) => Promise.reject(new Error(message));",
-        'const read = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});',
-        "export class AsyncEntry {",
-        "  constructor(service, username) {",
-        '    if (mode === "absent")',
-        '      throw new Error("Platform failure: DBus error: The name org.freedesktop.secrets was not provided by any .service files");',
-        "    this.username = username;",
-        "  }",
-        "  getPassword() {",
-        '    if (mode === "denied") return reject("Platform failure: User canceled the operation.");',
-        '    if (mode === "denied-noisy")',
-        `      return reject("Couldn't access platform storage: locked\\u0007${leakedHex}");`,
-        '    if (mode === "no-logon-session")',
-        '      return reject("Couldn\'t access platform storage: Windows ERROR_NO_SUCH_LOGON_SESSION");',
-        '    if (mode === "granted") return Promise.resolve(read()[this.username]);',
-        "    return Promise.resolve(undefined);",
-        "  }",
-        "  setPassword(password) {",
-        '    if (mode === "granted") {',
-        "      writeFileSync(file, JSON.stringify({ ...read(), [this.username]: password }));",
-        "      return Promise.resolve();",
-        "    }",
-        '    return reject("Couldn\'t access platform storage: Secret Service: unlock prompt was dismissed");',
-        "  }",
-        "}",
-      ].join("\n"),
-    );
-    yield* fs.writeFileString(
-      path.join(root, "hooks.mjs"),
-      [
-        'const standIn = new URL("./stand-in-keyring.mjs", import.meta.url).href;',
-        "export async function resolve(specifier, context, next) {",
-        '  if (specifier === "@napi-rs/keyring" && process.env.EXECUTOR_E2E_STAND_IN)',
-        "    return { url: standIn, shortCircuit: true };",
-        "  return next(specifier, context);",
-        "}",
-      ].join("\n"),
-    );
-    yield* fs.writeFileString(
-      path.join(root, "register.mjs"),
-      'import { register } from "node:module";\nregister("./hooks.mjs", import.meta.url);\n',
-    );
-    // --import takes a module specifier; a bare Windows path would parse as a URL scheme.
-    return ["--import", (yield* path.toFileUrl(path.join(root, "register.mjs"))).href];
-  });
+const standInKeyring = [
+  'import { existsSync, readFileSync, writeFileSync } from "node:fs";',
+  "const mode = process.env.EXECUTOR_E2E_STAND_IN;",
+  "const file = process.env.EXECUTOR_E2E_STAND_IN_FILE;",
+  "const reject = (message) => Promise.reject(new Error(message));",
+  'const read = () => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});',
+  "export class AsyncEntry {",
+  "  constructor(service, username) {",
+  '    if (mode === "absent")',
+  '      throw new Error("Platform failure: DBus error: The name org.freedesktop.secrets was not provided by any .service files");',
+  "    this.username = username;",
+  "  }",
+  "  getPassword() {",
+  '    if (mode === "denied") return reject("Platform failure: User canceled the operation.");',
+  '    if (mode === "denied-noisy")',
+  `      return reject("Couldn't access platform storage: locked\\u0007${leakedHex}");`,
+  '    if (mode === "no-logon-session")',
+  '      return reject("Couldn\'t access platform storage: Windows ERROR_NO_SUCH_LOGON_SESSION");',
+  '    if (mode === "granted") return Promise.resolve(read()[this.username]);',
+  "    return Promise.resolve(undefined);",
+  "  }",
+  "  setPassword(password) {",
+  '    if (mode === "granted") {',
+  "      writeFileSync(file, JSON.stringify({ ...read(), [this.username]: password }));",
+  "      return Promise.resolve();",
+  "    }",
+  '    return reject("Couldn\'t access platform storage: Secret Service: unlock prompt was dismissed");',
+  "  }",
+  "}",
+].join("\n");
 
 /** Drive the packaged CLI against one data directory with an explicit environment. */
 const packagedCli = (options: {
   readonly keys: ReadonlyArray<string>;
-  readonly nodeArgs: ReadonlyArray<string>;
+  /** A scratch directory for starting the CLI with the stand-in keyring; none uses the real one. */
+  readonly standIn?: string;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -102,6 +79,18 @@ const packagedCli = (options: {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const http = yield* HttpClient.HttpClient;
     const entry = path.resolve(yield* Config.String("EXECUTOR_E2E_LOCAL_ENTRY"));
+    const plain = localEntryCommand(entry, []);
+    const launch =
+      options.standIn === undefined
+        ? { command: plain.command, prefix: plain.args }
+        : yield* withStandInPackage(
+            entry,
+            options.standIn,
+            "@napi-rs/keyring",
+            standInKeyring,
+            // Other starts in the same scenario use the real module.
+            "EXECUTOR_E2E_STAND_IN",
+          );
     // Startup deploys the bundled Executor app, which pins this checkout's apps release.
     const registry = yield* localNpmRegistry;
     const environment = (
@@ -129,7 +118,7 @@ const packagedCli = (options: {
       extra: Readonly<Record<string, string>>,
       subcommand = "serve",
     ) =>
-      ChildProcess.make("node", [...options.nodeArgs, entry, subcommand], {
+      ChildProcess.make(launch.command, [...launch.prefix, subcommand], {
         cwd: path.dirname(directory),
         env: environment(directory, port, extra),
         extendEnv: false,
@@ -263,7 +252,6 @@ it.live(scenarios.localBootstrap.title, () =>
           "DBUS_SESSION_BUS_ADDRESS",
           "XDG_RUNTIME_DIR",
         ],
-        nodeArgs: [],
       });
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
@@ -311,13 +299,12 @@ it.live(scenarios.localBootstrapKeyFile.title, () =>
         ["present", "absent"],
         "EXECUTOR_E2E_CREDENTIAL_STORE",
       ).pipe(Config.withDefault("present"));
-      const nodeArgs = yield* standInKeyring(root);
       const absent: Record<string, string> =
         store === "present" ? { EXECUTOR_E2E_STAND_IN: "absent" } : {};
       // No D-Bus variables reach the child, so Linux cannot find a Secret Service.
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
-        nodeArgs,
+        standIn: root,
       });
       const fresh = (name: string) =>
         Effect.gen(function* () {
@@ -446,7 +433,7 @@ it.live(scenarios.localBootstrapDenied.title, () =>
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-denied-e2e-" });
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
-        nodeArgs: yield* standInKeyring(root),
+        standIn: root,
       });
       const storeFile = path.join(root, "stand-in-store.json");
       const as = (mode: string) => ({
@@ -558,7 +545,7 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-key-storage-e2e-" });
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
-        nodeArgs: yield* standInKeyring(root),
+        standIn: root,
       });
       const storeFile = path.join(root, "stand-in-store.json");
       const as = (mode: string, storage?: string) => ({
@@ -692,7 +679,7 @@ it.live(scenarios.localBootstrapRotation.title, () =>
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-rotation-e2e-" });
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
-        nodeArgs: yield* standInKeyring(root),
+        standIn: root,
       });
       const storeFile = path.join(root, "stand-in-store.json");
       const as = (mode: string, storage?: string) => ({
@@ -795,7 +782,7 @@ it.live(scenarios.localBootstrapPair.title, () =>
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pair-e2e-" });
       const cli = yield* packagedCli({
         keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
-        nodeArgs: yield* standInKeyring(root),
+        standIn: root,
       });
       const storeFile = path.join(root, "stand-in-store.json");
       const as = (mode: string) => ({

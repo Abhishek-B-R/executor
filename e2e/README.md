@@ -863,15 +863,24 @@ own environment.
 ### Installed CLI artifact
 
 To verify the installed CLI artifact through the same local scenarios, set
-`EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
-`bun run e2e:local`. The harness starts that entry from its installed package directory,
+`EXECUTOR_E2E_LOCAL_ENTRY` to the absolute path of the installed `executor` executable
+(`executor.exe` on Windows), from the platform archive `bun run release:cli` builds, and run
+`bun run e2e:local`. The harness starts that entry from its install directory,
 with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
-app deployment/call use real HTTP requests against the installed package.
+app deployment/call use real HTTP requests against the installed package. A JavaScript entry,
+such as the source `bin.ts`, runs under Node instead.
+
+The release executable runs no preload, so the local CLI owns the runner's two process hooks:
+`EXECUTOR_TEST_CLOCK_OFFSET_MS` with `EXECUTOR_TEST_CLOCK_CONTROL=stdin` for its wall clock and
+`EXECUTOR_TEST_STOP_FD=3` for stop requests, honoured only with `EXECUTOR_ENVIRONMENT=e2e`
+(`apps/local/server/src/implementation/e2e-process.ts`). Scenarios that replace a package the
+executable loads from disk, such as the OS credential store binding, start it from a shadow
+copy of its install (`support/stand-in-package.ts`).
 
 The first-launch key scenarios also run against an installed entry:
 
 ```sh
-EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/bin.mjs \
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/executor \
   bunx vitest run --config e2e/local-bootstrap.config.ts
 ```
 
@@ -889,13 +898,28 @@ Secret Service for the key file scenario instead; release CI runs both.
 
 The npm launcher scenario unpacks the launcher and native archives as npm lays
 them out, then starts `--version` through every launcher entry point, including
-Executor 1's `bin/executor`, which stale command shims still start:
+Executor 1's `bin/executor`, which stale command shims still start. It checks that
+the launcher passes on exit codes and SIGTERM, explains a missing platform package,
+and, with `EXECUTOR_E2E_OLD_NODE`, starts on the oldest Node its package accepts:
 
 ```sh
 bun run release:wrapper
 EXECUTOR_E2E_LAUNCHER_ARCHIVE=.local/releases/<version>/wrapper/executor-<version>.tgz \
 EXECUTOR_E2E_RUNTIME_ARCHIVE=/path/to/executor-<version>-<platform>-<arch>.tgz \
   bunx vitest run --config e2e/npm-launcher.config.ts
+```
+
+Two more release suites take the executable or its archive. `standalone-lockdown.config.ts`
+starts the executable with every Bun override a local process could set, from `BUN_OPTIONS`
+to a `bunfig.toml` in its working directory, and requires that none takes effect.
+`installer.config.ts` runs `apps/docs/public/install.sh` (or `install.ps1`) against a local
+copy of a release download:
+
+```sh
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/executor \
+  bunx vitest run --config e2e/standalone-lockdown.config.ts
+EXECUTOR_E2E_RUNTIME_ARCHIVE=/path/to/executor-<version>-<platform>-<arch>.tgz \
+  bunx vitest run --config e2e/installer.config.ts
 ```
 
 The desktop artifact smoke uses the packaged executable, synthetic secrets and a

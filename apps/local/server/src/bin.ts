@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// First, so the E2E runner's hooks own the clock before any other module reads it.
+import "./implementation/e2e-process.ts";
 import {
   appsCommand,
   describeAppFailure,
@@ -27,8 +29,14 @@ import { outdatedCli } from "./implementation/update-notice.ts";
 import { pair } from "./implementation/pair.ts";
 import { upgrade } from "./implementation/upgrade.ts";
 
-// The script Node started, such as the npm launcher, shows which package manager installed it.
-const entry = process.argv[1];
+// The file that started the CLI shows how it was installed: the npm launcher, or the release
+// executable itself, names itself in EXECUTOR_LAUNCHER; otherwise it is the script Node started.
+const entry = process.env.EXECUTOR_LAUNCHER ?? process.argv[1];
+// The Node.js the npm launcher runs on. The release executable carries its own runtime, so a
+// standalone install needs no Node at all.
+const launcherNode =
+  process.env.EXECUTOR_LAUNCHER_NODE ??
+  (process.versions.bun === undefined ? process.versions.node : undefined);
 /** Failures whose message is written for the person running the command. */
 const explained = Schema.is(
   Schema.Union([LocalConfigurationError, PairFailed, LegacyCommand, UpgradeFailed]),
@@ -44,7 +52,13 @@ const cli = executorCommand.pipe(
     pairCommand.pipe(Command.withHandler(() => pair(process.platform))),
     upgradeCommand.pipe(
       Command.withHandler((options) =>
-        upgrade(options, { entry, node: process.versions.node, platform: process.platform }),
+        upgrade(options, {
+          entry,
+          node: launcherNode,
+          executable: process.execPath,
+          platform: process.platform,
+          arch: process.arch,
+        }),
       ),
     ),
     rotateKeyCommand.pipe(
