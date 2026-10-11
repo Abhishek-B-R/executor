@@ -6308,18 +6308,6 @@ export const scenarios = plan({
       ),
     },
   },
-  catalogFreshness: {
-    file: "catalog-freshness.spec.ts",
-    title:
-      "Catalog reads share one kept feed fetch that refreshes when stale, and logo pages read icon domains without the full catalog",
-    targets: {
-      "self-host": scheduled,
-      cloud: na("Cloud reads the public feed; only self-host starts a scenario-owned feed."),
-      local: na(
-        "Local keeps the same shared catalog and icon read; only self-host starts a scenario-owned feed.",
-      ),
-    },
-  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",
