@@ -8,7 +8,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -677,8 +677,10 @@ export default defineApp({ accounts: {} }, async ({ cache }) => {
           `await ${tools}.upstream.answer({});
 return await ${tools}.upstream.answer({})`,
         );
-        // Each call's app spans arrive in their own batch; wait until the warm call's have.
-        const { spans, warm } = yield* traced(app, "one-cache-trip-trace.json", {
+        // Each call's app spans arrive in their own batch; wait until the warm call's have. On
+        // Cloud, the first invocation of the new build (the tool listing) is cold, so it wakes the
+        // app's supervisor; the wake finishes in the background, after that invocation's reply.
+        const { spans, warm, cloud } = yield* traced(app, "one-cache-trip-trace.json", {
           tool: "answer",
         }).pipe(
           Effect.flatMap(({ spans }) => {
@@ -686,14 +688,58 @@ return await ${tools}.upstream.answer({})`,
               .filter((span) => span.operationName === "mcp.tool.call")
               .sort((left, right) => Date.parse(left.startTime) - Date.parse(right.startTime));
             const warm = calls[1];
+            const cloud = spans.some(({ operationName }) => operationName === "runtime.cloud.call");
             return calls.length === 2 &&
               warm !== undefined &&
-              below(spans, warm, "app.cache.get").length > 0
-              ? Effect.succeed({ spans, warm })
+              below(spans, warm, "app.cache.get").length > 0 &&
+              (!cloud || spans.some(({ operationName }) => operationName === "runtime.cloud.wake"))
+              ? Effect.succeed({ spans, warm, cloud })
               : Effect.fail(new Error("The warm call's spans have not arrived"));
           }),
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
         );
+        // A cold invocation wakes its supervisor once, ahead of its Worker's start-up and first
+        // cache command, so the two starts overlap; an invocation that starts warm sends none.
+        // Self-host's supervisors run in the runner's own process, so it sends no wake at all.
+        const invocations = spans.filter(
+          ({ operationName }) => operationName === "runtime.app.invoke",
+        );
+        const woken = invocations.flatMap((invocation) => {
+          const wakes = below(spans, invocation, "runtime.cloud.wake");
+          // The build is read in the serving span around the invocation, the Worker's cold start
+          // inside it.
+          const serving = spans.find(({ spanId }) => spanId === invocation.parentSpanId);
+          const cold =
+            below(spans, serving ?? invocation, "runtime.app.build.load").length > 0 ||
+            below(spans, invocation, "runtime.app.cold_start.load").length > 0;
+          if (!cold) expect(wakes).toEqual([]);
+          return wakes.length === 0 ? [] : [{ invocation, wake: one(wakes, "supervisor wake") }];
+        });
+        expect(woken.length > 0).toBe(cloud);
+        for (const { invocation, wake } of woken) {
+          expect(["build", "app"]).toContain(wake.tags["executor.wake.reason"]);
+          // Nobody waits on it, so it is the background's time, not the call's.
+          expect(wake.tags["executor.owner"]).toBe("background");
+          const wokeAt = Date.parse(wake.startTime);
+          // It starts before the Worker's start-up ends and before the first cache command.
+          const startup = one(below(spans, invocation, "runtime.app.rpc.start"), "Worker start");
+          expect(wokeAt).toBeLessThanOrEqual(
+            Date.parse(startup.startTime) + startup.durationMs + startResolutionMs,
+          );
+          const commands = below(spans, invocation, "runtime.cloud.cache").sort(
+            (left, right) => Date.parse(left.startTime) - Date.parse(right.startTime),
+          );
+          const first = commands[0];
+          if (first === undefined) throw new Error("The cold invocation sent no cache command");
+          expect(wokeAt).toBeLessThanOrEqual(Date.parse(first.startTime) + startResolutionMs);
+          // The wake reports how it found the supervisor. The listing's read usually reaches it
+          // first; the wake-start scenario covers a wake that starts it.
+          expect(["true", "false"]).toContain(wake.tags["executor.supervisor.cold"]);
+          expect(["true", "false"]).toContain(wake.tags["executor.supervisor.isolate_cold"]);
+          if (wake.tags["executor.supervisor.cold"] === "true")
+            expect(first.tags["cache.supervisor.woke_by"]).toBe("wake");
+          else expect(first.tags["cache.supervisor.woke_by"]).not.toBe("wake");
+        }
         // The warm call reads the catalog's manifest and the called tool's part in one command.
         const commands = below(spans, warm, "app.cache.command");
         expect(commands.map((span) => span.tags["cache.operation"])).toEqual(["acquire"]);
@@ -706,8 +752,9 @@ return await ${tools}.upstream.answer({})`,
           expect(hop.tags["cache.operation"]).toBe("acquire");
           expect(hop.tags["cache.reads"]).toBe("1");
           expect(hop.tags["cache.command.index"]).toBe("1");
-          // The cold call before it, in the same request, woke the supervisor if anything did.
+          // An earlier call of the same request woke the supervisor if anything did.
           expect(["true", "false"]).toContain(hop.tags["cache.supervisor.woke"]);
+          // Only the invocation that sent a wake reports the start it made.
           expect(hop.tags["cache.supervisor.woke_by"]).toBe(
             hop.tags["cache.supervisor.woke"] === "true" ? "earlier" : undefined,
           );
@@ -729,6 +776,104 @@ try { await ${tools}.upstream.answer({}); return "called"; } catch { return "mis
         expect(retired.structuredContent).toMatchObject({
           execution: { ok: true, value: "missing" },
         });
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.toolCallOverheadWakeStart.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy } = yield* fixture;
+        const api = yield* Api,
+          actors = yield* Actors,
+          telemetry = yield* Telemetry,
+          evidence = yield* Evidence;
+        // An API call that names its tool's kind skips the tool listing an MCP call reads first,
+        // so nothing reaches the new app's supervisor before the cold invocation's wake. The
+        // tool then reads the app's cache.
+        const app = yield* deploy(`import { defineApp, object, query, router, string } from "apps";
+export default defineApp({ accounts: {} }, {
+  tools: router({
+    probe: query({ input: object({}) }, async ({ cache }) => (await cache.read("probe", string())) ?? "missing"),
+  }),
+});`);
+        // Two calls in one trace, as one client operation of several requests: the first loads
+        // the build and the Worker, the second finds both loaded.
+        const traceparent = `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`;
+        const traceId = traceparent.split("-")[1]!;
+        for (let call = 0; call < 2; call++) {
+          const answered = yield* api.request(
+            actors.owner,
+            "POST",
+            `/api/organizations/${actors.organization.id}/apps/${app.id}/tools/call`,
+            { tool: "probe", kind: "query", input: {} },
+            { traceparent },
+          );
+          expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+          expect(answered.body).toBe("missing");
+        }
+        /** The host's span of the call that ran `invocation`, which reports what started for it. */
+        const callOf = (spans: readonly Span[], invocation: Span) => {
+          const byId = new Map(spans.map((span) => [span.spanId, span]));
+          for (let parent = invocation.parentSpanId; parent !== null;) {
+            const span = byId.get(parent);
+            if (span === undefined) return undefined;
+            if (/^runtime\.cloud\.[a-zA-Z]+$/.test(span.operationName))
+              return span.tags["executor.runtime.started"] === undefined ? undefined : span;
+            parent = span.parentSpanId;
+          }
+          return undefined;
+        };
+        const { spans, invocations } = yield* telemetry.query(traceId).pipe(
+          Effect.flatMap((trace) => {
+            const spans = trace.data.map(({ span }) => span);
+            const invocations = spans
+              .filter(({ operationName }) => operationName === "runtime.app.invoke")
+              .sort((left, right) => Date.parse(left.startTime) - Date.parse(right.startTime));
+            return invocations.length === 2 &&
+              spans.some(({ operationName }) => operationName === "runtime.cloud.wake") &&
+              invocations.every(
+                (invocation) =>
+                  below(spans, invocation, "runtime.cloud.cache").length > 0 &&
+                  callOf(spans, invocation) !== undefined,
+              )
+              ? Effect.succeed({ spans, invocations })
+              : Effect.fail(new Error("The calls' spans have not arrived"));
+          }),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+          Effect.tap(({ spans }) => evidence.json("wake-start-trace.json", spans)),
+        );
+        const startedFor = (invocation: Span) =>
+          callOf(spans, invocation)!.tags["executor.runtime.started"]!.split(",");
+        const [cold, ...warm] = invocations;
+        // The cold start's wake is the supervisor's first call, so the wake started it.
+        const wake = one(below(spans, cold!, "runtime.cloud.wake"), "supervisor wake");
+        expect(wake.tags["executor.supervisor.cold"]).toBe("true");
+        const wokeIsolate = wake.tags["executor.supervisor.isolate_cold"] === "true";
+        // Every command of that invocation reports the start its wake made, and so does its call.
+        for (const command of below(spans, cold!, "runtime.cloud.cache")) {
+          expect(command.tags["cache.supervisor.woke"]).toBe("true");
+          expect(command.tags["cache.supervisor.woke_by"]).toBe("wake");
+        }
+        const coldStarted = startedFor(cold!);
+        expect(coldStarted).toContain("supervisor");
+        expect(coldStarted.includes("supervisor-isolate")).toBe(wokeIsolate);
+        // A later invocation of the same trace did not pay for that start: its commands report an
+        // earlier wake, and its call reports no supervisor start. It finds the build and the Worker
+        // loaded and sends no wake, unless it reached another runner isolate, whose wake then
+        // finds the supervisor running.
+        for (const invocation of warm) {
+          for (const wake of below(spans, invocation, "runtime.cloud.wake"))
+            expect(wake.tags["executor.supervisor.cold"]).toBe("false");
+          for (const command of below(spans, invocation, "runtime.cloud.cache")) {
+            expect(command.tags["cache.supervisor.woke"]).toBe("true");
+            expect(command.tags["cache.supervisor.woke_by"]).toBe("earlier");
+          }
+          const started = startedFor(invocation);
+          expect(started).not.toContain("supervisor");
+          expect(started).not.toContain("supervisor-isolate");
+        }
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

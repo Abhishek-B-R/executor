@@ -68,7 +68,21 @@ export interface AppDataHost {
   ) => Effect.Effect<unknown, unknown>;
   readonly cancel: (id: string) => Effect.Effect<void, unknown>;
   readonly cache: (namespace: string, command: unknown) => Effect.Effect<unknown, unknown>;
+  /**
+   * Activate the supervisor ahead of a cold call's first command, so an idle supervisor's isolate
+   * starts while the app Worker loads instead of after it. The runner sends it in the background,
+   * at most once per call, and ignores its outcome: the call's own commands reach the supervisor
+   * either way. `reason` is how the runner knew the call was cold. A host whose supervisors have no
+   * isolate of their own to start leaves it out.
+   */
+  readonly wake?: (reason: SupervisorWakeReason) => Effect.Effect<unknown, unknown>;
 }
+
+/**
+ * How the runner knew a call was cold: it read the build, which this isolate has not run, or the
+ * Worker Loader started the app's Worker (`app`, as in `StartedPart`).
+ */
+export type SupervisorWakeReason = "build" | "app";
 
 /** Host bindings. None of them reaches authored code except the outbound network. */
 export interface AppRunnerHost {
@@ -80,6 +94,10 @@ export interface AppRunnerHost {
   readonly outbound: (app: string) => Fetcher;
   /** Seals the secret fields of providers that declare hosts. App code never holds it. */
   readonly credentialKey: Effect.Effect<CryptoKey>;
+  /**
+   * The app's data supervisor for one invocation: the runner asks once per invocation, so a host
+   * can tell that invocation's wake and commands apart from others of the same trace.
+   */
   readonly data: (app: string) => AppDataHost;
   /** Keep a successful call's release, including its cache refreshes, alive after it returns. */
   readonly waitUntil: (task: Promise<unknown>) => void;
@@ -288,6 +306,8 @@ const protocolOf = (
   build: string,
   load: () => Promise<LoadedWorkerBuild>,
   waitUntil: (task: Promise<unknown>) => void,
+  /** Called when this call reads the build itself: this isolate has not learned its protocol. */
+  reading: () => void,
 ) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -313,6 +333,7 @@ const protocolOf = (
             if (reads.get(build) === entry) reads.delete(build);
           }),
       );
+    reading();
     // A loader that throws before returning its promise still fails through `attempt`.
     const read = (async () => load())();
     // Keep this request alive until the read settles, so the calls waiting on it are released.
@@ -663,6 +684,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
 
   /** Run one call through its data supervisor, which loads the facet only on a cold start. */
   const facet = (
+    target: AppDataHost,
     invocation: AppInvocation,
     identity: string,
     capabilities: AppCapabilities,
@@ -672,7 +694,6 @@ export const makeAppRunner = (host: AppRunnerHost) => {
     waiting: Timed,
   ) =>
     Effect.gen(function* () {
-      const target = host.data(invocation.app);
       const id = crypto.randomUUID();
       const { command } = invocation;
       const result = yield* target
@@ -742,12 +763,35 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           "executor.runtime.mode": mode,
           "executor.worker.identity": name,
         });
+        const data = host.data(invocation.app);
+        const services = yield* Effect.context<never>();
+        // A cold call's supervisor is usually idle too, and its isolate takes about as long to start
+        // as the app Worker's. A Worker call wakes it once, in the background, as soon as the call
+        // is known to be cold, so the two starts overlap; a warm call sends nothing extra. A facet
+        // call's first message to the supervisor is its invocation, so a wake would gain nothing.
+        const wake = data.wake;
+        let woken = mode === "facet" || wake === undefined;
+        const wakeSupervisor = (reason: SupervisorWakeReason) => {
+          if (woken || wake === undefined) return;
+          woken = true;
+          // Never fails the call: it also runs inside the Worker Loader's cold-start callback.
+          try {
+            host.waitUntil(
+              Effect.runPromiseWith(services)(
+                wake(reason).pipe(Effect.catchCause(() => Effect.void)),
+              ),
+            );
+          } catch {
+            // The call's own commands reach the supervisor either way.
+          }
+        };
         // The build's protocol adapter owns this boundary: requests leave, and replies return, in
         // the host's current model whichever protocol the retained bundle speaks.
         const { protocol, load } = yield* protocolOf(
           invocation.build,
           capabilities.load,
           host.waitUntil,
+          () => wakeSupervisor("build"),
         );
         // A command this protocol's bundles would not run as asked fails without reaching them.
         const refused = protocol.refuse(invocation.command);
@@ -785,6 +829,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
                 yield* Effect.acquireRelease(hold, (unhold) => unhold).pipe(Effect.asVoid);
               }
               return yield* facet(
+                data,
                 invocation,
                 identity,
                 capabilities,
@@ -795,8 +840,6 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               );
             }),
           );
-        const data = host.data(invocation.app);
-        const services = yield* Effect.context<never>();
         // Cache writes after the result (background refreshes) are not reported to the host.
         let cacheChanged = false;
         const store =
@@ -836,6 +879,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
             close: leases.close,
           })),
         );
+        // The Worker Loader starting the app's Worker, as the call's start-up reports it, is the
+        // other sign the call is cold.
+        const started = yield* IsolateStarted;
         const reply = yield* start(name, load, {
           body,
           headers: invocation.headers,
@@ -850,7 +896,12 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           cache,
           explain: false,
           waiting: timing.waiting,
-        });
+        }).pipe(
+          Effect.provideService(IsolateStarted, (part) => {
+            started(part);
+            if (part === "app") wakeSupervisor("app");
+          }),
+        );
         const result = yield* protocol.response(invocation.command, reply);
         return cacheChanged &&
           typeof result === "object" &&

@@ -5039,6 +5039,20 @@ export const scenarios = plan({
       local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
     },
   },
+  toolCallOverheadWakeStart: {
+    fixtures: "actors",
+    file: "tool-call-overhead.spec.ts",
+    title: "A supervisor start made by a cold call's wake is reported by that call alone",
+    targets: {
+      "self-host": na(
+        "Self-host's supervisors run in the runner's own process, so its runner sends no wake.",
+      ),
+      cloud: managedCloud,
+      local: na(
+        "Local's supervisors run in the runner's own process, so its runner sends no wake.",
+      ),
+    },
+  },
   toolCallOverheadLoader: {
     fixtures: "actors",
     file: "tool-call-overhead.spec.ts",

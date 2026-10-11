@@ -23,7 +23,7 @@ import {
   serveAppRunner,
   type RemoteCapabilities,
 } from "@executor-js/sdk/workerd";
-import { withRemoteSpan } from "@executor-js/telemetry";
+import { owned, withRemoteSpan } from "@executor-js/telemetry";
 import { cloudBuildReader } from "./infrastructure/blobs.ts";
 import { cloudOrigin } from "./infrastructure/stage.ts";
 import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build-storage.ts";
@@ -55,12 +55,14 @@ const CacheAnswered = Schema.Struct({
     ...EvaluatedSupervisor.fields,
     colo: Schema.String,
     wokeEarlier: Schema.optionalKey(Schema.Boolean),
+    wokeByWake: Schema.optionalKey(Schema.Boolean),
     isolateWoke: Schema.optionalKey(Schema.Boolean),
   }),
 });
 /**
- * `cache.supervisor.woke` is whether this request woke the supervisor: this command, or an
- * earlier call of the same trace, such as the evaluated listing read, which `woke_by` tells apart.
+ * `cache.supervisor.woke` is whether this request woke the supervisor: this command, this
+ * invocation's wake, or an earlier call of the same trace, such as the evaluated listing read or
+ * another invocation's wake, which `woke_by` tells apart. Only the first two are this call's start.
  * A colo reads `pending` while its isolate's one lookup has not answered yet, which happens only
  * on the first commands of a fresh isolate; see `coloOf`.
  */
@@ -71,10 +73,12 @@ const annotateCacheSupervisor = (reply: unknown) => {
     return Effect.gen(function* () {
       (yield* IsolateStarted)("unknown");
     });
-  const { woke, wokeEarlier, isolateWoke, instanceMs, isolateMs, colo } = answered.value.supervisor;
+  const { woke, wokeEarlier, wokeByWake, isolateWoke, instanceMs, isolateMs, colo } =
+    answered.value.supervisor;
   return Effect.gen(function* () {
-    // This command woke the supervisor; its isolate started too when it is the isolate's first.
-    if (woke) {
+    // This command, or its call's wake, woke the supervisor; its isolate started too when it is
+    // the isolate's first.
+    if (woke || wokeByWake === true) {
       const started = yield* IsolateStarted;
       started("supervisor");
       // One that predates `isolateWoke` cannot say whether its isolate started too.
@@ -82,18 +86,38 @@ const annotateCacheSupervisor = (reply: unknown) => {
       else if (isolateWoke) started("supervisor-isolate");
     }
     yield* Effect.annotateCurrentSpan({
-      "cache.supervisor.woke": woke || wokeEarlier === true,
+      "cache.supervisor.woke": woke || wokeByWake === true || wokeEarlier === true,
       ...(woke
         ? { "cache.supervisor.woke_by": "command" }
-        : wokeEarlier === true
-          ? { "cache.supervisor.woke_by": "earlier" }
-          : {}),
+        : wokeByWake === true
+          ? { "cache.supervisor.woke_by": "wake" }
+          : wokeEarlier === true
+            ? { "cache.supervisor.woke_by": "earlier" }
+            : {}),
       "cache.supervisor.instance_ms": instanceMs,
       "cache.supervisor.isolate_ms": isolateMs,
       "cache.supervisor.colo": colo,
     });
   });
 };
+/**
+ * How the supervisor ran when a cold call's wake reached it, in the attributes its invocation span
+ * uses: whether the wake started its object, and its isolate. A supervisor from before `wake`
+ * fails the wake instead, which the runner ignores.
+ */
+const WakeAnswered = Schema.Struct({
+  supervisor: EvaluatedSupervisor,
+  isolateWoke: Schema.Boolean,
+});
+const annotateWake = (reply: unknown) =>
+  Option.match(Schema.decodeUnknownOption(WakeAnswered)(reply), {
+    onNone: () => Effect.void,
+    onSome: ({ supervisor, isolateWoke }) =>
+      Effect.annotateCurrentSpan({
+        "executor.supervisor.cold": supervisor.woke,
+        "executor.supervisor.isolate_cold": isolateWoke,
+      }),
+  });
 /** The current trace's ID, which a supervisor compares with the call that woke it. */
 const currentTrace = Effect.currentSpan.pipe(
   Effect.map((span) => span.traceId),
@@ -120,14 +144,15 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
       return {
         // The reply carries how the supervisor ran, for the runner's span; the runner's reply
         // decoder ignores the extra field, so runners from before it read the reply unchanged.
-        cache: (namespace: string, command: unknown, trace?: string) =>
-          supervisor.observedCache(namespace, command, trace).pipe(
-            Effect.map(({ reply, supervisor: running, wokeEarlier, isolateWoke }) => ({
+        cache: (namespace: string, command: unknown, trace?: string, invocation?: string) =>
+          supervisor.observedCache(namespace, command, trace, invocation).pipe(
+            Effect.map(({ reply, supervisor: running, wokeEarlier, wokeByWake, isolateWoke }) => ({
               ...reply,
-              supervisor: { ...running, wokeEarlier, isolateWoke, colo: colo() },
+              supervisor: { ...running, wokeEarlier, wokeByWake, isolateWoke, colo: colo() },
             })),
           ),
         evaluated: supervisor.evaluated,
+        wake: supervisor.wake,
         invoke: (
           input: typeof FacetInvocation.Type,
           load: () => Promise<typeof FacetBundle.Type>,
@@ -219,6 +244,10 @@ export default AppData.make(
             const target = databases.getByName(app);
             // Commands this invocation sent its supervisor so far; the first also opens the stub.
             let commands = 0;
+            // The runner asks for this per invocation. One trace can carry several invocations,
+            // such as an execution's tool calls, and only the one whose wake started the
+            // supervisor paid for that start. Opaque and never reported.
+            const invocation = crypto.randomUUID();
             const colo = () => coloOf((lookup) => waitUntil(Effect.runPromise(lookup)));
             // Start this isolate's colo lookup with the invocation, ahead of its first command.
             colo();
@@ -228,6 +257,17 @@ export default AppData.make(
                   .invoke(input, load, elicit, controls)
                   .pipe(Effect.provide(RuntimeContext.phantom)),
               cancel: (id) => target.cancel(id).pipe(Effect.provide(RuntimeContext.phantom)),
+              // No caller waits on it, so it is background work, not the call's Executor time. It
+              // carries the invocation, so this call's commands report the start it made.
+              wake: (reason) =>
+                currentTrace.pipe(
+                  Effect.flatMap((trace) => target.wake(trace, invocation)),
+                  Effect.tap(annotateWake),
+                  Effect.provide(RuntimeContext.phantom),
+                  owned("background", "runtime.cloud.wake", {
+                    attributes: { "executor.wake.reason": reason },
+                  }),
+                ),
               cache: (namespace, command) =>
                 Schema.decodeUnknownEffect(CacheCommand)(command).pipe(
                   Effect.tap((parsed) =>
@@ -241,7 +281,7 @@ export default AppData.make(
                   ),
                   Effect.flatMap((parsed) =>
                     currentTrace.pipe(
-                      Effect.flatMap((trace) => target.cache(namespace, parsed, trace)),
+                      Effect.flatMap((trace) => target.cache(namespace, parsed, trace, invocation)),
                     ),
                   ),
                   Effect.tap(annotateCacheSupervisor),

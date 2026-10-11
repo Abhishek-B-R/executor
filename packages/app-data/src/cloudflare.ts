@@ -226,6 +226,12 @@ export const makeFacetSupervisor = (
      * the same trace was not the first, but the request it serves still paid for the wake.
      */
     let wokenBy: string | undefined;
+    /**
+     * The invocation whose `wake` woke this instance, when one did. Only that invocation paid for
+     * the start: others of the same trace, such as the warm calls after it in one execution,
+     * report an earlier wake like any other.
+     */
+    let wokenByWakeOf: string | undefined;
     /** Count `effect` as one call or event the instance received. */
     const enter = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       Effect.suspend(() => {
@@ -234,24 +240,36 @@ export const makeFacetSupervisor = (
       });
     /**
      * How this instance is running, for the caller's span. Counts the call it answers. `trace` is
-     * the caller's trace ID; it is only compared with the waking call's, never reported.
+     * the caller's trace ID and `invocation` its runner invocation's opaque ID; both are only
+     * compared with the waking call's, never reported. `wake` marks the runner's wake.
      */
-    const runningIn = (trace?: string) =>
+    const runningIn = (trace?: string, invocation?: string, wake = false) =>
       Clock.currentTimeMillis.pipe(
         Effect.map((now) => {
           const woke = received++ === 0;
-          if (woke) wokenBy = trace;
+          if (woke) {
+            wokenBy = trace;
+            wokenByWakeOf = wake ? invocation : undefined;
+          }
           const supervisor: EvaluatedSupervisor = {
             woke,
             instanceMs: now - startedAt,
             isolateMs: now - isolateStarted,
           };
+          const wokeEarlier = !woke && trace !== undefined && trace === wokenBy;
+          /** The caller's own invocation sent the `wake` that woke this instance. */
+          const wokeByWake =
+            !woke && !wake && invocation !== undefined && invocation === wokenByWakeOf;
           return {
             supervisor,
             /** An earlier call of the caller's trace woke this instance. */
-            wokeEarlier: !woke && trace !== undefined && trace === wokenBy,
-            /** This call woke the isolate's first supervisor, so the isolate started for it. */
-            isolateWoke: woke && firstInIsolate,
+            wokeEarlier,
+            wokeByWake,
+            /**
+             * The activation this call reports, its own or its invocation's wake, started the
+             * isolate's first supervisor, so the isolate started for the call.
+             */
+            isolateWoke: (woke || wokeByWake) && firstInIsolate,
           };
         }),
       );
@@ -610,16 +628,26 @@ export const makeFacetSupervisor = (
       cache: (namespace: string, command: unknown) => enter(cache(namespace, command)),
       /**
        * A cache command's reply, with how this supervisor was running when it answered: whether
-       * the command woke it, or an earlier call of the caller's `trace` did, and how long it and
-       * its isolate had been running.
+       * the command woke it, its `invocation`'s wake did, or an earlier call of the caller's
+       * `trace` did, and how long it and its isolate had been running.
        */
-      observedCache: (namespace: string, command: unknown, trace?: string) =>
-        runningIn(trace).pipe(
-          Effect.flatMap(({ supervisor, wokeEarlier, isolateWoke }) =>
+      observedCache: (namespace: string, command: unknown, trace?: string, invocation?: string) =>
+        runningIn(trace, invocation).pipe(
+          Effect.flatMap(({ supervisor, wokeEarlier, wokeByWake, isolateWoke }) =>
             cache(namespace, command).pipe(
-              Effect.map((reply) => ({ reply, supervisor, wokeEarlier, isolateWoke })),
+              Effect.map((reply) => ({ reply, supervisor, wokeEarlier, wokeByWake, isolateWoke })),
             ),
           ),
+        ),
+      /**
+       * Nothing but activation, sent by a cold call's runner ahead of its first command so this
+       * supervisor starts while the app Worker does. Answers how it found the supervisor. When it
+       * woke the instance, the commands of the same `invocation` report `wokeByWake` and the
+       * start it paid for; other calls of the caller's `trace` report an earlier wake.
+       */
+      wake: (trace?: string, invocation?: string) =>
+        runningIn(trace, invocation, true).pipe(
+          Effect.map(({ supervisor, isolateWoke }) => ({ supervisor, isolateWoke })),
         ),
       /**
        * Host-evaluated results, with how this supervisor was running when it answered. A command
