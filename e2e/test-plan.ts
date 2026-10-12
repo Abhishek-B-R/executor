@@ -6574,6 +6574,13 @@ export const scenarios = plan({
       "Cloud v1 import signs in and renews OAuth accounts with each connection's v1 client, granted scopes and resource, not the integration's method, and refuses a token endpoint v1 no longer trusted",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  // The operator clients it moves grants to are the ones every managed local Cloud starts with.
+  v1ImportFirstParty: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import moves connections that signed in through Executor's own apps to v2's operator client of the same name, which renews them with the granted scopes, and refuses an app v2 does not offer, a scope it does not allow and a host its tokens never reach",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   localSkills: {
     file: "local-skills.spec.ts",
     title: "local MCP skills follow configured copies and deployment versions",

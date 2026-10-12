@@ -1376,6 +1376,11 @@ export const OAuthGrant = Schema.Union([
     expiresAt: Schema.optional(Schema.Number),
     fields: JsonObject,
     refreshToken: Schema.optional(Schema.NonEmptyString),
+    /**
+     * Scopes each refresh asks for again. Only imported grants carry them, as the product that
+     * issued the grant sent them; see the other authorization code grant's `scopes`.
+     */
+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
     generation: Schema.Int,
   }),
 ]);
@@ -1392,32 +1397,68 @@ export const isFirstPartyGrant = (grant: OAuthGrant): grant is OAuthFirstPartyGr
 /**
  * An account whose OAuth grant was issued by another product, as the Executor v1 importer saves
  * it (`notes/v1-import.md`). Internal to that importer and deleted with it; not part of the HTTP
- * or Promise API.
+ * or Promise API. The grant was issued either to a client the product registered, which the
+ * account keeps (`client`), or to one of the operator's own clients (`firstParty`), which must
+ * be the same client at the authorization server: the same client ID, so its refresh token is
+ * valid for it.
  */
-export interface ImportOAuthGrant {
+export type ImportOAuthGrant = {
   readonly owner: OwnerId;
   readonly provider: ProviderId;
   readonly method: string;
   readonly label: string;
   /** The callback the client was registered with, for an authorization-code grant. */
   readonly redirectUri?: string | undefined;
-  /** The client the grant was issued to, with its secret. */
-  readonly client: Redacted.Redacted<OAuthRegistration>;
   readonly accessToken: Redacted.Redacted<string>;
   readonly refreshToken?: Redacted.Redacted<string> | undefined;
   /** Epoch milliseconds when the access token expires. */
   readonly expiresAt?: number | undefined;
-  /**
-   * How renewals ask for a token, as the product that issued the grant did. It replaces what the
-   * provider's method declares: the token endpoint, the scopes asked for again (none when empty)
-   * and the RFC 8707 resource (none when absent).
-   */
-  readonly renewal: {
-    readonly tokenEndpoint: string;
-    readonly scopes: readonly string[];
-    readonly resource?: string | undefined;
-  };
-}
+} & (
+  | {
+      /** The client the grant was issued to, with its secret. */
+      readonly client: Redacted.Redacted<OAuthRegistration>;
+      /**
+       * How renewals ask for a token, as the product that issued the grant did. It replaces what
+       * the provider's method declares: the token endpoint, the scopes asked for again (none when
+       * empty) and the RFC 8707 resource (none when absent).
+       */
+      readonly renewal: {
+        readonly tokenEndpoint: string;
+        readonly scopes: readonly string[];
+        readonly resource?: string | undefined;
+      };
+    }
+  | {
+      /**
+       * The operator's client the grant was issued to. The account's token is managed, and the
+       * grant renews and is revoked with the operator's current configuration, as one a sign-in
+       * with that client saves.
+       */
+      readonly firstParty: FirstPartyOAuthClientId;
+      /**
+       * The hosts the app the account is imported for declares for the provider, which a
+       * connection would grant it; the client's tokens must reach at least one of them.
+       */
+      readonly hosts: readonly string[];
+      /** The scopes renewals ask for again (none when empty); each must be one the client allows. */
+      readonly renewal: { readonly scopes: readonly string[] };
+    }
+);
+/**
+ * Why a grant to one of the operator's clients cannot be imported: the operator does not offer
+ * that client (`unavailable`), the provider's method would not sign in with it (`method`), the
+ * grant holds a scope the client does not allow (`scopes`), or the client's tokens reach none of
+ * the hosts the account's app declares (`hosts`). Internal to the v1 importer.
+ */
+export class OAuthGrantNotImportable extends Schema.TaggedError<OAuthGrantNotImportable>()(
+  "OAuthGrantNotImportable",
+  { reason: Schema.Literals(["unavailable", "method", "scopes", "hosts"]) },
+) {}
+/** One of the operator's clients as the importer checks a grant against it, without credentials. */
+export type FirstPartyOAuthClientDescription = Omit<
+  FirstPartyOAuthClient,
+  "clientId" | "clientSecret"
+>;
 /** Host-only access to {@link ImportOAuthGrant}. */
 export const OAuthGrantImport = Symbol("executor.OAuthGrantImport");
 export interface OAuthGrantImport {
@@ -1430,6 +1471,13 @@ export interface OAuthGrantImport {
     input: ImportOAuthGrant,
   ) => Effect.Effect<
     typeof Account.Type,
-    StorageError | CredentialsError | ProviderNotFound | AuthMethodInvalid | OAuthSetupFailed
+    | StorageError
+    | CredentialsError
+    | ProviderNotFound
+    | AuthMethodInvalid
+    | OAuthSetupFailed
+    | OAuthGrantNotImportable
   >;
+  /** The operator's client `id` when it is offered here, which its credentials being set decides. */
+  readonly firstPartyClient: (id: string) => FirstPartyOAuthClientDescription | undefined;
 }

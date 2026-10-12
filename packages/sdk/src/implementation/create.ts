@@ -216,7 +216,10 @@ export const createExecutor = (
           blobs: options.blobs,
         }),
       },
-      [OAuthGrantImport]: { importOAuthGrant: oauth.importGrant },
+      [OAuthGrantImport]: {
+        importOAuthGrant: oauth.importGrant,
+        firstPartyClient: oauth.firstPartyClient,
+      },
       [StorageHost]: {
         transaction: (effect) =>
           db.transaction(effect).pipe(

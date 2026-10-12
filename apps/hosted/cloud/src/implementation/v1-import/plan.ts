@@ -2,6 +2,7 @@
  * What an import of one v1 organization does with each item, decided from v1's rows alone. The
  * preview shows it; each item request decides again from fresh rows before writing.
  */
+import type { FirstPartyOAuthClientDescription } from "@executor-js/sdk/core";
 import { Option, Schema } from "effect";
 import type { V1ImportItem, V1ItemKey } from "../../contracts/v1-import.ts";
 import {
@@ -61,7 +62,24 @@ export type ConnectionAccess =
         readonly scopes: readonly string[];
         readonly resource?: string | undefined;
       };
+    }
+  | {
+      /** Signed in through one of Executor's own OAuth apps, which v2 offers as the same client. */
+      readonly kind: "first_party";
+      readonly method: Extract<V1AuthMethod, { kind: "oauth2" }>;
+      readonly client: FirstPartyOAuthClientDescription;
+      readonly accessItem: string;
+      /** What the app's method asks for at sign-in; see {@link firstPartySignIn}. */
+      readonly scopes: readonly string[];
+      /** The scopes the connection was granted, which renewals ask for again, as v1's did. */
+      readonly renewal: { readonly scopes: readonly string[] };
     };
+
+/**
+ * The operator's OAuth client v2 offers under one of v1's first-party names (`google` for
+ * `first-party:google`), or undefined when it offers none: the client's credentials are not set.
+ */
+export type FirstPartyClients = (name: string) => FirstPartyOAuthClientDescription | undefined;
 
 export interface ConnectionPlan {
   readonly row: ConnectionRow;
@@ -72,11 +90,33 @@ export interface ConnectionPlan {
 
 export const integrationLabel = (row: IntegrationRow) => row.name ?? row.slug;
 
-const firstPartyNames: Record<string, string> = { github: "GitHub" };
-/** The provider of one of Executor's own OAuth apps, as people know it: `first-party:google` is Google. */
-const firstPartyName = (client: string) => {
-  const name = client.slice(firstPartyClientPrefix.length);
-  return firstPartyNames[name] ?? `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+const firstPartyNames: Record<string, string> = {
+  github: "GitHub",
+  gitlab: "GitLab",
+  hubspot: "HubSpot",
+  clickup: "ClickUp",
+};
+/** The provider of one of Executor's own OAuth apps, as people know it: `google` is Google. */
+export const firstPartyName = (name: string) =>
+  firstPartyNames[name] ?? `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+
+/** The scopes v1 recorded a connection was granted; none when it recorded none. */
+const grantedScopes = (row: ConnectionRow) =>
+  (row.oauth_scope ?? "").split(/\s+/).filter((scope) => scope !== "");
+
+/**
+ * What an imported app's method asks for when it signs in with one of the operator's clients. A
+ * client that allows no scopes, as the GitHub App's, is offered only to a method that asks for
+ * none, and v1 asked it for none whatever the integration declared. Any other client asks for
+ * the integration's scopes, as v1 did, which must all be ones the client allows.
+ */
+const firstPartySignIn = (
+  client: FirstPartyOAuthClientDescription,
+  method: Extract<V1AuthMethod, { kind: "oauth2" }>,
+) => {
+  const allowed = client.allowedScopes ?? client.defaultScopes;
+  if (allowed.length === 0) return [];
+  return method.scopes.every((scope) => allowed.includes(scope)) ? method.scopes : undefined;
 };
 
 const httpUrl = (value: string) =>
@@ -125,7 +165,7 @@ export const refreshTokenEndpoint = (client: string, recorded: string | null) =>
  */
 const v1Renewal = (row: ConnectionRow, client: OAuthClientRow, tokenEndpoint: string) => ({
   tokenEndpoint,
-  scopes: (row.oauth_scope ?? "").split(/\s+/).filter((scope) => scope !== ""),
+  scopes: grantedScopes(row),
   ...(client.resource === null || client.resource === "" ? {} : { resource: client.resource }),
 });
 
@@ -208,6 +248,7 @@ const connectionMethod = (
 /** Decide a connection from its integration's methods and, for OAuth, its client row. */
 export const connectionPlan = (
   snapshot: Pick<V1Snapshot, "integrations" | "clients">,
+  firstParty: FirstPartyClients,
   row: ConnectionRow,
 ): Supported<ConnectionPlan> | Unsupported => {
   const integration = snapshot.integrations.find((candidate) => candidate.slug === row.integration);
@@ -244,10 +285,52 @@ export const connectionPlan = (
       if (method.enterprise) return unsupported("Enterprise-managed OAuth is not supported.");
       if (row.oauth_client === null)
         return unsupported("It has no OAuth client in v1. Reconnect it in v2.");
-      if (row.oauth_client.startsWith(firstPartyClientPrefix))
-        return unsupported(
-          `It signed in through Executor's own ${firstPartyName(row.oauth_client)} app, which Executor v2 does not offer yet. Reconnect it in v2.`,
-        );
+      // An OAuth account holds only its token, so a fixed credential it does not replace has
+      // nowhere to go.
+      const fixedElsewhere = integrationValues(decoded.value).secrets.some(
+        (secret) => !replaces({ carrier: "header", name: method.header }, secret),
+      );
+      if (row.oauth_client.startsWith(firstPartyClientPrefix)) {
+        // v1's first-party connections move to v2's client of the same name. Production
+        // configures each such client with v1's client ID and secret, so the refresh tokens copied
+        // from v1 are valid for it; a v2 client under a v1 name must always be v1's client.
+        const name = row.oauth_client.slice(firstPartyClientPrefix.length);
+        const label = firstPartyName(name);
+        const client = firstParty(name);
+        if (client === undefined)
+          return unsupported(
+            `It signed in through Executor's own ${label} app, which Executor v2 does not offer yet. Reconnect it in v2.`,
+          );
+        const accessItem = items?.[tokenVariable];
+        if (accessItem === undefined)
+          return unsupported("Its saved sign-in is incomplete. Reconnect it in v2.");
+        // v1 renewed with the scopes the connection was granted, and v2's client renews only a
+        // grant whose scopes it allows. Its allowed scopes are reviewed code, so a grant beyond
+        // them reconnects rather than widening them.
+        const allowed = client.allowedScopes ?? client.defaultScopes;
+        const granted = grantedScopes(row);
+        if (!granted.every((scope) => allowed.includes(scope)))
+          return unsupported(
+            `It was granted permissions Executor v2's own ${label} app does not allow. Reconnect it in v2.`,
+          );
+        const scopes = firstPartySignIn(client, method);
+        if (scopes === undefined)
+          return unsupported(
+            `Its integration asks for permissions Executor v2's own ${label} app does not allow. Reconnect it in v2.`,
+          );
+        if (fixedElsewhere)
+          return unsupported(
+            "Its integration sends a fixed credential that v2 cannot add to an OAuth sign-in.",
+          );
+        return plan({
+          kind: "first_party",
+          method,
+          client,
+          accessItem,
+          scopes,
+          renewal: { scopes: granted },
+        });
+      }
       const client = connectionClient(row, snapshot.clients);
       if (client === undefined)
         return unsupported("Its OAuth client no longer exists in v1. Reconnect it in v2.");
@@ -279,13 +362,7 @@ export const connectionPlan = (
         return unsupported(
           "v1 no longer trusted the token endpoint its sign-in recorded. Reconnect it in v2.",
         );
-      // An OAuth account holds only its token, so a fixed credential it does not replace has
-      // nowhere to go.
-      if (
-        integrationValues(decoded.value).secrets.some(
-          (secret) => !replaces({ carrier: "header", name: method.header }, secret),
-        )
-      )
+      if (fixedElsewhere)
         return unsupported(
           "Its integration sends a fixed credential that v2 cannot add to an OAuth sign-in.",
         );
@@ -366,7 +443,10 @@ export const artifactPlan = (
 };
 
 /** Every item of a v1 organization in the order the browser posts them. */
-export const previewItems = (snapshot: V1Snapshot): Array<Omit<V1ImportItem, "result">> => {
+export const previewItems = (
+  snapshot: V1Snapshot,
+  firstParty: FirstPartyClients,
+): Array<Omit<V1ImportItem, "result">> => {
   const integrations = snapshot.integrations.map((row) => {
     const plan = integrationPlan(row);
     return {
@@ -381,7 +461,7 @@ export const previewItems = (snapshot: V1Snapshot): Array<Omit<V1ImportItem, "re
     };
   });
   const connections = snapshot.connections.map((row) => {
-    const plan = connectionPlan(snapshot, row);
+    const plan = connectionPlan(snapshot, firstParty, row);
     const integration = snapshot.integrations.find(
       (candidate) => candidate.slug === row.integration,
     );

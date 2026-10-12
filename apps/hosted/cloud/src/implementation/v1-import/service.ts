@@ -6,7 +6,7 @@
  * where the workspace went on its WorkOS organization (`moved-notice.ts`).
  */
 import { organizationOwner } from "@executor-js/hosted-server";
-import { AppId } from "@executor-js/sdk/core";
+import { AppId, OAuthGrantImport } from "@executor-js/sdk/core";
 import { DateTime, Effect, Predicate } from "effect";
 import { HttpClient } from "effect/http";
 import {
@@ -36,8 +36,8 @@ import {
   type ItemContext,
 } from "./items.ts";
 import { makeV1MovedNotice } from "./moved-notice.ts";
-import { decodeToolkit, matchPattern } from "./formats.ts";
-import { connectionPlan, previewItems } from "./plan.ts";
+import { decodeToolkit, firstPartyClientPrefix, matchPattern } from "./formats.ts";
+import { connectionPlan, previewItems, type FirstPartyClients } from "./plan.ts";
 import { makeV1Source, type V1SourceSettings, type V1Snapshot } from "./source.ts";
 import { makeImportStore, sourceHash, type MapResult, type MapRow } from "./store.ts";
 
@@ -46,6 +46,12 @@ export const noToolMatches = "It matches no tool v1 last listed for its integrat
 
 /** The v2 kind of an app imported as source without a deployment, which needs repair. */
 const undeployedApp = "undeployed_app";
+
+/** The operator's OAuth clients this request's executor offers, by v1's first-party name. */
+const firstPartyClients =
+  (request: V1ImportRequest): FirstPartyClients =>
+  (name) =>
+    request.executor[OAuthGrantImport].firstPartyClient(name);
 
 /** Storage and transport failures retry the request; anything else v2 refuses fails the item. */
 const transient = (error: unknown) =>
@@ -116,6 +122,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
     };
 
     const previewOf = (
+      request: V1ImportRequest,
       store: ReturnType<typeof makeImportStore>,
       organization: V1OrganizationId,
       snapshot: V1Snapshot,
@@ -131,7 +138,10 @@ export const makeV1Import = (settings: V1SourceSettings) =>
             : yield* store.target(started.v2_id);
         return {
           organization: { id: organization, name: snapshot.organization.name },
-          items: previewItems(snapshot).map((item) => ({ ...item, result: resultOf(rows, item) })),
+          items: previewItems(snapshot, firstPartyClients(request)).map((item) => ({
+            ...item,
+            result: resultOf(rows, item),
+          })),
           target: target ?? null,
         } satisfies V1ImportPreview;
       });
@@ -140,7 +150,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
       Effect.gen(function* () {
         const { source, store, member } = yield* eligible(request, organization);
         const snapshot = yield* source.snapshot(organization, member);
-        return yield* previewOf(store, organization, snapshot);
+        return yield* previewOf(request, store, organization, snapshot);
       }).pipe(Effect.withSpan("v1Import.preview"));
 
     const choices: typeof V1Import.Service.choices = (request) =>
@@ -201,7 +211,8 @@ export const makeV1Import = (settings: V1SourceSettings) =>
         const { source, store, member } = yield* eligible(request, organization);
         const snapshot = yield* source.snapshot(organization, member);
         const started = yield* store.find("organization", organization);
-        if (started?.status === "imported") return yield* previewOf(store, organization, snapshot);
+        if (started?.status === "imported")
+          return yield* previewOf(request, store, organization, snapshot);
         const owned = yield* store.owned(request.user);
         const requested = input.target;
         const chosen =
@@ -224,7 +235,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           result: { status: "imported", v2Kind: "organization", v2Id: target.id },
           hash: yield* sourceHash(snapshot.organization),
         });
-        return yield* previewOf(store, organization, snapshot);
+        return yield* previewOf(request, store, organization, snapshot);
       }).pipe(Effect.withSpan("v1Import.start"));
 
     const finish: typeof V1Import.Service.finish = (request, organization) =>
@@ -247,7 +258,12 @@ export const makeV1Import = (settings: V1SourceSettings) =>
                 Effect.logWarning("v1 import: where the workspace moved was not written to v1"),
               ),
             );
-        return yield* previewOf(store, organization, yield* source.snapshot(organization, member));
+        return yield* previewOf(
+          request,
+          store,
+          organization,
+          yield* source.snapshot(organization, member),
+        );
       }).pipe(Effect.withSpan("v1Import.finish"));
 
     const item: typeof V1Import.Service.item = (request, organization, key) =>
@@ -260,7 +276,8 @@ export const makeV1Import = (settings: V1SourceSettings) =>
             : undefined;
         if (target === undefined) return yield* new V1ImportNotStarted();
         const snapshot = yield* source.snapshot(organization, member);
-        const planned = previewItems(snapshot).find(
+        const firstParty = firstPartyClients(request);
+        const planned = previewItems(snapshot, firstParty).find(
           (candidate) => candidate.kind === key.kind && candidate.id === key.id,
         );
         if (planned === undefined) return yield* new V1ImportItemNotFound();
@@ -283,6 +300,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           snapshot,
           target,
           user: request.user,
+          firstParty,
         };
         const record =
           (kind: Parameters<typeof store.record>[0]["kind"], hash: string) => (result: MapResult) =>
@@ -333,7 +351,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
       ) => (error: unknown) => Effect.Effect<V1ItemResult, V1ImportUnavailable>,
     ) =>
       Effect.gen(function* () {
-        const { snapshot, store, executor } = context;
+        const { snapshot, store, executor, firstParty } = context;
         const owner = organizationOwner(context.target.id);
         switch (key.kind) {
           case "integration": {
@@ -351,6 +369,13 @@ export const makeV1Import = (settings: V1SourceSettings) =>
                   connection.row_id,
                   connection.template,
                   connection.oauth_client,
+                  // Whether v2 offers a first-party connection's client decides its method.
+                  ...(connection.oauth_client?.startsWith(firstPartyClientPrefix) === true
+                    ? [
+                        firstParty(connection.oauth_client.slice(firstPartyClientPrefix.length)) !==
+                          undefined,
+                      ]
+                    : []),
                 ]),
             });
             const existing = yield* store.find("integration", key.id);
@@ -378,7 +403,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
             const row = snapshot.connections.find((candidate) => candidate.row_id === key.id);
             if (row === undefined) return yield* new V1ImportItemNotFound();
             const hash = yield* sourceHash(row);
-            const plan = connectionPlan(snapshot, row);
+            const plan = connectionPlan(snapshot, firstParty, row);
             const integration = snapshot.integrations.find(
               (candidate) => candidate.slug === row.integration,
             );

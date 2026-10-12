@@ -39,6 +39,7 @@ import {
   type AccountId,
   type DeployedApp,
   type Executor,
+  type OAuthGrantNotImportable,
   type OAuthSetupFailed,
 } from "@executor-js/sdk/core";
 import { planOperationNames } from "apps/openapi";
@@ -67,6 +68,8 @@ import {
   artifactRepairNote,
   connectionPlan,
   decodedToolkits,
+  firstPartyName,
+  type FirstPartyClients,
   grantsNoConnection,
   integrationLabel,
   integrationPlan,
@@ -94,6 +97,8 @@ export interface ItemContext {
   readonly target: { readonly id: OrganizationId; readonly slug: string };
   /** The importing v2 user, who owns every account and profile. */
   readonly user: string;
+  /** The operator's OAuth clients v1's first-party connections move to. */
+  readonly firstParty: FirstPartyClients;
 }
 
 /** An item that cannot be imported, with a reason the user sees. */
@@ -227,6 +232,27 @@ const plannedMethod = (plan: ConnectionPlan): PlannedMethod | undefined => {
         configured: [],
       };
     }
+    case "first_party": {
+      // v1 signed in at its own app's endpoints, which v2's client of the same name has. The
+      // method declares them, so v2 signs it in, renews it and reconnects it with that client;
+      // an MCP server names them itself. Its scopes are what v1 asked that app for.
+      const { method, client, scopes } = access;
+      const oauth =
+        plan.decoded.plugin === "mcp"
+          ? {
+              discover: plan.decoded.config.endpoint,
+              ...(scopes.length === 0 ? {} : { scopes: [...scopes] }),
+            }
+          : {
+              authorizationUrl: client.server.authorizationUrl,
+              tokenUrl: client.server.tokenUrl,
+              scopes: [...scopes],
+            };
+      return {
+        method: { kind: "oauth", oauth, header: method.header, prefix: method.prefix },
+        configured: [],
+      };
+    }
   }
 };
 
@@ -236,7 +262,11 @@ const plannedMethod = (plan: ConnectionPlan): PlannedMethod | undefined => {
  * signs in, or the integration sends fixed credentials), a connection that sent no credentials of
  * its own gets a method with only the fixed ones: "No credentials" when there are none.
  */
-export const appMethods = (snapshot: V1Snapshot, integration: IntegrationRow) => {
+export const appMethods = (
+  snapshot: V1Snapshot,
+  firstParty: FirstPartyClients,
+  integration: IntegrationRow,
+) => {
   const methods: Record<string, GeneratedAuthMethod> = {};
   const keys = new Map<string, string>();
   const methodOf = new Map<string, string>();
@@ -244,7 +274,7 @@ export const appMethods = (snapshot: V1Snapshot, integration: IntegrationRow) =>
   const plans = snapshot.connections
     .filter((row) => row.integration === integration.slug)
     .flatMap((row) => {
-      const plan = connectionPlan(snapshot, row);
+      const plan = connectionPlan(snapshot, firstParty, row);
       return plan.ok ? [plan.value] : [];
     });
   const add = (plan: ConnectionPlan, planned: PlannedMethod) => {
@@ -631,7 +661,7 @@ export const importIntegration = (
   Effect.gen(function* () {
     const plan = integrationPlan(integration);
     if (!plan.ok) return yield* fail(plan.reason);
-    const { methods } = appMethods(context.snapshot, integration);
+    const { methods } = appMethods(context.snapshot, context.firstParty, integration);
     const generated = yield* generate(context, integration, plan.value, methods);
     const owner = organizationOwner(context.target.id);
     const app =
@@ -672,6 +702,20 @@ const oauthSetupReason = (reason: OAuthSetupFailed["reason"]) =>
       ? "The service no longer says how to sign in to it. Reconnect it in v2."
       : "Its sign-in could not be carried over to v2. Reconnect it in v2.";
 
+/** Why a first-party sign-in cannot move to v2's client of the same name, as the user reads it. */
+const firstPartyRefusal = (
+  name: string,
+  client: { readonly placement: { readonly hosts: readonly string[] } },
+  reason: OAuthGrantNotImportable["reason"],
+) =>
+  reason === "unavailable"
+    ? `It signed in through Executor's own ${name} app, which Executor v2 does not offer yet. Reconnect it in v2.`
+    : reason === "scopes"
+      ? `It was granted permissions Executor v2's own ${name} app does not allow. Reconnect it in v2.`
+      : reason === "hosts"
+        ? `Executor v2's own ${name} app sends its tokens only to ${client.placement.hosts.join(", ")}, and its integration calls none of them. Reconnect it in v2.`
+        : `Its integration does not sign in where Executor v2's own ${name} app does. Reconnect it in v2.`;
+
 const secret = (context: ItemContext, itemId: string) =>
   context.source
     .secret({ tenant: context.snapshot.tenant, subject: context.snapshot.member, itemId })
@@ -703,12 +747,46 @@ export const importAccount = (
   Effect.gen(function* () {
     const requirement = app.requirements.accounts.service;
     if (requirement === undefined) return yield* fail("Its imported app takes no account.");
-    const planned = appMethods(context.snapshot, plan.integration);
+    const planned = appMethods(context.snapshot, context.firstParty, plan.integration);
     const method = planned.methodOf.get(plan.row.row_id);
     if (method === undefined) return yield* fail("Its sign-in method is not in the imported app.");
     const owner = organizationOwner(context.target.id);
     const label = accountLabel(context.snapshot, plan.row);
     const access = plan.access;
+    if (access.kind === "first_party") {
+      const accessToken = yield* secret(context, access.accessItem);
+      const refreshToken =
+        plan.row.refresh_item_id === null
+          ? undefined
+          : yield* secret(context, plan.row.refresh_item_id);
+      const appName = firstPartyName(access.client.id);
+      const account = yield* context.executor[OAuthGrantImport]
+        .importOAuthGrant({
+          owner,
+          provider: requirement.provider,
+          method,
+          label,
+          redirectUri: v1OAuthCallback,
+          firstParty: access.client.id,
+          hosts: requirement.definition.hosts ?? [],
+          accessToken,
+          refreshToken,
+          ...(plan.row.expires_at === null ? {} : { expiresAt: plan.row.expires_at }),
+          renewal: access.renewal,
+        })
+        .pipe(
+          personalAccountCreation(context.user),
+          Effect.catchTag("OAuthSetupFailed", (error) => fail(oauthSetupReason(error.reason))),
+          Effect.catchTag("AuthMethodInvalid", () =>
+            fail("Its sign-in method is not in the imported app."),
+          ),
+          Effect.catchTag("OAuthGrantNotImportable", (error) =>
+            fail(firstPartyRefusal(appName, access.client, error.reason)),
+          ),
+        );
+      yield* record(imported("account", account.id));
+      return account.id;
+    }
     if (access.kind !== "oauth") {
       // Values from v1's configuration first, then the connection's own from v1's Vault.
       const fields: Record<string, string> = Object.fromEntries(
