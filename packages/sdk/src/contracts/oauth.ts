@@ -1437,7 +1437,8 @@ export type ImportOAuthGrant = {
       readonly firstParty: FirstPartyOAuthClientId;
       /**
        * The hosts the app the account is imported for declares for the provider, which a
-       * connection would grant it; the client's tokens must reach at least one of them.
+       * connection would grant it; the client's tokens must reach every one of them, or the
+       * app's calls to the others would be refused.
        */
       readonly hosts: readonly string[];
       /** The scopes renewals ask for again (none when empty); each must be one the client allows. */
@@ -1447,12 +1448,16 @@ export type ImportOAuthGrant = {
 /**
  * Why a grant to one of the operator's clients cannot be imported: the operator does not offer
  * that client (`unavailable`), the provider's method would not sign in with it (`method`), the
- * grant holds a scope the client does not allow (`scopes`), or the client's tokens reach none of
- * the hosts the account's app declares (`hosts`). Internal to the v1 importer.
+ * grant holds a scope the client does not allow (`scopes`), or the client's tokens do not reach
+ * every host the account's app declares (`hosts`, with the `unreachable` ones). Internal to the v1
+ * importer.
  */
 export class OAuthGrantNotImportable extends Schema.TaggedError<OAuthGrantNotImportable>()(
   "OAuthGrantNotImportable",
-  { reason: Schema.Literals(["unavailable", "method", "scopes", "hosts"]) },
+  {
+    reason: Schema.Literals(["unavailable", "method", "scopes", "hosts"]),
+    unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
+  },
 ) {}
 /** One of the operator's clients as the importer checks a grant against it, without credentials. */
 export type FirstPartyOAuthClientDescription = Omit<

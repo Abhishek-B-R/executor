@@ -6559,13 +6559,13 @@ export const scenarios = plan({
   v1ImportRun: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import moves a workspace into a new organization with v1's tool names, accounts, profiles and approvals, records the move on v1's WorkOS organization, links back to v1, and imports another into it in dependency order",
+      "Cloud v1 import moves a workspace into a new organization with v1's tool names, accounts, profiles and approvals, copies a fix prompt for what failed, records the move on v1's WorkOS organization, links back to v1, and imports another into it in dependency order",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportChecks: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import carries v1's account checks with their identity field, keeps fixed credentials out of app source, skips policies v1 never applied, and names OpenAPI tools v1 stored no operations for as v1 compiled them",
+      "Cloud v1 import carries v1's account checks with their identity field, fails a check that redirects without sending its credentials on, keeps fixed credentials out of app source, skips policies v1 never applied, and names OpenAPI tools v1 stored no operations for as v1 compiled them",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportToolkits: {
@@ -6577,7 +6577,7 @@ export const scenarios = plan({
   v1ImportRequests: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public and unnamed-method APIs, and refuses an API whose operations call several hosts",
+      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public, unnamed-method and one service's multi-host APIs, refuses an API whose operations call several services or send an account's credentials to several hosts over plain HTTP, drops an account check whose server variable turns it to plain HTTP, and offers a fix prompt only when an item failed",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportOAuthRenewal: {
@@ -6590,7 +6590,7 @@ export const scenarios = plan({
   v1ImportFirstParty: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import moves connections that signed in through Executor's own apps to v2's operator client of the same name, which renews them with the granted scopes, and refuses an app v2 does not offer, a scope it does not allow and a host its tokens never reach",
+      "Cloud v1 import moves connections that signed in through Executor's own apps to v2's operator client of the same name, which renews them with the granted scopes, sends the token to each of a service's hosts the client reaches, and refuses an app v2 does not offer, a scope it does not allow and a host its tokens never reach",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   localSkills: {

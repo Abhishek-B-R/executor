@@ -62,7 +62,14 @@ import {
   type V1Toolkit,
 } from "./formats.ts";
 import { openapiHealth, v1IntrospectionQuery } from "./health.ts";
-import { documentOperations, importedDocument, operationBaseUrls, parseSpec } from "./openapi.ts";
+import {
+  credentialOrigins,
+  documentOperations,
+  importedDocument,
+  operationBaseUrls,
+  parseSpec,
+  plainHttpHosts,
+} from "./openapi.ts";
 import {
   artifactPlan,
   artifactRepairNote,
@@ -563,16 +570,24 @@ export const generate = (
           operations,
           compiledTools(document, operations, tools),
         );
-        // v1 sent each operation to its own server unless the integration set a base URL; the app
-        // does the same, and an account's credentials go to one origin.
+        // v1 sent each operation to its own server unless the integration set a base URL, with the
+        // account's credentials on every one. The app does the same when those servers are one
+        // service's hosts, and declares each of them for the account's credentials.
         const servers = operationBaseUrls(decoded.config, prepared.document);
         if (servers === undefined || servers.length === 0)
           return yield* fail("Its API has no absolute base URL.");
-        const origins = [...new Set(servers.map((url) => new URL(url).origin))];
-        const origin = origins[0];
-        if (origin === undefined || origins.length > 1)
+        const allowed = credentialOrigins(servers);
+        if (!allowed.ok)
           return yield* fail(
-            `Its operations call ${origins.length} hosts, and an imported app sends an account's credentials to one.`,
+            `Its operations call hosts of different services (${allowed.hosts.join(", ")}), and an imported app sends an account's credentials only to one service's hosts.`,
+          );
+        const { origins } = allowed;
+        // v1 also sent the credentials over plain HTTP when a server named it; an app that sends
+        // them to several hosts does so only over HTTPS.
+        const insecure = accounts && origins.length > 1 ? plainHttpHosts(origins) : [];
+        if (insecure.length > 0)
+          return yield* fail(
+            `Its operations call ${insecure.join(", ")} over plain HTTP, and an imported app sends an account's credentials to more than one host only over HTTPS.`,
           );
         // v2's names for every operation, as liveOpenapiRouter plans them, mapped to v1's.
         const names: Record<string, string> = {};
@@ -596,13 +611,13 @@ export const generate = (
                   integration.slug,
                   spec.operation,
                 ),
-                host: new URL(origin).host,
+                origins,
               });
         const generated = yield* openapiAppSource({
           name,
           document: prepared.document,
           baseUrl: decoded.config.baseUrl,
-          allowedOrigin: origin,
+          allowedOrigins: origins,
           methods,
           headers,
           queryParams,
@@ -706,15 +721,21 @@ const oauthSetupReason = (reason: OAuthSetupFailed["reason"]) =>
 const firstPartyRefusal = (
   name: string,
   client: { readonly placement: { readonly hosts: readonly string[] } },
-  reason: OAuthGrantNotImportable["reason"],
-) =>
-  reason === "unavailable"
+  hosts: readonly string[],
+  error: Pick<OAuthGrantNotImportable, "reason" | "unreachable">,
+) => {
+  const only = `Executor v2's own ${name} app sends its tokens only to ${client.placement.hosts.join(", ")}`;
+  const unreachable = error.unreachable ?? [];
+  return error.reason === "unavailable"
     ? `It signed in through Executor's own ${name} app, which Executor v2 does not offer yet. Reconnect it in v2.`
-    : reason === "scopes"
+    : error.reason === "scopes"
       ? `It was granted permissions Executor v2's own ${name} app does not allow. Reconnect it in v2.`
-      : reason === "hosts"
-        ? `Executor v2's own ${name} app sends its tokens only to ${client.placement.hosts.join(", ")}, and its integration calls none of them. Reconnect it in v2.`
+      : error.reason === "hosts"
+        ? unreachable.length === 0 || unreachable.length === hosts.length
+          ? `${only}, and its integration calls none of them. Reconnect it in v2.`
+          : `${only}, and its integration also calls ${unreachable.join(", ")}, where its calls would be refused. Reconnect it in v2.`
         : `Its integration does not sign in where Executor v2's own ${name} app does. Reconnect it in v2.`;
+};
 
 const secret = (context: ItemContext, itemId: string) =>
   context.source
@@ -760,6 +781,7 @@ export const importAccount = (
           ? undefined
           : yield* secret(context, plan.row.refresh_item_id);
       const appName = firstPartyName(access.client.id);
+      const hosts = requirement.definition.hosts ?? [];
       const account = yield* context.executor[OAuthGrantImport]
         .importOAuthGrant({
           owner,
@@ -768,7 +790,7 @@ export const importAccount = (
           label,
           redirectUri: v1OAuthCallback,
           firstParty: access.client.id,
-          hosts: requirement.definition.hosts ?? [],
+          hosts,
           accessToken,
           refreshToken,
           ...(plan.row.expires_at === null ? {} : { expiresAt: plan.row.expires_at }),
@@ -781,7 +803,7 @@ export const importAccount = (
             fail("Its sign-in method is not in the imported app."),
           ),
           Effect.catchTag("OAuthGrantNotImportable", (error) =>
-            fail(firstPartyRefusal(appName, access.client, error.reason)),
+            fail(firstPartyRefusal(appName, access.client, hosts, error)),
           ),
         );
       yield* record(imported("account", account.id));

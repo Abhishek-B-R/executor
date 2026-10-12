@@ -92,6 +92,13 @@ const identityCode = (
   if (name === "" || name.length > 255) return {}
   return { accountInfo: /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(name) ? { email: name } : { ${identity.as}: name } }`;
 
+/**
+ * A check sends an account's credentials, so it never follows a redirect: the next hop could be
+ * another host or plain HTTP. A redirect fails the check instead of passing it.
+ */
+const redirectFailure = (indent: string) =>
+  `\n${indent}if (response.status >= 300 && response.status < 400)\n${indent}  throw new Error(\`The service redirected the check (HTTP \${response.status}); an account's credentials never follow a redirect.\`)`;
+
 /** Refused credentials fail a check; the other statuses say why the service did not answer. */
 const statusFailures = (indent: string) =>
   [
@@ -126,7 +133,9 @@ const introspection = ${JSON.stringify(health.query)}
 const refusal =
   /authoriz|authenticat|forbidden|permission|credential|api.?key|access denied|access token|invalid token|token expired|logged in|sign in/i
 
-/** Introspect with an account: refused credentials fail the check; any schema passes it. */
+/**
+ * Introspect with an account: refused credentials and redirects fail the check; any schema passes it.
+ */
 const checkAccount = async (${checkContext} => {
   const sent = credentials(account)
   const url = new URL(endpoint)
@@ -134,9 +143,10 @@ const checkAccount = async (${checkContext} => {
   const response = await fetch(url, {
     method: "POST",
     signal,
+    redirect: "manual",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...fixed.headers, ...sent.headers },
     body: JSON.stringify({ query: introspection }),
-  })
+  })${redirectFailure("  ")}
   const text = await response.text()
   let body: { readonly data?: { readonly __schema?: unknown }; readonly errors?: unknown; readonly message?: unknown } | undefined
   try {
@@ -199,7 +209,8 @@ const configurationRefusal = (body: unknown) => {
 
 /**
  * Send the check with an account. 401 and 403 refuse its credentials, unless the 403 says the
- * service is not set up for them (\`forbidden\`), which connecting again would not fix.
+ * service is not set up for them (\`forbidden\`), which connecting again would not fix. A redirect
+ * fails it, without sending the credentials on.
  */
 const checkAccount = async (${checkContext} => {
   const sent = credentials(account)
@@ -209,9 +220,10 @@ const checkAccount = async (${checkContext} => {
   const response = await fetch(url, {
     method: check.method,
     signal,
+    redirect: "manual",
     headers: { ...check.headers, ...fixed.headers, ...sent.headers },
     ...(check.body === undefined ? {} : { body: check.body }),
-  })
+  })${redirectFailure("  ")}
   if (response.status === 401 || response.status === 403) {
     const body: unknown = await response.json().catch(() => undefined)
     throw new ProviderError({
@@ -231,7 +243,7 @@ const checkAccount = async (${checkContext} => {
  */
 export const providerFile = (
   options: ProtocolAppOptions & { readonly url?: string },
-  host: string,
+  hosts: readonly string[],
   extra: { readonly imports?: string; readonly body?: string; readonly health?: string } = {},
 ) => {
   const methods = Object.entries(options.methods);
@@ -253,7 +265,7 @@ ${extra.imports ?? ""}
 export const provider = defineProvider({
   name: ${JSON.stringify(options.name)},
   // Credentials are only ever sent to the service itself.
-  hosts: [${JSON.stringify(host)}],
+  hosts: [${hosts.map((host) => JSON.stringify(host)).join(", ")}],
   auth: {
 ${methods.map(([name, method]) => `    ${key(name)}: ${methodDeclaration(method)},`).join("\n")}
   },${health === undefined ? "" : `\n  ${health}`}
@@ -406,7 +418,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
     const provider =
       host === undefined
         ? undefined
-        : providerFile(options, host, {
+        : providerFile(options, [host], {
             imports: `import { mcpHealth } from "apps/mcp"\n`,
             health: `// Check an account by connecting to the server with it and listing its tools.
   health: (check) => mcpHealth(check, target(check.account)),`,
@@ -435,7 +447,7 @@ export const target = (account: Account) => {
   });
 
 /**
- * An OpenAPI app over an inline document with `liveOpenapiRouter`. Requests to `allowedOrigin` get
+ * An OpenAPI app over an inline document with `liveOpenapiRouter`. Requests to `allowedOrigins` get
  * the fixed headers and query parameters, and the selected account's credentials, in a `fetch`
  * wrapper; the document declares no security of its own. Without `baseUrl`, each operation is
  * sent to its own server, as the document declares it.
@@ -444,16 +456,19 @@ export const openapiAppSource = (
   options: ProtocolAppOptions & {
     readonly document: Readonly<Record<string, unknown>>;
     readonly baseUrl?: string | undefined;
-    /** The origin every operation is sent to, which receives the credentials. */
-    readonly allowedOrigin: string;
+    /**
+     * The origins operations are sent to, which receive the credentials: one, or several hosts of
+     * one service. Operations on any other origin are left out.
+     */
+    readonly allowedOrigins: readonly [string, ...string[]];
   },
 ) =>
   Effect.gen(function* () {
     const tools = toolsFile(options.tools);
     const rules = tools !== undefined;
     const accounts = Object.keys(options.methods).length > 0;
-    const origin = yield* Effect.try({
-      try: () => new URL(options.allowedOrigin).origin,
+    const origins = yield* Effect.try({
+      try: () => [...new Set(options.allowedOrigins.map((origin) => new URL(origin).origin))],
       catch: () => failed("The API origin is not valid."),
     });
     const defaultRule = `tool.kind === "mutation" ? always() : undefined`;
@@ -479,7 +494,7 @@ ${accounts ? `import { credentials, fixed, provider } from "./provider.ts"\n` : 
 const fixed = ${json({ headers: options.headers ?? {}, query: options.queryParams ?? {} })}
 `
     }
-/** Add the fixed values and an account's credentials to requests for the API's origin only. */
+/** Add the fixed values and an account's credentials to requests for the API's origins only. */
 const send =
   (
     fetch: typeof globalThis.fetch,
@@ -488,7 +503,7 @@ const send =
   (input, init) => {
     const request = new Request(input, init)
     const url = new URL(request.url)
-    if (url.origin !== configuration.allowedOrigin) return fetch(request)
+    if (${origins.length === 1 ? "url.origin !== configuration.allowedOrigin" : "!configuration.allowedOrigin.includes(url.origin)"}) return fetch(request)
     for (const [name, value] of Object.entries({ ...fixed.query, ...sent.query })) url.searchParams.set(name, value)
     const sending = new Request(url, request)
     for (const [name, value] of Object.entries({ ...fixed.headers, ...sent.headers })) sending.headers.set(name, value)
@@ -508,7 +523,9 @@ ${
 }))`
 }
 `;
-    const host = accounts ? yield* credentialHost(origin) : undefined;
+    const hosts = accounts
+      ? [...new Set(yield* Effect.forEach(origins, (origin) => credentialHost(origin)))]
+      : undefined;
     return {
       files: yield* sourceFiles([
         { path: "index.ts", content: index },
@@ -517,16 +534,16 @@ ${
           // The document is written without indentation, which would more than double a large
           // API's source; the settings after it stay one per line.
           content: `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
-            allowedOrigin: origin,
+            allowedOrigin: origins.length === 1 ? origins[0] : origins,
             securitySchemes: {},
             methods: {},
             oauth: [],
             ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
           }).slice(2)}`,
         },
-        ...(host === undefined
+        ...(hosts === undefined
           ? []
-          : [{ path: "provider.ts", content: providerFile(options, host) }]),
+          : [{ path: "provider.ts", content: providerFile(options, hosts) }]),
         ...(tools === undefined ? [] : [{ path: "tools.ts", content: tools }]),
         packageFile(options.name),
       ]),
@@ -582,7 +599,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
         { path: "index.ts", content: index },
         ...(host === undefined
           ? []
-          : [{ path: "provider.ts", content: providerFile(options, host) }]),
+          : [{ path: "provider.ts", content: providerFile(options, [host]) }]),
         ...(tools === undefined ? [] : [{ path: "tools.ts", content: tools }]),
         packageFile(options.name, { graphql: appsPeerVersion("graphql") }),
       ]),

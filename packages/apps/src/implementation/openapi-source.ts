@@ -302,7 +302,11 @@ export interface OpenapiSourceOptions extends Omit<
 > {
   readonly cache: AppCache;
   readonly source: { readonly url: string } | { readonly document: JsonObject };
-  readonly allowedOrigin: string;
+  /**
+   * The origin that may receive credentials, or several origins of one service, such as its API
+   * and upload hosts. Operations on any other origin are left out.
+   */
+  readonly allowedOrigin: string | readonly string[];
   readonly securitySchemes: Readonly<Record<string, JsonObject>>;
   readonly baseUrl?: string;
   /**

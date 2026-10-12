@@ -2887,7 +2887,8 @@ export const makeOAuth = (
    * The operator's client an imported grant was issued to, checked as a sign-in with it would be:
    * it is offered here, the provider's method signs in with it (an unlisted client counts, as for
    * a reconnect of its own account), the scopes renewals ask for are ones it allows, and its
-   * tokens reach at least one of the hosts the account's app declares.
+   * tokens reach every host the account's app declares. A host they never reach would refuse the
+   * app's calls there, so an account imported for it would only seem to work.
    */
   const importedFirstParty = (
     id: FirstPartyOAuthClientId,
@@ -2904,8 +2905,13 @@ export const makeOAuth = (
       const allowed = allowedScopes(client);
       if (!scopes.every((scope) => allowed.includes(scope)))
         return yield* new OAuthGrantNotImportable({ reason: "scopes" });
-      if (intersectCredentialHosts(hosts, client.placement.hosts).length === 0)
-        return yield* new OAuthGrantNotImportable({ reason: "hosts" });
+      // A host is reached when a placement host allows every host it does, as a narrower pattern.
+      const unreachable = hosts.filter(
+        (host) =>
+          !intersectCredentialHosts([host], client.placement.hosts).includes(host.toLowerCase()),
+      );
+      if (hosts.length === 0 || unreachable.length > 0)
+        return yield* new OAuthGrantNotImportable({ reason: "hosts", unreachable });
       return client;
     });
 

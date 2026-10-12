@@ -96,6 +96,7 @@
         "kysely": "0.29.6",
         "pg": "8.16.3",
         "postal-mime": "4.0.2",
+        "tldts": "7.4.13",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
@@ -481,7 +482,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.83",
+      "version": "0.0.1-beta.84",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",

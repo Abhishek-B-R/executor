@@ -251,8 +251,9 @@ settings the definition cannot be trusted to decide:
 - `source`: `{ url }` for a public definition (up to 40 MB), or `{ document }`:
   Swagger 2.0 or OpenAPI 3.0, 3.1 or 3.2. The `url` is fetched without account
   credentials; see [private definitions](#private-definitions).
-- `allowedOrigin`: the one origin that may receive credentials. `baseUrl`
-  overrides the definition's server.
+- `allowedOrigin`: the origin that may receive credentials, or a list of a
+  service's own origins, such as its API and upload hosts. Operations on any
+  other origin are left out. `baseUrl` overrides the definition's server.
 - `securitySchemes`: usually `components.securitySchemes` from the definition.
   A security alternative naming a scheme not listed here is ignored, so list
   only the schemes `methods` or `oauth` fill.

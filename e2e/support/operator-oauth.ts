@@ -21,7 +21,27 @@ export const v1FirstPartyCredentials = {
   "v1-google": { clientId: "synthetic-v1-google-client", secret: "synthetic-v1-google-secret" },
   "v1-github": { clientId: "synthetic-v1-github-client", secret: "synthetic-v1-github-secret" },
   "v1-slack": { clientId: "synthetic-v1-slack-client", secret: "synthetic-v1-slack-secret" },
+  "v1-github-both": {
+    clientId: "synthetic-v1-github-both-client",
+    secret: "synthetic-v1-github-both-secret",
+  },
+  "v1-github-api": {
+    clientId: "synthetic-v1-github-api-client",
+    secret: "synthetic-v1-github-api-secret",
+  },
 } as const;
+
+/**
+ * Two host names of one synthetic GitHub-shaped service, like `api.github.com` and
+ * `uploads.github.com`, on the loopback port of `origin`. `*.localhost` resolves to loopback.
+ */
+export const v1GitHubHosts = (origin: string) => {
+  const { port } = new URL(origin);
+  return {
+    api: `api.synthetic-github.localhost:${port}`,
+    uploads: `uploads.synthetic-github.localhost:${port}`,
+  };
+};
 
 /** The scopes the Google-shaped client allows. */
 export const v1GoogleScopes = ["openid", "email", "profile", "synthetic.read", "synthetic.write"];
@@ -38,9 +58,26 @@ export const v1SlackScopes = ["chat:write", "search:read.public"];
  * - `v1-github` allows no scopes and reports granted scopes comma-separated;
  * - `v1-slack` is unlisted, sends its own RFC 8707 resource and finds the grant under
  *   `authed_user`, as Slack's user-token endpoints answer.
+ *
+ * Two more GitHub-shaped clients send their tokens to the hosts of `v1GitHubHosts` instead:
+ * `v1-github-both` to its API and upload hosts, as the reviewed `github` client does, and
+ * `v1-github-api` to its API host only.
  */
 export const v1FirstPartyClients = (origin: string) => {
   const host = new URL(origin).host;
+  const github = v1GitHubHosts(origin);
+  const githubShaped = (id: string, path: string, hosts: readonly string[]) => ({
+    id,
+    label: `Executor for Synthetic GitHub (${path})`,
+    server: {
+      authorizationUrl: `${origin}/${path}/authorize`,
+      tokenUrl: `${origin}/${path}/token`,
+      grantedScopeSeparator: ",",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: [],
+    placement: { hosts },
+  });
   return [
     {
       id: "v1-google",
@@ -83,5 +120,7 @@ export const v1FirstPartyClients = (origin: string) => {
       placement: { hosts: [host] },
       unlisted: true,
     },
+    githubShaped("v1-github-both", "github-both", [github.api, github.uploads]),
+    githubShaped("v1-github-api", "github-api", [github.api]),
   ];
 };

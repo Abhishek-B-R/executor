@@ -6,6 +6,8 @@
  */
 import { Option, Schema } from "effect";
 import { JSON_SCHEMA, load as loadYaml } from "js-yaml";
+import { getDomain } from "tldts";
+import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import type { OpenApiConfig, OpenApiOperationRow } from "./formats.ts";
 
 type Json = Record<string, unknown>;
@@ -73,6 +75,42 @@ export const operationBaseUrls = (config: OpenApiConfig, document: Json) => {
   }
   return [...urls];
 };
+
+/**
+ * The origins an imported app sends an account's credentials to, from the operations' base URLs,
+ * when they belong to one service: hosts under one registrable domain, such as `api.github.com`
+ * and `uploads.github.com`, or one host name on several ports. A shared platform's suffix, such
+ * as `github.io`, is not one service. Otherwise the distinct hosts, for the refusal.
+ */
+export const credentialOrigins = (
+  urls: readonly string[],
+):
+  | { readonly ok: true; readonly origins: readonly [string, ...string[]] }
+  | { readonly ok: false; readonly hosts: readonly string[] } => {
+  const origins = [...new Set(urls.map((url) => new URL(url).origin))];
+  const sites = new Set(
+    origins.map((origin) => {
+      const { hostname } = new URL(origin);
+      return getDomain(hostname, { allowPrivateDomains: true }) ?? hostname;
+    }),
+  );
+  const [first, ...rest] = origins;
+  if (first !== undefined && sites.size === 1) return { ok: true, origins: [first, ...rest] };
+  return { ok: false, hosts: [...new Set(origins.map((origin) => new URL(origin).host))] };
+};
+
+/**
+ * The hosts among `origins` an account's credentials would reach over plain HTTP. An app that
+ * sends credentials to several hosts adds them in its own code, so the outbound guard that keeps
+ * placed credentials on HTTPS does not apply to them; the import refuses such hosts instead. HTTP
+ * to a loopback name passes, as it does for placed credentials: only a local development host lets
+ * apps reach loopback at all, and that traffic never leaves the machine.
+ */
+export const plainHttpHosts = (origins: readonly string[]) =>
+  origins.flatMap((origin) => {
+    const url = new URL(origin);
+    return url.protocol === "https:" || isLoopbackHostname(url.hostname) ? [] : [url.host];
+  });
 
 /** Every `#/components/...` reference reachable from a value. */
 const references = (value: unknown, found: Set<string>) => {

@@ -9,6 +9,7 @@
 import type { GeneratedHealthCheck } from "@executor-js/app-templates";
 import { Option, Schema } from "effect";
 import { credentialLike, type HealthCheckSpec, type OpenApiConfig } from "./formats.ts";
+import { plainHttpHosts } from "./openapi.ts";
 
 /** A check the provider runs, or why v1's check is not carried over (the app has none then). */
 export type HealthPlan =
@@ -157,14 +158,16 @@ const usernameKey =
   /^(login|username|user_name|userName|handle|screen_name|screenName|nickname|slug)$/u;
 
 /**
- * The request v1's OpenAPI check sent, from the declared operation's stored binding. `host` is the
- * one the app sends credentials to; a check aimed elsewhere could not carry them.
+ * The request v1's OpenAPI check sent, from the declared operation's stored binding. `origins` are
+ * the ones the app sends credentials to; a check aimed elsewhere could not carry them. The check
+ * adds the credentials itself, so its final URL, after v1's server choice and variables, must be
+ * one of those origins, and not over plain HTTP to a public host.
  */
 export const openapiHealth = (input: {
   readonly config: OpenApiConfig;
   readonly spec: HealthCheckSpec;
   readonly binding: unknown;
-  readonly host: string;
+  readonly origins: readonly string[];
 }): HealthPlan => {
   if (input.binding === undefined) return none("v1 has no operation named by its check.");
   const decoded = Schema.decodeUnknownOption(Binding)(input.binding);
@@ -274,7 +277,10 @@ export const openapiHealth = (input: {
   const target = join(base, path);
   if (!URL.canParse(target)) return none("v1's check has no absolute URL.");
   const url = new URL(target);
-  if (url.host !== input.host) return none("v1's check calls another host than its API.");
+  if (!input.origins.includes(url.origin))
+    return none("v1's check calls another origin than its API.");
+  if (plainHttpHosts([url.origin]).length > 0)
+    return none("v1's check sends the account's credentials over plain HTTP.");
   // The URL's own query comes first, as it did in v1's request.
   const own = [...url.searchParams.entries()];
   url.search = "";
