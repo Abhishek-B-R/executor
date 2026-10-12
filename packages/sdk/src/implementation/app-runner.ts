@@ -775,11 +775,18 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         // A supervisor's runner serves only its own app's database calls: it never loads an app
         // Worker into the supervisor's isolate, and never pairs one app's code or accounts with
         // another app's storage, whatever a caller of the supervisor sends.
-        if (
-          host.within !== undefined &&
-          (!host.within.supervisor.serves(invocation.app) || !runsInFacet(invocation))
-        )
-          return yield* failed("internal");
+        // A refusal never happens in normal traffic, so the span says which rule refused it.
+        if (host.within !== undefined) {
+          const refused = !host.within.supervisor.serves(invocation.app)
+            ? "other-app"
+            : !runsInFacet(invocation)
+              ? "not-database"
+              : undefined;
+          if (refused !== undefined) {
+            yield* Effect.annotateCurrentSpan("executor.runner.refused", refused);
+            return yield* failed("internal");
+          }
+        }
         const { identity, mode, name } = yield* appWorker(invocation).pipe(
           Effect.catch(() => failed("internal")),
         );

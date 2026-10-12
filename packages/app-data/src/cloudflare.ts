@@ -695,7 +695,10 @@ export const makeFacetSupervisor = (
                 // Each supervisor is named by its app's immutable ID (`getByName`). Its storage is
                 // that app's, so it never runs another app's code or outbound against it, whoever
                 // sent the invocation.
-                if (!serves(invocation.app)) return yield* failed();
+                if (!serves(invocation.app)) {
+                  yield* Effect.annotateCurrentSpan("executor.supervisor.refused", "other-app");
+                  return yield* failed();
+                }
                 const handle = {
                   cancel: yield* Deferred.make<void>(),
                   done: yield* Deferred.make<void>(),
