@@ -79,7 +79,9 @@ Executor registers its own OAuth client with each service that offers dynamic
 registration. Services that accept an OAuth client ID metadata document, such as
 many MCP servers, can identify Executor by a public document instead. Set
 `EXECUTOR_OAUTH_CLIENT_METADATA_URL` to `<BETTER_AUTH_URL>/oauth/client-metadata.json`
-and Executor serves that document, listing its callback. The service fetches it
+and Executor serves that document. It lists a callback on the document's own origin,
+since some services accept no other: `EXECUTOR_OAUTH_CALLBACK_URL` when it is on that
+origin, otherwise `/api/oauth/callback` there. The service fetches it
 from the internet, so turn this on only when that URL is reachable publicly over
 HTTPS. Startup fails for any other address on your own origin. Clients your users
 already registered or entered stay in use when you turn this on.

@@ -207,12 +207,11 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-The helpers are `mcpRouter` from `apps/mcp`, `stdioRouter` from
-`apps/mcp/stdio`, `graphqlRouter` from `apps/graphql` and `liveOpenapiRouter`
-from `apps/openapi`. Each returns a router. Use it as `tools`, or mount several
+The helpers are `mcpRouter` from `apps/mcp`, `graphqlRouter` from
+`apps/graphql` and `liveOpenapiRouter` from `apps/openapi`. Each returns a router. Use it as `tools`, or mount several
 under keys, such as `tools: router({ docs: await mcpRouter(...) })`, which
 names their tools `docs.<tool>`. An operation that cannot be classified
-becomes a mutation. The MCP helpers need `@modelcontextprotocol/sdk` in the
+becomes a mutation. `mcpRouter` needs `@modelcontextprotocol/sdk` in the
 app's `package.json` dependencies, and `graphqlRouter` needs `graphql`.
 
 The dashboard's **Custom app** form does the same thing from a URL, for MCP,

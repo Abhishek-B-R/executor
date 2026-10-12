@@ -537,7 +537,7 @@ network error, and Cloud answers with Cloudflare's own 403 whose body reads
 Working: custom tools, API-key and OAuth providers, saved account selection,
 retained builds, configured copies, live discovery and tool calls. The local
 catalog imports OpenAPI and remote MCP apps. Custom Add also generates GraphQL
-and local stdio MCP apps. OAuth clients can be supplied or resolved through
+apps. OAuth clients can be supplied or resolved through
 DCR/CIMD; the host stores and refreshes grants. Private local/self-host app UI,
 app data, webhook lifecycle and scheduled mutations are implemented. App-to-app
 calls and `executor dev` remain deferred.

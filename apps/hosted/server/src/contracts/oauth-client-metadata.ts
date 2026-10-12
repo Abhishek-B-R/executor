@@ -18,7 +18,7 @@ export interface ClientMetadataDocument {
   readonly client_name: string;
   readonly client_uri: string;
   readonly logo_uri: string;
-  /** Exactly the callback the host sends as `redirect_uri`. */
+  /** Exactly the callback sign-ins as this client send as `redirect_uri`, on the document's origin. */
   readonly redirect_uris: readonly [string];
   readonly grant_types: readonly ["authorization_code", "refresh_token"];
   readonly response_types: readonly ["code"];

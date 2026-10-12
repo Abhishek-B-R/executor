@@ -25,17 +25,15 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-| Import           | Helper                   | App dependency              |
-| ---------------- | ------------------------ | --------------------------- |
-| `apps/mcp`       | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
-| `apps/mcp/stdio` | `stdioRouter`            | `@modelcontextprotocol/sdk` |
-| `apps/graphql`   | `graphqlRouter`          | `graphql`                   |
-| `apps/openapi`   | `liveOpenapiRouter`      | None                        |
+| Import         | Helper                   | App dependency              |
+| -------------- | ------------------------ | --------------------------- |
+| `apps/mcp`     | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
+| `apps/graphql` | `graphqlRouter`          | `graphql`                   |
+| `apps/openapi` | `liveOpenapiRouter`      | None                        |
 
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
-optional peers keep unused libraries out of the dependency installation. The
-MCP HTTP entry point does not import the stdio process adapter. Stdio requires
-a host with process support.
+optional peers keep unused libraries out of the dependency installation. Apps
+reach MCP servers over HTTP; they cannot start local processes.
 
 `defineApp` declares behavior, not a name. Package identity lives in
 `package.json.name`; the host separately names each installed copy.
@@ -104,7 +102,7 @@ plus five minutes stale. Use `freshFor` / `staleFor` to change the windows, or
 Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
 `accountId` must identify a selected account that exposes that tool. Discovery
 and validation remain specific to each account. An empty selection returns no
-tools. This helper also works with OpenAPI, GraphQL and stdio operations.
+tools. This helper also works with OpenAPI and GraphQL operations.
 
 Contracts live in `src/contracts/`; native operations live in `src/implementation/`.
 Promise conversion happens at the public entry points. `apps/mcp/effect` exposes
@@ -266,8 +264,8 @@ mutation can be mounted at only one path.
 
 Protocol helpers return routers, so an app mounts several sources under keys.
 `mcpRouter` takes its title, description, icons and instructions from the
-server, and `liveOpenapiRouter` from the document's `info` and tags. `stdioRouter`,
-`openapiRouter` and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
+server, and `liveOpenapiRouter` from the document's `info` and tags. `openapiRouter`
+and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
 the app's other tools still load. The root failing fails discovery.
 
 `dynamicRouter({ list, resolve })` separates descriptions from executable

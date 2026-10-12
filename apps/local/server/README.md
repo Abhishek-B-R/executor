@@ -318,21 +318,6 @@ discovery or tool call owns its connection; session state is not retained across
 separate calls. Remote prompts/resources, sampling, and elicitation are
 not included. See [catalog imports](../../../notes/catalog-imports.md).
 
-For stdio, choose **MCP → Local process (stdio)** in Custom app. Enter an
-executable, one argument per line, an optional working directory, and any
-environment variable names. Environment values are saved through the normal
-account flow. No-account servers can be used immediately.
-
-This generates `index.ts`, `stdio.ts`, `package.json`, and a provider declaration
-when environment fields are needed. The retained `stdio.ts` uses the official
-MCP SDK as an ordinary npm dependency; the apps framework has no stdio transport.
-Discovery and calls launch separate processes, pass arguments without a shell,
-and close the child on success, failure, timeout, or cancellation. Each process
-gets the selected account's environment plus the MCP SDK's basic inherited
-environment, rather than the host's full environment. Stderr is not sent to
-Executor logs. The default operation timeout is 30 seconds and is editable in
-the generated app source. Persistent process sessions are not part of this template.
-
 Automatic import checks the server's Bearer OAuth metadata advertisement when
 the catalog does not already include OAuth. This supplements incomplete API-key
 entries with OAuth while keeping their API-key method. The account form prefers

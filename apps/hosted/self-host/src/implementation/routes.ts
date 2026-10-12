@@ -24,6 +24,7 @@ import {
   clientMetadataDocument,
   clientMetadataDocumentPath,
   clientMetadataSetting,
+  authSettings,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -97,7 +98,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Effect.provide(executorServices),
       Effect.forkScoped,
     );
-    const clientMetadata = yield* clientMetadataSetting(auth.origin);
+    // The account callback the executor's sign-ins send, so the document lists the same one.
+    const clientMetadata = yield* clientMetadataSetting({
+      origin: auth.origin,
+      oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
+    });
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));

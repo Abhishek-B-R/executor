@@ -12,10 +12,12 @@ MCP server, use [`mcpHealth`](#check-an-mcp-account). Look up exact helper optio
 | Interface                   | Helper                                                    |
 | --------------------------- | --------------------------------------------------------- |
 | Remote MCP server           | `mcpRouter` from `apps/mcp`                               |
-| Local MCP process           | `stdioRouter` from `apps/mcp/stdio`                       |
 | OpenAPI or Swagger document | `liveOpenapiRouter` from `apps/openapi`                   |
 | GraphQL endpoint            | `graphqlRouter` from `apps/graphql`                       |
 | Anything else               | Queries and mutations with `fetch` ([tools.md](tools.md)) |
+
+Reach MCP servers over HTTP with `mcpRouter`. Apps cannot start local processes,
+so a stdio-only server needs an HTTP endpoint first.
 
 ## OAuth apps the user registers
 
@@ -57,7 +59,7 @@ import { always } from "apps/operations/approval";
 withApprovals(liveOpenapiRouter(options), (tool) =>
   tool.kind === "mutation" ? always() : undefined,
 );
-// MCP, HTTP or stdio
+// MCP
 withApprovals(await mcpRouter(options), (tool) =>
   toolAnnotations(tool)?.destructiveHint === true ? always() : undefined,
 );
@@ -184,7 +186,7 @@ Show approval terms from request metadata to the user. Return a persistence choi
 only when the user explicitly selects it; accepting once must not add a saved grant.
 Input waits pause the active upstream timeout; the server can impose its own deadline.
 Discovery cannot prompt. Remote prompts/resources, sampling and URL-mode elicitation
-are not exposed. Stdio uses the separate helper below.
+are not exposed.
 
 The helper returns a router. Its title, description and icons come from the
 server's `serverInfo`, and its `instructions` become a skill agents can read. To
@@ -215,30 +217,6 @@ tools: router({
   ),
 }),
 ```
-
-## Local stdio MCP tools
-
-Import `stdioRouter` from `apps/mcp/stdio` and declare
-`@modelcontextprotocol/sdk` in the app's dependencies. The HTTP helper never
-imports this process adapter. Pass the command, literal arguments, and an
-optional working directory. Declare each secret environment variable as a
-`secrets` field; pass the chosen `account.fields` as the child's environment
-with `provider.many()` and `accountRouter`, as above. Do not embed tokens
-in source, command arguments, or working-directory paths. Servers with no
-environment fields need no account. Use `framework.describe` for the exact
-`stdioRouter` options.
-
-The helper discovers tools with the selected account and starts a
-fresh initialized process for each discovery and call. It validates schemas,
-retains MCP result semantics, forwards cancellation, and closes the process
-on completion, error, or timeout. Arguments are literal; there is no shell.
-Unlike `mcpRouter`, it does not read the server's `serverInfo` or
-`instructions`; describe it with `router(await stdioRouter(...), { title, instructions })`.
-The process receives the MCP SDK's basic inherited environment plus the
-selected fields, not the host's full environment. Stderr is ignored. Edit the
-source for server-specific behavior; this helper does not retain sessions
-across calls. Process spawning requires a host that provides it, such as the
-local Node runtime.
 
 ## OpenAPI APIs
 

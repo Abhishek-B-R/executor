@@ -252,8 +252,8 @@ accepted content against the form. Handle decline/cancel in tool code. The same
 tool continues with its local state intact. This works in native or model mode, or with an SDK
 host that supplies a delivery handler. The capability is unavailable during
 factory evaluation/discovery and after the invocation closes. An earlier tool
-policy approval never auto-answers these requests. Upstream MCP form elicitation uses this same path automatically for HTTP and
-stdio tools. URL-mode input is not yet supported.
+policy approval never auto-answers these requests. Upstream MCP form elicitation uses this same path automatically for MCP
+tools. URL-mode input is not yet supported.
 
 With `/mcp?elicitation_mode=browser`, pending requests include `approvalUrl`. Show
 that link to the user, then call `resume({ requestId })` with no response. The user

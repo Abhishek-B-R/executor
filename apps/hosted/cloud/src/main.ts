@@ -41,7 +41,6 @@ import {
   browserTelemetry,
   clientMetadataDocument,
   clientMetadataDocumentPath,
-  clientMetadataSetting,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -119,7 +118,7 @@ import {
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
 import { redirectTo, withRoleHosts } from "./implementation/host-roles.ts";
 import { hasSessionCookie } from "./contracts/browser.ts";
-import { clientMetadataBinding } from "./infrastructure/client-metadata.ts";
+import { clientMetadataBinding, cloudClientMetadata } from "./infrastructure/client-metadata.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
@@ -394,7 +393,7 @@ export default Api.make(
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;
-    const clientMetadata = yield* clientMetadataSetting(auth.origin).pipe(Effect.orDie);
+    const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
     // Only /openapi.json and preparing the Executor catalog app read the document.
     // Clients and the Executor app call the API at its canonical origin.
     const apiOrigin = auth.resourceOrigins.api[0];

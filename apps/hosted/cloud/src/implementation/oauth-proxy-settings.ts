@@ -1,4 +1,5 @@
 /** Better Auth's OAuth proxy settings, and the connected-account sign-ins that follow them. */
+import { HttpUrl } from "@executor-js/sdk/core";
 import { Config, Effect, Option, Schema } from "effect";
 import { accountOAuthStatePrefix } from "../contracts/edge-paths.ts";
 import { stageAccountStatePrefix } from "../contracts/stage-account-state.ts";
@@ -93,6 +94,27 @@ export const cloudAccountSignIns = Effect.gen(function* () {
     }),
     statePrefix: stageAccountStatePrefix(hosts.browser),
   };
+});
+
+/**
+ * The callback new connected-account sign-ins send. With role hosts it is the edge's, which sends
+ * the browser to the browser origin: production's edge for a stage that signs in through its
+ * proxy. Without them, an operator may set a relay; none means the browser origin's own.
+ */
+export const cloudAccountRedirectUri = Effect.gen(function* () {
+  const accountSignIns = yield* cloudAccountSignIns;
+  const configured = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
+    Config.option,
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Option(HttpUrl))),
+  );
+  if (Option.isNone(accountSignIns.callbacks)) return configured;
+  if (Option.isSome(configured))
+    return yield* Effect.die(
+      new Error(
+        "EXECUTOR_OAUTH_CALLBACK_URL is derived from the role hosts; remove it from this deployment",
+      ),
+    );
+  return Option.some(HttpUrl.make(accountSignIns.callbacks.value.current));
 });
 
 /**

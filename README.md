@@ -12,8 +12,8 @@ The local dashboard shows apps, accounts, live tools and retained source.
 Provider OAuth supports supplied clients, DCR, CIMD, and token refresh.
 Outbound MCP works over HTTP/SSE on local, self-host and cloud: custom remote
 MCP imports and catalog MCP entries deploy, discover live upstream tools, and
-call them, verified end to end including a real public server. Local process
-(stdio) MCP servers remain local-only. The remote SDK facade
+call them, verified end to end including a real public server. Apps cannot
+start local processes, so stdio MCP servers are not supported. The remote SDK facade
 (`createRemoteExecutor`) is not implemented.
 
 Effect is pinned to an upstream snapshot with MCP `2026-07-28` support.
@@ -121,7 +121,7 @@ Keep contracts flat, one cohesive area per file.
 - `apps/hosted/self-host/`: Effect Node HTTP entry point and Docker image
 - `packages/fumadb-effect/`: Effect SQL schema, typed query and migration implementation
 - `packages/mcp/`: shared execute/skills contracts, codemode and search over product-authorized operations
-- `packages/app-templates/`: source generators using the `apps` protocol subpaths for MCP, stdio, OpenAPI and GraphQL
+- `packages/app-templates/`: source generators using the `apps` protocol subpaths for MCP, OpenAPI and GraphQL
 - `packages/apps/`: provider/app authoring, shared context, schema constructors,
   native Effect contracts, an author facade, a portable host handler and fetch decoding
 - `playground/demo-apps/`: Vercel, Axiom, Mail, and Issue Mail authoring examples

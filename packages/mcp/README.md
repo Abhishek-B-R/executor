@@ -67,7 +67,7 @@ answers through the same manager as the model-mode `resume` tool. Native `call` 
 the exception for policy approvals: the client confirms the destructive tool call
 itself, so its run accepts approvals at once (`ApprovalMode` `client`). See [tool input](../../notes/tool-elicitation.md).
 
-HTTP/SSE and stdio MCP helpers forward upstream forms through that same tool-input
+HTTP/SSE MCP helpers forward upstream forms through that same tool-input
 capability. Delivery mode does not change the upstream call, and policy consent
 does not answer an upstream question. Request and response metadata pass through.
 

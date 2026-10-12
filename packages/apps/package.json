@@ -1,6 +1,6 @@
 {
   "name": "apps",
-  "version": "0.0.1-beta.84",
+  "version": "0.0.1-beta.85",
   "private": true,
   "description": "TypeScript apps with typed tools, accounts, storage, and UI.",
   "type": "module",
@@ -15,7 +15,6 @@
     "./operations/approval": "./src/approval.ts",
     "./client": "./src/client.ts",
     "./mcp": "./src/mcp.ts",
-    "./mcp/stdio": "./src/mcp-stdio.ts",
     "./mcp/effect": "./src/implementation/mcp.ts",
     "./graphql": "./src/graphql.ts",
     "./openapi": "./src/openapi.ts",

@@ -1285,6 +1285,22 @@ export const makeOAuth = (
   };
 
   /**
+   * The callback a sign-in as `client` sends: the one the host's document lists for the
+   * document's client, which the server holds the sign-in to, and the sign-in's own for any other.
+   */
+  const clientCallback = (client: OAuthRegistration, redirect: URL | undefined) => {
+    const document =
+      options?.clientMetadataUrl === undefined
+        ? undefined
+        : parseDestination(options.clientMetadataUrl, httpsOnlyUrlPolicy);
+    return document === undefined ||
+      client.client_id !== document.href ||
+      options?.clientMetadataRedirectUri === undefined
+      ? redirect
+      : parseEndpoint(options.clientMetadataRedirectUri, options.urlPolicy);
+  };
+
+  /**
    * The automatic client for a sign-in, in MCP's order after the owner's own: a client the owner
    * already registered for these settings, the operator's client, the host's client metadata
    * document, then a client registered now. It uses the sign-in's own discovery rather than
@@ -1321,7 +1337,7 @@ export const makeOAuth = (
           client_id: url.href,
           token_endpoint_auth_method: "none",
         };
-        return { kind: "entered" as const, client, callback: redirect };
+        return { kind: "entered" as const, client, callback: clientCallback(client, redirect) };
       }
       if (discovered.grant !== "authorization_code" || registration !== "dynamic")
         return yield* new OAuthClientUnavailable(input);
@@ -1452,7 +1468,7 @@ export const makeOAuth = (
               : Effect.succeed({
                   kind: "entered" as const,
                   client: reusable.client,
-                  callback: redirect,
+                  callback: clientCallback(reusable.client, redirect),
                 }),
           ),
         );

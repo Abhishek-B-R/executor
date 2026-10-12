@@ -74,6 +74,9 @@ export const appWorkerIdleSeconds = 4;
 /** A relay callback in a valid form other than its serialization, which the SDK sends. */
 export const oauthRelayCallback =
   "https://Relay.Executor.example:443/api/oauth/callback?tenant=fixture";
+/** The same, on the origin of the client metadata document the scenarios publish. */
+export const oauthDocumentOriginCallback =
+  "https://Executor.example:443/api/oauth/callback?tenant=fixture";
 
 /**
  * Keeps each scenario name but gives every value the plan type. A literal type per scenario makes
@@ -4099,12 +4102,30 @@ export const scenarios = plan({
       "a host with a client metadata document signs in without registering a client, and still registers where the server does not accept documents",
     serverEnvironment: {
       EXECUTOR_OAUTH_CLIENT_METADATA_URL: "https://executor.example/oauth/client-metadata.json",
-      EXECUTOR_OAUTH_CALLBACK_URL: oauthRelayCallback,
+      EXECUTOR_OAUTH_CALLBACK_URL: oauthDocumentOriginCallback,
     },
     targets: {
       "self-host": scheduled,
       cloud: na(
         "Managed Cloud runs on loopback without a public HTTPS origin; deployed stages serve the document.",
+      ),
+      local: na("Local's loopback callback has no public document; it registers dynamically."),
+    },
+  },
+  oauthClientMetadataDocumentOrigin: {
+    fixtures: "actors",
+    file: "oauth-client-metadata.spec.ts",
+    title:
+      "a host whose callback is on another origin than its client metadata document signs in where the server accepts redirect URIs only on the document's origin",
+    // Cloud's layout: the deployment serves the document while sign-ins return through the edge.
+    serverEnvironment: {
+      EXECUTOR_OAUTH_CLIENT_METADATA_URL: "https://executor.example/oauth/client-metadata.json",
+      EXECUTOR_OAUTH_CALLBACK_URL: oauthRelayCallback,
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed Cloud runs on loopback without a public HTTPS origin; the same setting derives a deployed stage's document.",
       ),
       local: na("Local's loopback callback has no public document; it registers dynamically."),
     },

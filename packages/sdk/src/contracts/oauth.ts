@@ -446,6 +446,13 @@ export interface OAuthOptions {
   readonly urlPolicy: UrlPolicy;
   readonly clientMetadataUrl?: string;
   /**
+   * The callback the host's Client ID Metadata Document lists, which every sign-in as that client
+   * sends. Authorization servers may accept only redirect URIs on the document's own origin, so a
+   * host whose callback is elsewhere names one there. Unset, those sign-ins send the request's
+   * callback, which the document's publisher lists.
+   */
+  readonly clientMetadataRedirectUri?: string;
+  /**
    * Callbacks this host sent as `redirect_uri` before its current one. A saved client someone
    * entered at one of them keeps signing in there, as does one for a server that neither registers
    * clients nor reads a metadata document. Executor registers every other client again at the
