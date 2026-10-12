@@ -2729,6 +2729,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedGoogle: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the client's credentials; Cloud composes the same reviewed definitions.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedPlaced: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
@@ -2810,11 +2823,11 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "credential-placement.spec.ts",
     title:
-      "invalid operator OAuth client settings stop the product and name each client field and why, never its value",
+      "an operator OAuth client with only one of its credentials stops the product, naming the missing setting and never a value",
     targets: {
       "self-host": scheduled,
       cloud: na(
-        "Cloud reads the same setting with the same parser; a deploy fails on it before any request.",
+        "Cloud reads the same settings with the same code; a deploy fails on them before any request.",
       ),
       local: na("Local products have no operator OAuth clients."),
     },

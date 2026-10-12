@@ -20,6 +20,12 @@ import {
   missingV1WorkosKey,
 } from "./src/infrastructure/v1-membership-settings.ts";
 import { type V1ImportSwitch, v1ImportSetting } from "./src/infrastructure/v1-import-settings.ts";
+import {
+  firstPartyGitHubSettings,
+  firstPartyGoogleSettings,
+  missingFirstPartyGitHubClient,
+  partialFirstPartyGoogleClient,
+} from "./src/infrastructure/first-party-oauth-settings.ts";
 
 /**
  * Secrets seeded from the environment. `op run --env-file=.env.ci.op` resolves the 1Password
@@ -47,6 +53,13 @@ const productionSecrets = [
   "POSTHOG_PERSONAL_API_KEY",
   "SENTRY_AUTH_TOKEN",
 ] as const;
+
+/** A secret from `.env.ci.op`; unset and empty are both absent. */
+const nonEmptySecret = (name: string) =>
+  Config.Redacted(name).pipe(
+    Config.option,
+    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+  );
 
 /** Non-sensitive deployment settings. They are readable in logs and pull requests. */
 const productionVariables = [
@@ -324,6 +337,39 @@ export default Alchemy.Stack(
       value: v1Database.value,
       environment: production,
     }).pipe(retain());
+
+    /**
+     * The operator's OAuth clients' credentials (`first-party-oauth-settings.ts`). Production
+     * offers v1's Executor.sh GitHub App, so this stack refuses to apply without its client ID and
+     * secret and says which Agents vault item to reference. Executor for Google is offered once
+     * both of its values are set; one without the other is refused.
+     */
+    const credentials = (names: { readonly clientId: string; readonly clientSecret: string }) =>
+      Effect.all([nonEmptySecret(names.clientId), nonEmptySecret(names.clientSecret)]);
+    const [githubId, githubSecret] = yield* credentials(firstPartyGitHubSettings);
+    if (Option.isNone(githubId) || Option.isNone(githubSecret))
+      return yield* Effect.die(new Error(missingFirstPartyGitHubClient));
+    const [googleId, googleSecret] = yield* credentials(firstPartyGoogleSettings);
+    if (Option.isSome(googleId) !== Option.isSome(googleSecret))
+      return yield* Effect.die(new Error(partialFirstPartyGoogleClient));
+    const firstPartySecrets = [
+      [firstPartyGitHubSettings.clientId, githubId.value],
+      [firstPartyGitHubSettings.clientSecret, githubSecret.value],
+      ...(Option.isSome(googleId) && Option.isSome(googleSecret)
+        ? ([
+            [firstPartyGoogleSettings.clientId, googleId.value],
+            [firstPartyGoogleSettings.clientSecret, googleSecret.value],
+          ] as const)
+        : []),
+    ] as const;
+    yield* Effect.forEach(firstPartySecrets, ([secret, value]) =>
+      GitHub.Secret(`production-${secret}`, {
+        ...target,
+        name: secret,
+        value,
+        environment: production,
+      }).pipe(retain()),
+    );
 
     // Rulesets are unavailable on private repositories under the GitHub Free plan, so
     // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.

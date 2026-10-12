@@ -17,6 +17,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
 import { Telemetry } from "../support/evidence.ts";
+import type { OperatorSettings } from "../support/managed-server.ts";
 import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
 import { oauthSetupIssuer, oauthSetupIssuerOn } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
@@ -250,9 +251,10 @@ const endpointsApp = (
   name: string,
   hosts: readonly string[],
   endpoints: object,
+  scopes: readonly string[] = ["mail.read"],
 ) => `import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
 const mail = defineProvider({ name: ${JSON.stringify(name)}, hosts: ${JSON.stringify(hosts)}, auth: {
-  oauth: oauth2({ ...${JSON.stringify(endpoints)}, scopes: ["mail.read"] }),
+  oauth: oauth2({ ...${JSON.stringify(endpoints)}, scopes: ${JSON.stringify(scopes)} }),
 } });
 export default defineApp({ accounts: { mail } }, {
   tools: router({ fields: query({ input: object({}) }, async ({ accounts }) => accounts.mail.fields) }),
@@ -264,10 +266,11 @@ const token = "synthetic-access-token";
 const realBearer = `Bearer ${token}`;
 
 /**
- * The operator's OAuth client: its authorization server, which every request carrying its secret
- * or a user's tokens goes to, its scope menu and its placement.
+ * The operator's OAuth client, without its credentials: its authorization server, which every
+ * request carrying its secret or a user's tokens goes to, its scope menu and its placement. An E2E
+ * host adds it to the reviewed clients from `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`.
  */
-const operatorClients = (
+const operatorDefinition = (
   issuerOrigin: string,
   hosts: readonly string[],
   options: {
@@ -284,35 +287,42 @@ const operatorClients = (
     readonly header?: string;
     readonly scheme?: string | null;
   } = {},
-) =>
-  JSON.stringify([
-    {
-      id: "synthetic-mail",
-      label: "Executor for Synthetic Mail",
-      server: {
-        issuer: issuerOrigin,
-        authorizationUrl: `${issuerOrigin}/authorize`,
-        tokenUrl: `${issuerOrigin}/token`,
-        ...(options.revocation === true ? { revocationUrl: `${issuerOrigin}/revoke` } : {}),
-        ...(options.grantedScopeSeparator === undefined
-          ? {}
-          : { grantedScopeSeparator: options.grantedScopeSeparator }),
-        ...(options.authorizationParams === undefined
-          ? {}
-          : { authorizationParams: options.authorizationParams }),
-      },
-      clientId: "first-party-client",
-      clientSecret: "first-party-secret",
-      tokenEndpointAuthMethod: "client_secret_basic",
-      defaultScopes: options.defaultScopes ?? ["mail.read"],
-      allowedScopes: options.allowedScopes ?? ["mail.read", "mail.compose"],
-      placement: {
-        hosts,
-        ...(options.header === undefined ? {} : { header: options.header }),
-        ...(options.scheme === undefined ? {} : { scheme: options.scheme }),
-      },
-    },
-  ]);
+) => ({
+  id: "synthetic-mail",
+  label: "Executor for Synthetic Mail",
+  server: {
+    issuer: issuerOrigin,
+    authorizationUrl: `${issuerOrigin}/authorize`,
+    tokenUrl: `${issuerOrigin}/token`,
+    ...(options.revocation === true ? { revocationUrl: `${issuerOrigin}/revoke` } : {}),
+    ...(options.grantedScopeSeparator === undefined
+      ? {}
+      : { grantedScopeSeparator: options.grantedScopeSeparator }),
+    ...(options.authorizationParams === undefined
+      ? {}
+      : { authorizationParams: options.authorizationParams }),
+  },
+  tokenEndpointAuthMethod: "client_secret_basic",
+  defaultScopes: options.defaultScopes ?? ["mail.read"],
+  allowedScopes: options.allowedScopes ?? ["mail.read", "mail.compose"],
+  placement: {
+    hosts,
+    ...(options.header === undefined ? {} : { header: options.header }),
+    ...(options.scheme === undefined ? {} : { scheme: options.scheme }),
+  },
+});
+/** The settings that turn the operator's client on: its definition and its credentials. */
+const operatorClients = (...definition: Parameters<typeof operatorDefinition>) => ({
+  EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([operatorDefinition(...definition)]),
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "first-party-client",
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "first-party-secret",
+});
+
+/** The operator turns its client off: its credentials are unset, as an empty value is. */
+const noOperatorClients = {
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "",
+  EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: "",
+};
 
 /**
  * A mail service on the operator client's issuer. `discover` and `scopes` choose the authorization
@@ -813,13 +823,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
-  /** Restart the product with the operator's clients set to `clients`, as JSON. */
-  const restartWith = (clients: string, clockAdvance?: number) =>
+  /** Restart the product with the operator's client settings changed to `settings`. */
+  const restartWith = (settings: typeof OperatorSettings.Type, clockAdvance?: number) =>
     Effect.gen(function* () {
       yield* serverControl("stop");
       if (clockAdvance !== undefined)
         yield* serverControl("clock/advance", 200, { milliseconds: clockAdvance });
-      yield* serverControl("environment", 200, { EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS: clients });
+      yield* serverControl("environment", 200, settings);
       yield* serverControl("start");
     });
 
@@ -828,7 +838,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
    * replaces the client's hosts, the issuer's and the store's by default.
    */
   const operatorWith = (
-    options: Parameters<typeof operatorClients>[2] & {
+    options: Parameters<typeof operatorDefinition>[2] & {
       readonly hosts?: (origins: { issuerHost: string; storeHost: string }) => readonly string[];
       readonly registration?: boolean;
     } = {},
@@ -989,6 +999,90 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(answers[key]!.setup.firstParty, key).toBeUndefined();
           expect(answers[key]!.started.body, key).toMatchObject({ _tag: "OAuthClientUnavailable" });
         }
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedGoogle.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, connection } = yield* harness;
+        const clientId = "synthetic-google-client.apps.googleusercontent.com";
+        const google = {
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+          tokenUrl: "https://oauth2.googleapis.com/token",
+        };
+        const calendar = "https://www.googleapis.com/auth/calendar";
+        /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
+        const signIn = (key: string, scopes: readonly string[]) =>
+          Effect.gen(function* () {
+            const name = `Google ${key} ${randomUUID().slice(0, 8)}`;
+            const { path, app } = yield* deploy(
+              name,
+              endpointsApp(name, ["www.googleapis.com"], google, scopes),
+            );
+            const profile = yield* createProfile(actors.owner, path);
+            const id = yield* connection(path, "mail", profile.id);
+            const started = yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${id}/oauth/start`,
+              { method: "oauth", label: "Google" },
+            );
+            const provider = app.requirements.accounts.mail!.provider;
+            const answered = yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/providers/${provider}/oauth/oauth/setup`,
+            );
+            return { started, setup: yield* body(Setup, answered) };
+          });
+        const cleared = {
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
+        };
+        yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
+
+        // Without its credentials the operator has no Google client to offer.
+        yield* restartWith(cleared);
+        const unset = yield* signIn("unset", [calendar]);
+        expect(unset.setup.firstParty).toBeUndefined();
+
+        // Its credentials turn on the reviewed client.
+        yield* restartWith({
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
+        });
+        const [allowed, defaults, wider] = yield* Effect.all(
+          [
+            signIn("calendar", [calendar]),
+            // A provider that asks for no scopes gets the client's defaults.
+            signIn("defaults", []),
+            // A scope outside the client's allowed scopes.
+            signIn("wider", [calendar, "https://www.googleapis.com/auth/cloud-platform"]),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(allowed.setup).toMatchObject({
+          firstParty: { label: "Executor for Google" },
+          scopes: [calendar],
+        });
+        expect(allowed.started.status, JSON.stringify(allowed.started.body)).toBe(200);
+        // Signing in goes to Google with the operator's client, asking for a refresh token.
+        const sent = new URL((yield* body(Redirect, allowed.started)).authorizationUrl);
+        expect(`${sent.origin}${sent.pathname}`).toBe(google.authorizationUrl);
+        expect(sent.searchParams.get("client_id")).toBe(clientId);
+        expect(sent.searchParams.get("scope")).toBe(calendar);
+        expect(sent.searchParams.get("access_type")).toBe("offline");
+        expect(sent.searchParams.get("prompt")).toBe("consent");
+        expect(sent.searchParams.has("include_granted_scopes")).toBe(false);
+        expect(defaults.setup).toMatchObject({
+          firstParty: { label: "Executor for Google" },
+          scopes: ["openid", "email", "profile"],
+        });
+        expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
     ),
   );
@@ -1272,9 +1366,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           location: "request body",
         });
 
-        // The operator removes its client: the managed token goes nowhere from the next
-        // invocation on.
-        yield* restartWith("[]");
+        // The operator unsets its client's credentials: the managed token goes nowhere from the
+        // next invocation on.
+        yield* restartWith(noOperatorClients);
         const reads = (yield* issuer.metrics).resourceRequests.GET;
         const removed = yield* call(pinned.path, Read, "resource", oldProfile.id);
         expect(removed.status).toBe(421);
@@ -1582,68 +1676,77 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const target = yield* Target;
         const fs = yield* FileSystem.FileSystem;
         const log = `${target.directory}/server.log`;
+        const clientId = `synthetic-operator-client-${randomUUID()}`;
         const secret = `synthetic-operator-secret-${randomUUID()}`;
-        const client = {
-          id: "synthetic-mail",
-          label: "Executor for Synthetic Mail",
-          server: {
-            authorizationUrl: "https://auth.example.test/authorize",
-            tokenUrl: "https://auth.example.test/token",
-          },
-          clientId: "first-party-client",
-          clientSecret: secret,
-          tokenEndpointAuthMethod: "client_secret_basic",
-          defaultScopes: ["mail.read"],
-          placement: { hosts: ["mail.example.test"] },
-        };
         /** Start the product with `settings` and return what it logged; it must not start. */
-        const refused = (settings: string) =>
+        const refused = (settings: typeof OperatorSettings.Type) =>
           Effect.gen(function* () {
             const before = (yield* fs.readFileString(log)).length;
             yield* serverControl("stop");
-            yield* serverControl("environment", 200, {
-              EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS: settings,
-            });
+            yield* serverControl("environment", 200, settings);
             yield* serverControl("start", 500);
             const output = (yield* fs.readFileString(log)).slice(before);
-            // The operator's secret never reaches the output, whatever is wrong.
+            // No credential reaches the output, whatever is wrong.
             expect(output).not.toContain(secret);
-            expect(output).toContain("EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS");
+            expect(output).not.toContain(clientId);
             return output;
           });
+        const cleared = {
+          ...noOperatorClients,
+          EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: "",
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
+        };
         // Whatever happens, the next scenario finds the product running.
-        yield* Effect.addFinalizer(() => restartWith("[]").pipe(Effect.orDie));
+        yield* Effect.addFinalizer(() => restartWith(cleared).pipe(Effect.orDie));
 
-        // Each problem is named by its client's position and field, with a fixed reason.
-        const fields = yield* refused(
-          JSON.stringify([
-            client,
-            {
-              ...client,
-              id: "second",
-              label: 7,
-              defaultScopes: ["mail read"],
-              placement: { hosts: [], header: "X Bad" },
-            },
-            { ...client, id: "third", tokenEndpointAuthMethod: "none" },
-          ]),
+        // A reviewed client's secret without its ID, and its ID without its secret, each name the
+        // missing setting.
+        const secretOnly = yield* refused({
+          ...cleared,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: secret,
+        });
+        expect(secretOnly).toContain(
+          "EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET is set without EXECUTOR_OAUTH_GOOGLE_CLIENT_ID",
         );
-        expect(fields).toContain("[1].label");
-        expect(fields).toContain("[1].defaultScopes[0]");
-        expect(fields).toContain("[1].placement.hosts");
-        expect(fields).toContain("[1].placement.header");
-        expect(fields).toContain("[2]");
-        // The valid client is not mentioned.
-        expect(fields).not.toMatch(/(?:^|\s)\[0\]/u);
-        expect(fields).not.toContain("mail read");
+        const idOnly = yield* refused({ ...cleared, EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId });
+        expect(idOnly).toContain(
+          "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID is set without EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
+        );
 
-        // Text that is not JSON is reported as such, without repeating it.
-        const unparsed = yield* refused(`[{"id": "synthetic-mail", "clientSecret": "${secret}"`);
-        expect(unparsed).toContain("not valid JSON");
+        // Every client's problem is listed, and a client with both values is not mentioned.
+        const synthetic = operatorClients("https://auth.example.test", ["mail.example.test"]);
+        const several = yield* refused({
+          ...synthetic,
+          EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID: "",
+          EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET: secret,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
+        });
+        expect(several).toContain(
+          "EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_SECRET is set without EXECUTOR_OAUTH_SYNTHETIC_MAIL_CLIENT_ID",
+        );
+        expect(several).toContain(
+          "EXECUTOR_OAUTH_GOOGLE_CLIENT_ID is set without EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET",
+        );
+        const oneProblem = yield* refused({
+          ...synthetic,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
+        });
+        expect(oneProblem).not.toContain("SYNTHETIC_MAIL");
 
-        // Two clients with one ID name both positions.
-        const duplicated = yield* refused(JSON.stringify([client, { ...client }]));
-        expect(duplicated).toContain("[1].id");
+        // A test client cannot replace a reviewed one by taking its ID.
+        const replaced = yield* refused({
+          ...cleared,
+          EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
+            {
+              ...operatorDefinition("https://auth.example.test", ["mail.example.test"]),
+              id: "google",
+            },
+          ]),
+        });
+        expect(replaced).toContain("Two clients have the ID google");
       }),
     ),
   );
@@ -1915,7 +2018,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expiresIn: 3600,
           resourceTokens: "issued",
         });
-        yield* restartWith("[]");
+        yield* restartWith(noOperatorClients);
         // The provider marks the token raw(): app code reads the user's own token as it is.
         const source = mailApp({
           name: "Synthetic Mail",

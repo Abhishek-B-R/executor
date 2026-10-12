@@ -30,7 +30,9 @@ import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { cloudSecrets } from "./secrets.ts";
-import { cloudOrigin, cloudResourceOrigins } from "./stage.ts";
+import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
+import { cloudEmulators } from "./emulators.ts";
+import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
 import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
@@ -43,6 +45,20 @@ export const cloudEgress = Effect.gen(function* () {
   const policy = yield* urlPolicyConfig;
   const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
   return { policy, client } satisfies HostEgress;
+});
+
+/**
+ * The operator's OAuth clients whose credentials this stage has. Only an emulated Cloud, which E2E
+ * runs against, reads test client definitions. Production requires the GitHub App and fails the
+ * deploy without it.
+ */
+const cloudFirstPartyOAuthClients = Effect.gen(function* () {
+  const emulated = Option.isSome(yield* cloudEmulators);
+  const clients = yield* firstPartyOAuthClients({ testDefinitions: emulated });
+  const production = Option.getOrUndefined(yield* stageName) === productionStage;
+  if (production && !clients.some((client) => client.id === "github"))
+    return yield* Effect.die(new Error(missingFirstPartyGitHubClient));
+  return clients;
 });
 
 /**
@@ -67,7 +83,7 @@ export const cloudExecutor = Effect.fn(function* (
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
   const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
-  const firstPartyClients = yield* firstPartyOAuthClients.pipe(Effect.orDie);
+  const firstPartyClients = yield* cloudFirstPartyOAuthClients.pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;

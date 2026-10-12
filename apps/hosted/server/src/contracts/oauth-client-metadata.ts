@@ -42,9 +42,9 @@ export class ClientMetadataUrlInvalid extends Schema.TaggedError<ClientMetadataU
 ) {}
 
 /**
- * `EXECUTOR_FIRST_PARTY_OAUTH_CLIENTS` is not a JSON array of the operator's OAuth clients, or two
- * of them share an ID. Each problem names a client's position and field, such as
- * `[1].placement.hosts`, and a fixed reason; never a supplied value, so never a client secret.
+ * The operator's OAuth client settings are inconsistent: a client ID without its secret, a secret
+ * without its ID, or test client definitions on a host that does not read them. Each problem names
+ * the settings and the client, never a supplied value, so never a client secret.
  */
 export class FirstPartyOAuthClientsInvalid extends Schema.TaggedError<FirstPartyOAuthClientsInvalid>()(
   "FirstPartyOAuthClientsInvalid",
