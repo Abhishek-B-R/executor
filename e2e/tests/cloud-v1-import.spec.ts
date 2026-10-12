@@ -14,6 +14,7 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
+import { largeOpenapiDocument } from "../support/large-openapi.ts";
 import { Emulators } from "../support/emulators.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import {
@@ -2059,6 +2060,177 @@ const seedFirstParty = (organization: string, user: string, slug: string, origin
     ]);
   });
 
+/** Text with Latin-1, punctuation, symbols and an emoji: everything an API's prose uses. */
+const wideText = "Returns the service’s “health” — café → ✅ or 🔴.";
+
+/** A display name and base URL path beyond Latin-1, which a JavaScript string stores two bytes wide. */
+const wideName = "Kanji 日本 API";
+const widePath = "/public/日本";
+
+/**
+ * Three OpenAPI integrations. `Typography`'s document describes its one public operation in
+ * `wideText`. `Kanji 日本 API` has a document as large as the largest imported vendor API's, a
+ * base URL whose path goes beyond Latin-1 and an API key the user saved in v1. `Scoped` signs in
+ * through a v1 client whose authorization URL sets `scope` itself, which v2's OAuth declarations
+ * keep to the host.
+ */
+const seedBuilds = (organization: string, user: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const suffix = randomUUID().slice(0, 6);
+    const typography = `typography_${suffix}`;
+    const kanji = `kanji_${suffix}`;
+    const scoped = `scoped_${suffix}`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    const key = `connection:user:${kanji}:main:token`;
+    yield* emulators.v1VaultObject(vaultName(userScope, key), "synthetic-kanji-key");
+    const access = `oauth:user:${scoped}:main`;
+    yield* emulators.v1VaultObject(vaultName(userScope, access), "synthetic-scoped-access");
+    yield* emulators.v1VaultObject(
+      vaultName(userScope, `${access}:refresh`),
+      "synthetic-scoped-refresh",
+    );
+    const document = (title: string, tag: string, path: string, description: string) =>
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title, version: "1" },
+        servers: [{ url: `${origin}/public` }],
+        paths: {
+          [path]: {
+            get: {
+              operationId: "health",
+              tags: [tag],
+              description,
+              responses: { "200": { description: "ok" } },
+            },
+          },
+        },
+      });
+    const large = largeOpenapiDocument(origin, 1000, wideText);
+    const integrations: ReadonlyArray<{
+      readonly slug: string;
+      readonly name: string;
+      readonly text: string;
+      readonly config: Readonly<Record<string, string>>;
+      readonly template: ReadonlyArray<unknown>;
+      /** Each v1 tool: its name, method and path. */
+      readonly operations: ReadonlyArray<readonly [string, string, string]>;
+    }> = [
+      {
+        slug: typography,
+        name: "Typography",
+        text: document("Synthetic typography", "typography", "/health", wideText),
+        config: {},
+        template: [],
+        operations: [["typography.health", "get", "/health"]],
+      },
+      {
+        slug: kanji,
+        name: wideName,
+        text: JSON.stringify(large),
+        config: { baseUrl: `${origin}${widePath}` },
+        template: [
+          {
+            slug: "apikey-0",
+            kind: "apikey",
+            placements: [{ carrier: "header", name: "X-Api-Key" }],
+          },
+        ],
+        // v1 listed every operation, so the app keeps the whole document.
+        operations: Object.entries(large.paths).flatMap(([path, item]) =>
+          Object.entries(item).map(([method, operation]) => [
+            path === "/health" ? "service.health" : `large.${String(operation.operationId)}`,
+            method,
+            path,
+          ]),
+        ),
+      },
+      {
+        slug: scoped,
+        name: "Scoped",
+        text: document("Synthetic scoped", "scoped", "/me", "ok"),
+        config: {},
+        template: [
+          {
+            slug: "oauth2",
+            kind: "oauth2",
+            authorizationUrl: `${origin}/authorize?scope=everything`,
+            tokenUrl: `${origin}/token`,
+            scopes: [],
+          },
+        ],
+        operations: [["scoped.health", "get", "/me"]],
+      },
+    ];
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic builds workspace",
+        slug,
+      ),
+      ...integrations.flatMap((integration) => {
+        const hash = createHash("sha256").update(integration.text).digest("hex");
+        return [
+          row(
+            "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', $3, $4::json)",
+            organization,
+            integration.slug,
+            integration.name,
+            JSON.stringify({
+              specHash: hash,
+              ...integration.config,
+              authenticationTemplate: integration.template,
+            }),
+          ),
+          row(
+            "insert into blob (namespace, key, value) values ($1, $2, $3)",
+            `o:${organization}/openapi`,
+            `spec/${hash}`,
+            integration.text,
+          ),
+          ...integration.operations.map(([tool, method, path]) =>
+            row(
+              "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+              organization,
+              `op.${integration.slug}.${tool}`,
+              JSON.stringify({
+                integration: integration.slug,
+                toolName: tool,
+                binding: { method, pathTemplate: path },
+              }),
+            ),
+          ),
+        ];
+      }),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids) values ($1, 'user', $2, $3, 'main', 'apikey-0', $4::json)",
+        organization,
+        user,
+        kanji,
+        JSON.stringify({ token: key }),
+      ),
+      row(
+        "insert into oauth_client (tenant, owner, subject, slug, authorization_url, token_url, \"grant\", client_id, token_endpoint_auth_method, origin_kind) values ($1, 'org', '', $2, $3, $4, 'authorization_code', 'synthetic-scoped-client', 'basic', 'manual')",
+        organization,
+        `${scoped}-client`,
+        `${origin}/authorize?scope=everything`,
+        `${origin}/token`,
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner, refresh_item_id, expires_at) values ($1, 'user', $2, $3, 'main', 'oauth2', $4::json, $5, 'org', $6, $7::bigint)",
+        organization,
+        user,
+        scoped,
+        JSON.stringify({ token: access }),
+        `${scoped}-client`,
+        `${access}:refresh`,
+        String(Date.now() + 3_600_000),
+      ),
+    ]);
+  });
+
 const status = (preview: typeof Preview.Type, kind: string, label: string) =>
   preview.items
     .filter((item) => item.kind === kind && item.label === label)
@@ -3391,6 +3563,145 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             authorization: "Bearer synthetic-both-access",
           },
         ]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportBuilds.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const upstream = yield* credentialUpstream;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedBuilds(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+
+        const started = yield* call(
+          "Start the import",
+          "POST",
+          `/api/v1-import/${own.organization}/start`,
+          { target: { kind: "new" } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        const target = started.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+        const results = new Map<string, typeof ItemResult.Type>();
+        for (const item of started.items) {
+          const result = yield* call(
+            `Import ${item.kind} ${item.label}`,
+            "POST",
+            `/api/v1-import/${own.organization}/items/${item.kind}/${item.id}`,
+          ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+          results.set(
+            `${item.kind}:${item.label}${item.context === null ? "" : ` · ${item.context}`}`,
+            result,
+          );
+        }
+
+        // The document is ASCII JSON: each character beyond ASCII is a `\u` escape, and the
+        // document reads as v1's.
+        const typography = results.get("integration:Typography");
+        expect(typography?.status, typography?.reason).toBe("imported");
+        const source = yield* call(
+          "Read the Typography app's source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${typography?.v2Id}/source`,
+        ).pipe(Effect.flatMap((response) => decode(Source, response)));
+        const configuration = source.files.find((file) => file.path === "openapi.json")?.content;
+        if (configuration === undefined) return yield* Effect.die("The app has no openapi.json");
+        expect(configuration).not.toMatch(/[\u0080-\uffff]/);
+        expect(configuration).toContain("\\u2019");
+        expect(
+          Schema.decodeUnknownSync(
+            Schema.Struct({
+              source: Schema.Struct({
+                document: Schema.Struct({
+                  paths: Schema.Struct({
+                    "/health": Schema.Struct({
+                      get: Schema.Struct({ description: Schema.String }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          )(JSON.parse(configuration)).source.document.paths["/health"].get.description,
+        ).toBe(wideText);
+        const health = yield* call(
+          "Call the Typography API",
+          "POST",
+          `/api/organizations/${target.id}/apps/${typography?.v2Id}/tools/call`,
+          { tool: "typography.health", kind: "query", input: {} },
+        );
+        expect(health.status, JSON.stringify(health.body)).toBe(200);
+        expect((yield* upstream.received).at(-1)?.url).toBe("/public/health");
+
+        // A large app whose name and base URL go beyond Latin-1 writes its whole document file in
+        // ASCII, reads back the same base URL, keeps its name in its provider, builds and calls
+        // the API with the key saved in v1.
+        const kanji = results.get(`integration:${wideName}`);
+        expect(kanji?.status, kanji?.reason).toBe("imported");
+        expect(results.get(`connection:main · ${wideName}`)?.status).toBe("imported");
+        const kanjiSource = yield* call(
+          "Read the large app's source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${kanji?.v2Id}/source`,
+        ).pipe(Effect.flatMap((response) => decode(Source, response)));
+        const kanjiConfiguration = kanjiSource.files.find(
+          (file) => file.path === "openapi.json",
+        )?.content;
+        if (kanjiConfiguration === undefined)
+          return yield* Effect.die("The large app has no openapi.json");
+        expect(kanjiConfiguration.length).toBeGreaterThan(13_600_000);
+        expect(kanjiConfiguration).not.toMatch(/[\u0080-\uffff]/);
+        expect(
+          Schema.decodeUnknownSync(Schema.Struct({ baseUrl: Schema.String }))(
+            JSON.parse(kanjiConfiguration),
+          ).baseUrl,
+        ).toBe(`${upstream.origin}${widePath}`);
+        expect(kanjiSource.files.find((file) => file.path === "provider.ts")?.content).toContain(
+          JSON.stringify(wideName),
+        );
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(MailInventory, response)));
+        const profile = inventory.profiles.find((entry) => entry.app === kanji?.v2Id);
+        const account = Object.values(profile?.accounts ?? {}).flat()[0];
+        expect(account).toBeDefined();
+        const kanjiHealth = yield* call(
+          "Call the large API",
+          "POST",
+          `/api/organizations/${target.id}/apps/${kanji?.v2Id}/tools/call`,
+          {
+            profile: profile?.id,
+            tool: "service.health",
+            kind: "query",
+            input: { accountId: account, input: {} },
+          },
+        );
+        expect(kanjiHealth.status, JSON.stringify(kanjiHealth.body)).toBe(200);
+        const received = (yield* upstream.received).at(-1);
+        expect(received?.url).toBe(`${encodeURI(widePath)}/health`);
+        expect(received?.headers["x-api-key"]).toBe("synthetic-kanji-key");
+
+        // An app that does not build says at which stage, with the app's own error.
+        const scoped = results.get("integration:Scoped");
+        expect(scoped?.status).toBe("failed");
+        // v2 OAuth declarations refuse an authorization URL that sets `scope`, which the host owns.
+        expect(scoped?.reason).toBe(
+          "The generated app did not build. App build failed at the declaration stage: ValidationError: Value did not match the schema",
+        );
+        expect(results.get("connection:main · Scoped")).toMatchObject({
+          status: "failed",
+          reason: "Its integration was not imported.",
+        });
       }).pipe(Effect.provide(services)),
     ),
   );

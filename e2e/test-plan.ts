@@ -4833,6 +4833,30 @@ export const scenarios = plan({
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
   },
+  largeOpenapiAsciiApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app with a 13.6 MB document whose prose goes beyond Latin-1, written as ASCII JSON as imported apps write it, builds and calls its API",
+    targets: {
+      "self-host": scheduled,
+      // Only deployed Workers have Cloudflare's memory limit.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
+  largeOpenapiWideSourceApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app with a 13.6 MB ASCII document beside source files whose text goes beyond Latin-1, such as a provider's display name, builds, reads back its files exactly and calls its API",
+    targets: {
+      "self-host": scheduled,
+      // Only deployed Workers have Cloudflare's memory limit.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
@@ -6591,6 +6615,12 @@ export const scenarios = plan({
     file: "cloud-v1-import.spec.ts",
     title:
       "Cloud v1 import moves connections that signed in through Executor's own apps to v2's operator client of the same name, including a GitHub-shaped MCP server that names the scopeless client's endpoints, which renews them with the granted scopes, sends the token to each of a service's hosts the client reaches, and refuses an app v2 does not offer, a scope it does not allow and a host its tokens never reach",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportBuilds: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, and names the build stage and the app's own error when a generated app does not build",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   localSkills: {

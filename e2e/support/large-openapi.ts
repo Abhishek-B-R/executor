@@ -54,9 +54,10 @@ const objectSchema = (seed: number, depth: number, width: number): Json => {
 
 /**
  * `operations` synthetic operations on `origin`, and `GET /health`, tagged `service` with the
- * operationId `health`, which the product itself answers with `{ "status": "ok" }`.
+ * operationId `health`, which the product itself answers with `{ "status": "ok" }`. `prose`, when
+ * given, ends each operation's description.
  */
-export const largeOpenapiDocument = (origin: string, operations: number) => {
+export const largeOpenapiDocument = (origin: string, operations: number, prose?: string) => {
   const paths: Record<string, Record<string, Json>> = {
     "/health": {
       get: {
@@ -81,7 +82,8 @@ export const largeOpenapiDocument = (origin: string, operations: number) => {
         operationId: `${method}${word(index)}${index}`,
         tags: [word(index >> 2)],
         summary: sentence(index, 60),
-        description: sentence(index + 1, 400),
+        description:
+          prose === undefined ? sentence(index + 1, 400) : `${sentence(index + 1, 400)} ${prose}`,
         parameters: [
           {
             name: "id",

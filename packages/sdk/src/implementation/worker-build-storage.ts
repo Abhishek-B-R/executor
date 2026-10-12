@@ -7,6 +7,7 @@ import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtim
 import type { BuildId } from "../contracts/shared.ts";
 import type { UiBuildFile } from "../contracts/ui-build.ts";
 import type { RuntimeAsset } from "../contracts/runtime.ts";
+import { asciiJson } from "./ascii-json.ts";
 import { publicFileAsset, readPublicManifest } from "./public-files.ts";
 import { Effect, Option, Schema } from "effect";
 import {
@@ -29,9 +30,10 @@ export const buildKey = (build: BuildId) => key(`${build}/worker.json`);
 /** Where builds with an inlined framework live. Removed with `InlinedWorkerBuild`. */
 export const inlinedBuildKey = (build: BuildId) => key(`${build}.json`);
 
+/** Written in ASCII, so a large record decodes to one-byte strings; see `asciiJson`. */
 export const encodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, value: S["Type"]) =>
   Schema.encodeEffect(Schema.fromJsonString(schema))(value).pipe(
-    Effect.map((text) => new TextEncoder().encode(text)),
+    Effect.map((text) => new TextEncoder().encode(asciiJson(text))),
   );
 export const decodeJson = <S extends Schema.Codec<unknown, unknown>>(schema: S, body: Uint8Array) =>
   Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(new TextDecoder().decode(body));

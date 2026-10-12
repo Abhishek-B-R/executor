@@ -33,6 +33,7 @@ import {
   type AppRunner,
 } from "./app-runner.ts";
 import { invocationBuildLoader } from "./app-runtime.ts";
+import { asciiJson } from "./ascii-json.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
 
@@ -81,6 +82,13 @@ const RemoteResult = Schema.fromJsonString(
 );
 const encodedInvocation = Schema.fromJsonString(WorkerInvocation);
 const encodedBuild = Schema.fromJsonString(LoadedWorkerBuild);
+/**
+ * A build's code as one string for a runner, written in ASCII: a single non-ASCII character in any
+ * module would otherwise store the whole text, a large app's source included, at two bytes per
+ * character on both sides of the call. It decodes to the same modules.
+ */
+export const encodeLoadedBuild = (build: LoadedWorkerBuild) =>
+  asciiJson(Schema.encodeSync(encodedBuild)(build));
 const engine = () => new WorkflowFailure({ reason: "engine", retryable: true });
 
 /** Release a callback stub once the invocation is done with it, rather than at garbage collection. */
@@ -180,7 +188,7 @@ export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortS
               ),
           };
     return {
-      load: async () => Schema.encodeSync(encodedBuild)(await capabilities.load()),
+      load: async () => encodeLoadedBuild(await capabilities.load()),
       elicit: capabilities.elicit,
       controls: capabilities.controls,
       workflow,
@@ -328,8 +336,10 @@ export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string,
       }),
     ).pipe(Effect.withSpan("runtime.app.remote.invoke")),
   declare: (bundle: LoadedWorkerBuild, headers: Readonly<Record<string, string>>) =>
-    Schema.encodeEffect(encodedBuild)(bundle).pipe(
-      Effect.mapError(() => new RuntimeProtocolFailed()),
+    Effect.try({
+      try: () => encodeLoadedBuild(bundle),
+      catch: () => new RuntimeProtocolFailed(),
+    }).pipe(
       Effect.flatMap((encoded) => result(remote.declare(encoded, headers))),
       Effect.withSpan("runtime.app.remote.declare"),
     ),

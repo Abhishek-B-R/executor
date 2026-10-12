@@ -1,5 +1,6 @@
 import { retireMethod } from "@executor-js/app-data/worker-bundle";
 import type { SourceFile } from "../contracts/deployment.ts";
+import { asciiJson } from "./ascii-json.ts";
 
 /**
  * The text files a server entry retains as `ctx.files`. `ui/` is the browser app: the host serves
@@ -10,11 +11,13 @@ export const serverFiles = <File extends SourceFile>(files: readonly File[]) =>
 /**
  * The Worker module that holds `ctx.files`, beside the bundle rather than in it. The compiler never
  * reads the file text: a large file, such as an OpenAPI document, would otherwise be parsed and
- * printed again as one string literal. JSON source modules read their text from it.
+ * printed again as one string literal. JSON source modules read their text from it. It is written
+ * in ASCII, so one non-ASCII character in any file cannot double the memory of the whole module;
+ * the escapes evaluate to each file's exact text.
  */
 export const serverFilesModule = "__executor_files.js";
 export const serverFilesSource = (files: readonly SourceFile[]) =>
-  `export default ${JSON.stringify(serverFiles(files))};`;
+  `export default ${asciiJson(JSON.stringify(serverFiles(files)))};`;
 /**
  * The retained server entry for every protocol so far. It imports the framework's host module as a
  * namespace and uses only what protocol 1 guarantees, so it links against every protocol-1 framework. Optional

@@ -38,3 +38,4 @@ export {
 export { decodeWorkflowFailure, workflowFailureMessage } from "./contracts/workflow-errors.ts";
 
 export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
+export { asciiJson } from "./implementation/ascii-json.ts";

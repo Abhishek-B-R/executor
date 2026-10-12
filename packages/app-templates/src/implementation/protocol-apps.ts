@@ -6,6 +6,7 @@
  */
 import { Effect, Schema } from "effect";
 import { CredentialHost } from "apps/contracts";
+import { asciiJson } from "@executor-js/sdk/core";
 import {
   TemplateError,
   type CredentialPlacement,
@@ -532,14 +533,17 @@ ${
         {
           path: "openapi.json",
           // The document is written without indentation, which would more than double a large
-          // API's source; the settings after it stay one per line.
-          content: `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
-            allowedOrigin: origins.length === 1 ? origins[0] : origins,
-            securitySchemes: {},
-            methods: {},
-            oauth: [],
-            ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-          }).slice(2)}`,
+          // API's source; the settings after it stay one per line. The whole file is ASCII, so a
+          // non-ASCII base URL or description cannot double the memory of the document's text.
+          content: asciiJson(
+            `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
+              allowedOrigin: origins.length === 1 ? origins[0] : origins,
+              securitySchemes: {},
+              methods: {},
+              oauth: [],
+              ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
+            }).slice(2)}`,
+          ),
         },
         ...(hosts === undefined
           ? []

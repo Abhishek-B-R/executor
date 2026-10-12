@@ -699,7 +699,9 @@ export const importIntegration = (
     return imported("app", app.id, generated.note);
   }).pipe(
     Effect.catchTags({
-      DeploymentBuildFailed: () => fail("The generated app did not build."),
+      // The build's message names its stage and the failure in the generated source. Builds bind
+      // no accounts, so it holds no credentials.
+      DeploymentBuildFailed: (error) => fail(`The generated app did not build. ${error.message}`),
       BuildMemoryExceeded: () => fail("The generated app is too large to build."),
       AppNotFound: () => fail("Its imported app was removed."),
     }),
