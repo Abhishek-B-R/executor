@@ -256,6 +256,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   // metadata. "atlassian" misses the path-inserted URL and refuses the appended OpenID path.
   let pathDiscovery: "atlassian" | "issuer-mismatch" | "invalid-metadata" = "atlassian";
   const discoveryRequests: string[] = [];
+  /**
+   * Refuse requests without a User-Agent with an HTML 403 page, as some firewalls in front of
+   * authorization servers do.
+   */
+  let requireUserAgent = false;
+  /** The path and User-Agent of each request, in order. */
+  const userAgents: Array<{ readonly path: string; readonly userAgent: string | undefined }> = [];
   let scopes = ["read"];
   /** A narrower scope requirement advertised by the resource's Bearer challenge. */
   let challengeScopes: readonly string[] | undefined;
@@ -909,6 +916,21 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         );
       }),
     ),
+    HttpRouter.middleware(
+      (handler) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const userAgent = request.headers["user-agent"];
+          userAgents.push({ path: new URL(request.url, "http://issuer").pathname, userAgent });
+          return requireUserAgent && !userAgent
+            ? HttpServerResponse.text(
+                "<html><head><title>403 Forbidden</title></head><body>Request blocked</body></html>",
+                { status: 403, contentType: "text/html" },
+              )
+            : yield* handler;
+        }),
+      { global: true },
+    ),
   );
   const listener = yield* Effect.sync(() => createServer());
   const services = yield* Layer.build(
@@ -930,6 +952,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   return {
     origin,
     configure: (input: {
+      readonly requireUserAgent?: boolean;
       readonly registration?: boolean;
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
@@ -1008,6 +1031,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly resourceTokens?: typeof resourceTokens;
     }) =>
       Effect.sync(() => {
+        if (input.requireUserAgent !== undefined) requireUserAgent = input.requireUserAgent;
         if (input.scopeGrant !== undefined)
           scopeGrant = input.scopeGrant === null ? undefined : input.scopeGrant;
         if (input.resourceTokens !== undefined) resourceTokens = input.resourceTokens;
@@ -1125,6 +1149,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       registrations,
       discoveries,
       discoveryRequests: [...discoveryRequests],
+      userAgents: [...userAgents],
       lastRegistration,
       registeredRedirects: [...registeredRedirects],
       probes,

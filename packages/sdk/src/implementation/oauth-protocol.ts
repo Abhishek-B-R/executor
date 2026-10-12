@@ -39,6 +39,7 @@ import {
   providerCodeDiagnostics,
 } from "./oauth-diagnostics.ts";
 import { probeOAuthChallenge } from "./oauth-probe.ts";
+import { withExecutorUserAgent } from "./user-agent.ts";
 
 const ProtocolCode = Schema.Literals([
   oauth.WWW_AUTHENTICATE_CHALLENGE,
@@ -927,6 +928,7 @@ export const registrationGrantTypes = (server: { readonly grant_types_supported?
 
 /** Resolve protocol operations against one host-supplied Effect HTTP client. */
 export const makeOAuthProtocol = (options: OAuthOptions) => {
+  const httpClient = withExecutorUserAgent(options.httpClient);
   // This callback is the external library boundary, not an internal Promise implementation.
   const transport =
     (
@@ -956,7 +958,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               ),
             catch: failure,
           });
-          const response = yield* options.httpClient.execute(request);
+          const response = yield* httpClient.execute(request);
           yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
           const answer = {
             status: response.status,

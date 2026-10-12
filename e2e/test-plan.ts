@@ -4060,6 +4060,17 @@ export const scenarios = plan({
       local: na("Hosted account dialogs and saved-client management."),
     },
   },
+  oauthUserAgent: {
+    fixtures: "actors",
+    file: "oauth-user-agent.spec.ts",
+    title:
+      "OAuth discovery names Executor and sign-in completes against an authorization server that refuses requests without a User-Agent",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
   oauthAuthorizationParams: {
     fixtures: "actors",
     file: "oauth-authorization-params.spec.ts",
