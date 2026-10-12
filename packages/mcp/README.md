@@ -1,7 +1,10 @@
 # MCP
 
-Shared Effect implementation of Executor's `execute`, `resume`, and `skills` tools.
-It owns codemode, search, pagination, diagnostics, live continuations and interpreter limits.
+Shared Effect implementation of Executor's `skills`, `search`, `describe`, `call`, `execute` and
+`resume` tools. It owns codemode, search, pagination, diagnostics, live continuations and
+interpreter limits. `search` and `describe` read the catalog a program reaches as `tools.search`.
+`call` runs tools by path through the same execution manager as `execute` (a `Program` in
+`implementation/execute.ts`), so approvals, input, resume and limits behave the same.
 See [MCP resume](../../notes/mcp-resume.md) for result shapes, authority, timeout and restart behavior.
 It does not own login, API keys, organizations or credential access.
 

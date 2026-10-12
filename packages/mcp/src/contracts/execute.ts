@@ -415,6 +415,41 @@ export const DescribeResult = Schema.Struct({
     Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
   ),
 });
+/** One direct tool call: an exact path from search and the tool's JSON input. */
+export const CallRequest = Schema.Struct({
+  path: Schema.String.annotate({
+    description: 'An exact path from search, such as tools.github.profiles["ins_1"].listIssues.',
+  }),
+  input: Schema.Json.annotate({ description: "The tool's input, matching its input type." }),
+});
+/**
+ * One call, or several independent calls that run concurrently. The union sits below the top
+ * level because several MCP clients reject a tool input schema that is itself a union.
+ */
+export const CallInput = Schema.Struct({
+  calls: Schema.Union([CallRequest, Schema.Array(CallRequest).check(Schema.isMinLength(1))]),
+});
+/** How one direct call ended. A failed call does not stop the others in its batch. */
+export const CallOutcome = Schema.Union([
+  Schema.Struct({ path: Schema.String, ok: Schema.Literal(true), value: Schema.Json }),
+  Schema.Struct({
+    path: Schema.String,
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      kind: CodeMode.DiagnosticKind,
+      message: Schema.String,
+      response: Schema.optionalKey(McpErrorResponse),
+    }),
+    /** The closest tool paths, when the path names no tool. */
+    matches: Schema.optionalKey(Schema.Array(Schema.String)),
+  }),
+]);
+export type CallOutcome = typeof CallOutcome.Type;
+/** Search, describe and call read the catalog directly; a failure here is the caller's whole listing. */
+export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
+  "CatalogUnavailable",
+  { message: Schema.String },
+) {}
 /** Server-controlled execution budgets; clients cannot override them. */
 export const McpLimits = Schema.Struct({
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -440,7 +475,7 @@ export const searchPageBytes = (limits: McpLimits) => Math.floor(limits.maxOutpu
 /** Execute programs over the host-provided app catalog. */
 export const ExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps; find their tools with tools.search inside it and full signatures with tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ExecuteInput,
   success: McpExecutionResult,
@@ -450,9 +485,55 @@ export const ExecuteTool = McpTool.make("execute", {
 /** Native-mode execution obtains policy decisions through server-initiated MCP requests. */
 export const NativeExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps; find their tools with tools.search inside it and full signatures with tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
   parameters: ExecuteInput,
+  success: McpExecutionResult,
+  failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
+}).annotate(McpTool.Meta, ExecutionResultMeta);
+
+/** Search reports the apps it could not load beside its matches, as execute results do. */
+export const SearchToolResult = Schema.Struct({
+  ...SearchResult.fields,
+  unavailableApps: Schema.Array(UnavailableApp),
+});
+/** The catalog search a program reaches as tools.search, as its own MCP tool. */
+export const SearchTool = McpTool.make("search", {
+  description:
+    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and profile listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
+  parameters: SearchInput,
+  success: SearchToolResult,
+  failure: CatalogUnavailable,
+})
+  .annotate(McpTool.Readonly, true)
+  .annotate(McpTool.Destructive, false);
+/** Full signatures for exact paths, as tools.search.describe returns them in a program. */
+export const DescribeTool = McpTool.make("describe", {
+  description:
+    "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from search. Unknown paths are listed in missing with the closest paths.",
+  parameters: DescribeInput,
+  success: DescribeResult,
+  failure: CatalogUnavailable,
+})
+  .annotate(McpTool.Readonly, true)
+  .annotate(McpTool.Destructive, false);
+
+/** Shared by every delivery mode; each appends how pending interactions are answered. */
+export const callDescription =
+  "Call Executor app tools directly by exact path from search. Pass one {path, input} as calls, or an array of independent calls to run them concurrently; results come back in the same order, each with ok and its value or error. Use execute instead when one call's output feeds another, or to filter a large result before it reaches you. Results over the output limit are refused, not cut. Never ask the user for secrets in chat; accounts connect through Executor's secure links.";
+/** Call tools without a program. Pending interactions return as from execute. */
+export const CallTool = McpTool.make("call", {
+  description: `${callDescription} If approval-required or input-required is returned, show it to the user and call resume with their answer; never repeat the call to continue it.`,
+  dependencies: [HttpServerRequest.HttpServerRequest],
+  parameters: CallInput,
+  success: McpExecutionResult,
+  failure: ExecutionRejected,
+}).annotate(McpTool.Meta, ExecutionResultMeta);
+/** Native-mode calls obtain decisions through server-initiated MCP requests. */
+export const NativeCallTool = McpTool.make("call", {
+  description: `${callDescription} Approvals and tool input open the MCP client's own prompt, and the call continues.`,
+  dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
+  parameters: CallInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
 }).annotate(McpTool.Meta, ExecutionResultMeta);

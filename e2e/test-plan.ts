@@ -754,6 +754,16 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpDirectCalls: {
+    fixtures: "actors",
+    file: "mcp-direct-calls.spec.ts",
+    title: "MCP search, describe and call reach app tools without an execute program",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared MCP path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpCatalogRefresh: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",

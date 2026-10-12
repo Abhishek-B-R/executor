@@ -51,12 +51,12 @@ import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../con
 import { programScheduler } from "./program-scheduler.ts";
 import { reportFailure } from "./diagnostics.ts";
 import {
-  executeProgram,
   executionProgress,
   reportedCalls,
   timeoutDeliveryMs,
   timeoutMessage,
   type ExecutionProgress,
+  type Program,
 } from "./execute.ts";
 
 class ApprovalDenied extends Schema.TaggedError<ApprovalDenied>()("ApprovalDenied", {}) {}
@@ -669,11 +669,14 @@ export const makeExecutions = (
             ? release(pending.run)
             : Effect.void;
         }),
-      /** Start one program. Policy consent and tool input return the same pending-interaction union. */
+      /**
+       * Start one program or batch of direct calls. Policy consent and tool input return the same
+       * pending-interaction union.
+       */
       execute: (
         caller: string,
         backend: McpBackend<Error>,
-        code: string,
+        work: Program,
         transport: PendingTransport,
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
@@ -718,8 +721,7 @@ export const makeExecutions = (
             Effect.sync(() => {
               live.programs += 1;
             }),
-            () =>
-              executeProgram(broker(run), limits, code, Deferred.await(run.expired), run.progress),
+            () => work(broker(run), limits, Deferred.await(run.expired), run.progress),
             () =>
               Effect.sync(() => {
                 live.programs -= 1;

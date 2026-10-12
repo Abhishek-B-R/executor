@@ -496,8 +496,11 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           client.listTools(),
         );
         expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
           "execute",
           "resume",
+          "search",
           "skills",
         ]);
         // The default is the plain URL's model mode only, not every approval mode.
@@ -537,8 +540,11 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
               client.listTools(),
             );
             expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
+              "call",
+              "describe",
               "execute",
               "resume",
+              "search",
               "skills",
             ]);
           }),

@@ -25,13 +25,34 @@ MCP instructions introduce Executor to the agent. They are the Executor app's
   of what is visible, `skills({ app: "support-inbox" })` for one app's skills,
   and `skills({ app: "support-inbox", name: "triage" })` to read one. It
   connects no account and runs no code.
+- **`search`** finds app tools by words in their paths, descriptions and
+  labels, and returns each tool's exact path and input type.
+- **`describe`** returns the whole description and signature of tools at exact
+  paths from `search`.
+- **`call`** calls tools directly by path. Pass one `{ path, input }` as
+  `calls`, or an array of independent calls, which run concurrently.
 - **`execute`** runs a JavaScript program over your apps.
-- **`resume`** continues a program that paused for an approval or for input.
-  It is not present in native mode, where the client answers in place.
+- **`resume`** continues a call or program that paused for an approval or for
+  input. It is not present in native mode, where the client answers in place.
+
+## Direct calls
+
+For one or a few calls, an agent needs no program:
+
+```json
+{ "calls": [{ "path": "tools.vercel.profiles[\"<profile-id>\"].listProjects", "input": {} }] }
+```
+
+`call` returns each call's outcome in order, with `ok` and its `value` or
+`error`. One failed call does not stop the others. An unknown path comes back
+with the closest paths. A result that would pass the output limit is refused
+rather than cut, with a pointer to `execute`, which can return only the fields
+you need. Approvals and input pause `call` exactly as they pause `execute`.
 
 ## Codemode
 
-`execute` is the way an agent uses your apps. The agent writes a short
+`execute` is for work where one result feeds another call, or a large result
+should be reduced before it reaches the agent. The agent writes a short
 JavaScript program; Executor runs it in a sandboxed interpreter and returns what
 the program returns.
 
@@ -65,7 +86,7 @@ not cached across changes, so run `tools.search` again in a new `execute` after
 you add or reconfigure an app.
 
 Some limits are fixed by the server and a client cannot raise them: 65,536
-characters of program source, 100 tool calls, 5 minutes, and 65,536 bytes of
+characters of program source, 100 tool calls, 5 minutes, and 100,000 bytes of
 output. Time spent waiting for your approval or input does not count toward the
 5 minutes. Execute returns the result when the program ends, or sooner with a
 request for approval or input when the program pauses. An MCP client with a
@@ -119,7 +140,7 @@ and which is then fixed in the grant.
 | Mode      | URL                             | Where you answer                                                                                                                       |
 | --------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `model`   | `/mcp`                          | The agent shows you the request and calls `resume` with your answer. This is the default.                                              |
-| `native`  | `/mcp?elicitation_mode=native`  | Your MCP client's own prompt. The `execute` call stays open and continues. There is no `resume`.                                       |
+| `native`  | `/mcp?elicitation_mode=native`  | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`.                          |
 | `browser` | `/mcp?elicitation_mode=browser` | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer. |
 
 Native mode needs a client that implements form elicitation. Browser mode is the

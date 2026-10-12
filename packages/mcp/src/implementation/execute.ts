@@ -1,5 +1,5 @@
 /** Build a live catalog and execute code against configured apps. */
-import { CodeMode, Namespace, Tool, toolError } from "@opencode-ai/codemode";
+import { CodeMode, Namespace, Tool, ToolError, toolError } from "@opencode-ai/codemode";
 import { parse, tokTypes, tokenizer, type Token } from "acorn";
 import {
   Json,
@@ -24,11 +24,22 @@ import {
   type ToolSearchTarget,
 } from "@executor-js/sdk/core";
 import { Clock, Deferred, Duration, Effect, Option, Schema, Semaphore } from "effect";
-import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
+import {
+  diagnostic,
+  diagnosticSummary,
+  executionDiagnostic,
+  failureDetail,
+  reportFailure,
+} from "./diagnostics.ts";
 import { nearest } from "./suggestions.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
+  CallInput,
+  CallRequest,
+  CatalogUnavailable,
+  type CallOutcome,
+  type ExecuteResult,
   AppDiscoveryTimedOut,
   AppProfileRequired,
   defaultMcpRuntimeLimits,
@@ -918,6 +929,32 @@ function catalog(
     const listed = new Map<string, ReadonlyArray<Entry>>();
     /** Each searchable app's targets. */
     const indexed = new Map<string, ReadonlyArray<SearchTarget>>();
+    /** Call an entry's tool, as a program's call and a direct call both do. */
+    const call =
+      (entry: Entry) =>
+      (input: unknown): Effect.Effect<Json, ToolError> =>
+        Schema.decodeUnknownEffect(Json)(input).pipe(
+          Effect.mapError(() => toolError("Tool arguments must be JSON")),
+          Effect.flatMap((input) =>
+            backend
+              .callTool({
+                app: entry.target.id,
+                deployment: entry.target.deployment,
+                ...entry.target.selection,
+                tool: entry.tool.name,
+                kind: entry.tool.readOnly === true ? "query" : "mutation",
+                input,
+              })
+              .pipe(
+                Effect.flatMap((result) =>
+                  result.status === "completed"
+                    ? Effect.succeed(result.value)
+                    : Effect.fail(approvalRequired(result)),
+                ),
+                Effect.mapError((error) => toolError(diagnostic(error))),
+              ),
+          ),
+        );
     /** The program's own tool for an entry, built when the program's catalog takes its app. */
     const program = (entry: Entry) =>
       renderSchemas(entry.tool).pipe(
@@ -926,29 +963,7 @@ function catalog(
             description: entry.tool.description,
             input: schemas.input,
             output: schemas.output ?? Schema.Json,
-            execute: (input) =>
-              Schema.decodeUnknownEffect(Json)(input).pipe(
-                Effect.mapError(() => toolError("Tool arguments must be JSON")),
-                Effect.flatMap((input) =>
-                  backend
-                    .callTool({
-                      app: entry.target.id,
-                      deployment: entry.target.deployment,
-                      ...entry.target.selection,
-                      tool: entry.tool.name,
-                      kind: entry.tool.readOnly === true ? "query" : "mutation",
-                      input,
-                    })
-                    .pipe(
-                      Effect.flatMap((result) =>
-                        result.status === "completed"
-                          ? Effect.succeed(result.value)
-                          : Effect.fail(approvalRequired(result)),
-                      ),
-                      Effect.mapError((error) => toolError(diagnostic(error))),
-                    ),
-                ),
-              ),
+            execute: call(entry),
           }),
         ),
       );
@@ -1380,6 +1395,7 @@ function catalog(
       load,
       callable,
       reachable,
+      call,
       described,
       searchable,
       lost,
@@ -1462,7 +1478,10 @@ const unknownTool = (
  */
 const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) => {
   const path = unknownPath(error);
-  if (path === undefined) return undefined;
+  return path === undefined ? undefined : unavailableAt(path, namespaces);
+};
+/** The app, profile or router a canonical path lies in, when it did not load. */
+const unavailableAt = (path: string, namespaces: Namespaces) => {
   const segments = path.split(".");
   for (let length = segments.length; length > 0; length--) {
     const found = namespaces.get(segments.slice(0, length).join("."));
@@ -1471,6 +1490,12 @@ const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) =
   }
   return undefined;
 };
+
+/** Why a call into an app that did not load cannot run, as the agent reads it. */
+const unavailableMessage = (unavailable: typeof UnavailableApp.Type) =>
+  unavailable.reason.startsWith("{")
+    ? unavailable.reason
+    : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`;
 
 /**
  * A snapshot for a result. A call still running when the execution ends is reported as
@@ -1521,11 +1546,28 @@ const deadlineClock = (
 });
 
 /**
+ * One execution's work. The run supplies its brokered backend, its limits, a `deadline` that
+ * completes when the execution's budget is spent, and the progress its driver reports from.
+ */
+export type Program = (
+  backend: McpBackend<Error>,
+  limits: McpLimits,
+  deadline: Effect.Effect<void>,
+  progress: ExecutionProgress,
+) => Effect.Effect<typeof ExecuteResult.Type>;
+
+/** Run one CodeMode program as an execution. */
+export const executeProgram =
+  (code: string): Program =>
+  (backend, limits, deadline, progress) =>
+    runProgram(backend, limits, code, deadline, progress);
+
+/**
  * Internal interpreter entry. `deadline` completes when the execution's budget is spent; the
  * caller decides whether that is wall time or active time. Discovery stops at the deadline;
  * a running program is stopped by CodeMode so its admitted calls and logs are returned.
  */
-export function executeProgram(
+function runProgram(
   backend: McpBackend<Error>,
   limits: McpLimits,
   code: string,
@@ -1671,9 +1713,7 @@ export function executeProgram(
           : {
               error: {
                 kind: "ToolFailure" as const,
-                message: unavailable.reason.startsWith("{")
-                  ? unavailable.reason
-                  : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`,
+                message: unavailableMessage(unavailable),
               },
             }),
         ...(timedOut
@@ -1703,3 +1743,207 @@ export function executeProgram(
     );
   });
 }
+
+/** A failed direct call, in the shape every outcome of a batch shares. */
+const callFailure = (
+  path: string,
+  kind: CodeMode.DiagnosticKind,
+  message: string,
+  matches?: ReadonlyArray<string>,
+): CallOutcome => ({
+  path,
+  ok: false,
+  error: failureDetail({ kind, message }),
+  ...(matches === undefined ? {} : { matches }),
+});
+
+/**
+ * Call tools by exact path without a program. Each call runs the same catalog tool a program
+ * would call, through the run's backend, so approvals and tool input pause and resume as they do
+ * for execute. Calls run concurrently and fail independently. A result that would take the
+ * output past its budget is refused rather than cut: the agent can select fields with execute.
+ */
+export function callTools(input: typeof CallInput.Type): Program {
+  return (backend, limits, deadline, progress) =>
+    Effect.suspend(() => {
+      const single = "path" in input.calls;
+      const requests: ReadonlyArray<typeof CallRequest.Type> =
+        "path" in input.calls ? [input.calls] : input.calls;
+      const failure = (kind: CodeMode.DiagnosticKind, message: string) => ({
+        execution: executionDiagnostic({
+          ok: false as const,
+          error: { kind, message },
+          toolCalls: reportedCalls(progress),
+        }),
+        unavailableApps: progress.unavailableApps,
+      });
+      if (requests.length > limits.maxToolCalls)
+        return Effect.succeed(
+          failure(
+            "ToolCallLimitExceeded",
+            `One call accepts at most ${limits.maxToolCalls} tool calls; this one has ${requests.length}.`,
+          ),
+        );
+      const named = requests.map(({ path }) => canonical(path));
+      return Effect.gen(function* () {
+        // Discovery loads only the apps the calls name.
+        const loaded = yield* Effect.gen(function* () {
+          const discovered = yield* catalog(backend, progress, deadline);
+          const entries = yield* discovered.described(named.filter((path) => path !== ""));
+          return { discovered, entries };
+        }).pipe(
+          Effect.withSpan("mcp.catalog"),
+          Effect.map(Option.some),
+          Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
+        );
+        if (Option.isNone(loaded)) {
+          yield* Effect.annotateCurrentSpan("executor.timeout.phase", "discovery");
+          return failure("TimeoutExceeded", timeoutMessage(limits.timeoutMs, "discovery"));
+        }
+        const { discovered, entries } = loaded.value;
+        const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+        progress.phase = "program";
+        const run = (request: typeof CallRequest.Type, index: number) =>
+          Effect.gen(function* () {
+            const path = named[index] ?? "";
+            const entry = byPath.get(path);
+            if (entry === undefined) {
+              const unavailable = unavailableAt(path, discovered.namespaces);
+              if (unavailable !== undefined)
+                return callFailure(request.path, "ToolFailure", unavailableMessage(unavailable));
+              const closest = nearest(
+                path,
+                entries
+                  .filter((candidate) => within(path, candidate.target.slug))
+                  .map((candidate) => candidate.path),
+                3,
+              );
+              return callFailure(
+                request.path,
+                "UnknownTool",
+                `No tool at ${request.path}. Use search to find exact paths.`,
+                closest.map((match) => CodeMode.toolExpression(match)),
+              );
+            }
+            const name = CodeMode.toolExpression(entry.path);
+            const fiber = yield* Effect.fiberId;
+            const started = yield* Clock.currentTimeMillis;
+            progress.calls[index] = { name, outcome: "running" };
+            progress.callFibers.set(fiber, index);
+            const finish = (outcome: "success" | "failure") =>
+              Effect.gen(function* () {
+                const recorded = progress.calls[index];
+                if (recorded === undefined) return;
+                recorded.outcome = outcome;
+                recorded.durationMs = (yield* Clock.currentTimeMillis) - started;
+              });
+            return yield* discovered
+              .call(entry)(request.input)
+              .pipe(
+                Effect.matchEffect({
+                  onSuccess: (value) =>
+                    finish("success").pipe(Effect.as<CallOutcome>({ path: name, ok: true, value })),
+                  onFailure: (error) =>
+                    finish("failure").pipe(
+                      Effect.as(callFailure(name, "ToolFailure", error.message)),
+                    ),
+                }),
+                Effect.ensuring(Effect.sync(() => progress.callFibers.delete(fiber))),
+              );
+          });
+        const outcomes = yield* Effect.forEach(requests, run, { concurrency: "unbounded" }).pipe(
+          Effect.map(Option.some),
+          Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
+        );
+        if (Option.isNone(outcomes)) {
+          yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
+          return failure("TimeoutExceeded", timeoutMessage(limits.timeoutMs, "program"));
+        }
+        // Results keep the batch order; once the output budget is spent, later values are refused.
+        let used = 0;
+        const bounded = outcomes.value.map((outcome): CallOutcome => {
+          const bytes = jsonBytes(outcome);
+          if (!outcome.ok || used + bytes <= limits.maxOutputBytes) {
+            used += bytes;
+            return outcome;
+          }
+          const refused = callFailure(
+            outcome.path,
+            "Truncated",
+            `The tool ran, but its ${bytes}-byte result would pass the ${limits.maxOutputBytes}-byte output limit. Call it inside execute and return only the fields you need.`,
+          );
+          used += jsonBytes(refused);
+          return refused;
+        });
+        yield* Effect.annotateCurrentSpan({
+          "executor.call.count": requests.length,
+          "executor.outcome": "completed",
+        });
+        return {
+          execution: {
+            ok: true as const,
+            value: single ? (bounded[0] ?? null) : bounded,
+            toolCalls: reportedCalls(progress),
+          },
+          unavailableApps: discovered.unavailableApps(),
+        };
+      }).pipe(
+        Effect.catch((error) =>
+          recordFailure(progress, error).pipe(
+            Effect.as(failure("ExecutionFailure", diagnostic(error))),
+          ),
+        ),
+      );
+    });
+}
+
+/**
+ * Read the caller's catalog outside any program, for the search and describe tools. Discovery
+ * failures are reported as they are for a program; a failure to list apps fails the request.
+ */
+const readCatalog = <A>(
+  backend: McpBackend<Error>,
+  read: (discovered: Effect.Success<ReturnType<typeof catalog>>) => Effect.Effect<A, Error>,
+) =>
+  Effect.gen(function* () {
+    const progress = executionProgress();
+    // No program runs, so no program deadline stops a load.
+    return yield* catalog(backend, progress, Effect.never).pipe(
+      Effect.flatMap((discovered) =>
+        read(discovered).pipe(Effect.map((value) => ({ value, discovered }))),
+      ),
+      Effect.ensuring(
+        Effect.suspend(() =>
+          Effect.forEach(progress.failures.splice(0), reportFailure, { discard: true }),
+        ),
+      ),
+      Effect.catch((error) =>
+        reportFailure(error).pipe(
+          Effect.andThen(
+            Effect.fail(new CatalogUnavailable({ message: diagnosticSummary(error) })),
+          ),
+        ),
+      ),
+    );
+  });
+
+/** The search tool: one ranked page of the caller's catalog, as tools.search returns it. */
+export const searchCatalog = (
+  backend: McpBackend<Error>,
+  limits: McpLimits,
+  input: typeof SearchInput.Type,
+) =>
+  readCatalog(backend, (discovered) =>
+    searchPage(discovered.searchable, discovered.lost, backend.searchTools, limits, input),
+  ).pipe(
+    Effect.map(({ value, discovered }) => ({
+      ...value,
+      unavailableApps: discovered.unavailableApps(),
+    })),
+  );
+
+/** The describe tool: full signatures for exact paths, as tools.search.describe returns them. */
+export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>
+  readCatalog(backend, (discovered) => describeTools(discovered.described, input.paths)).pipe(
+    Effect.map(({ value }) => value),
+  );

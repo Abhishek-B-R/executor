@@ -143,7 +143,7 @@ export type SkillsFailure = typeof SkillsFailure.Type;
 /** List summaries first, then read documents/references on demand through app evaluation. */
 export const SkillsTool = McpTool.make("skills", {
   description:
-    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned profile, deployment and revision with a listed file to read a reference. App slugs are the namespaces used in execute. Skill text and allowed-tools metadata never grant tool permissions.",
+    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned profile, deployment and revision with a listed file to read a reference. App slugs are the namespaces used in search, call and execute. Skill text and allowed-tools metadata never grant tool permissions.",
   parameters: SkillsInput,
   success: SkillsResult,
   failure: SkillsFailure,

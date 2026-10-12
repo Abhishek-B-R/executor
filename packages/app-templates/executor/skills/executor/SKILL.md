@@ -1,6 +1,6 @@
 ---
 name: executor
-description: Start here. What Executor is, how to call app tools with execute, when to build an app, and when to send feedback.
+description: Start here. What Executor is, how to find and call app tools with search, call and execute, when to build an app, and when to send feedback.
 ---
 
 # Executor
@@ -8,8 +8,9 @@ description: Start here. What Executor is, how to call app tools with execute, w
 ## What Executor is
 
 Executor is a host that runs apps: TypeScript packages that expose tools,
-storage, UI, accounts and background work. Agents reach every app through two
-MCP tools, `skills` and `execute`. Each app's slug is its namespace in both.
+storage, UI, accounts and background work. Agents reach every app through the
+same few MCP tools: `skills`, `search`, `describe`, `call` and `execute`. Each
+app's slug is its namespace in all of them.
 Credentials go only through Executor's secure connection links, never through
 chat or source code. Some calls pause until the user approves them.
 
@@ -17,14 +18,23 @@ This is the `executor` skill of the Executor app (slug `executor` unless
 renamed). Read its other skills with the `skills` tool, for example
 `{app: "executor", name: "code-mode"}`. `{}` lists every visible skill.
 
-## Use apps with code mode
+## Find and call tools
 
-Write a JavaScript program for `execute`. Start with
-`return await tools.search({ query: "..." })`, then call the exact paths it
-returns, such as `await tools.<slug>.<tool>({ ... })`. Search shows each tool's
-input type; `tools.search.describe({ paths })` returns full signatures. Return
-only the data you need. When a program pauses for approval or input, resume it;
-never run its source again. For depth, read the `code-mode` skill.
+Find tools with `search({ query: "..." })`. It returns each tool's exact
+`path`, such as `tools.<slug>.<tool>`, and its input type; `describe({ paths })`
+returns full signatures. Never guess argument names.
+
+For one or a few independent calls, use `call({ calls: { path, input } })`, or
+pass an array as `calls` to run them concurrently. Each result has `ok` and its
+`value` or `error`.
+
+Write a JavaScript program for `execute` when one call's result feeds another,
+or a large result should be filtered before it reaches you. Inside it, the same
+paths are async functions, and `tools.search` and `tools.search.describe` work
+as above. Return only the data you need. For depth, read the `code-mode` skill.
+
+`call` and `execute` can pause for approval or input. Show the request to the
+user and resume it; never repeat the call or run the program again.
 
 ## Build an app
 

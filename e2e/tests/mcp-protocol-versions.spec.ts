@@ -155,7 +155,14 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           expect(listed.status).toBe(200);
           expect(listed.version).toBe(protocolVersion);
           const { tools } = yield* Schema.decodeUnknownEffect(Tools)(listed.reply?.result);
-          expect(tools.map((tool) => tool.name).sort()).toEqual(["execute", "resume", "skills"]);
+          expect(tools.map((tool) => tool.name).sort()).toEqual([
+            "call",
+            "describe",
+            "execute",
+            "resume",
+            "search",
+            "skills",
+          ]);
           const called = yield* post(session, {
             id: 3,
             method: "tools/call",

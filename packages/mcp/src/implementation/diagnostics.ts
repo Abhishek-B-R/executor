@@ -109,18 +109,17 @@ export const refusedMcpRequest = (
  * A declared recovery action and retry policy are appended to the summary line; full recovery stays
  * in `response`.
  */
-export const executionDiagnostic = <A extends CodeMode.Result>(execution: A) => {
-  if (
-    execution.ok ||
-    (execution.error.kind !== "ToolFailure" && execution.error.kind !== "ExecutionFailure")
-  )
-    return execution;
+export const executionDiagnostic = <A extends CodeMode.Result>(execution: A) =>
+  execution.ok ? execution : { ...execution, error: failureDetail(execution.error) };
+
+/** One failure as agents read it: a tool or execution failure carrying our JSON gains its summary. */
+export const failureDetail = <A extends Pick<CodeMode.Diagnostic, "kind" | "message">>(
+  error: A,
+) => {
+  if (error.kind !== "ToolFailure" && error.kind !== "ExecutionFailure") return error;
   const response = Schema.decodeUnknownOption(Schema.fromJsonString(McpErrorResponse))(
-    execution.error.message,
+    error.message,
   );
-  if (Option.isNone(response)) return execution;
-  return {
-    ...execution,
-    error: { ...execution.error, message: summary(response.value), response: response.value },
-  };
+  if (Option.isNone(response)) return error;
+  return { ...error, message: summary(response.value), response: response.value };
 };
