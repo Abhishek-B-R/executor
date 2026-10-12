@@ -602,6 +602,8 @@ export const makeOAuth = (
           ? {}
           : { tokenRequestFormat: server.tokenRequestFormat }),
         ...(server.tokenResponse === undefined ? {} : { tokenResponse: server.tokenResponse }),
+        // Sent on the exchange and every renewal, as on the authorization request.
+        ...(server.resource === undefined ? {} : { resource: server.resource }),
       };
     });
   /**
@@ -640,24 +642,37 @@ export const makeOAuth = (
    * is offered: an issuer, which a provider can claim, never does, and signing in uses the
    * operator's endpoints whatever the provider declares. The method's scopes are asked for, or the
    * client's `defaultScopes` when it declares none, and every one must be among `allowedScopes`.
+   * Scopes discovered only in the resource's advertised list are what it offers, not what it
+   * requires, so they are narrowed to `allowedScopes`; the client is offered when any remain.
+   * An `unlisted` client is offered only to reconnect an account whose grant it issued, `reconnecting`.
    */
-  const firstPartyClient = (discovered: {
-    readonly grant: string;
-    readonly server: OAuthTokenServer;
-    readonly scopes: readonly string[];
-  }) => {
+  const firstPartyClient = (
+    discovered: {
+      readonly grant: string;
+      readonly server: OAuthTokenServer;
+      readonly scopes: readonly string[];
+      readonly scopesAdvertised?: true | undefined;
+    },
+    reconnecting?: FirstPartyOAuthClientId,
+  ) => {
     if (discovered.grant !== "authorization_code") return undefined;
     const { server } = discovered;
     const same = (declared: string | undefined, configured: string) =>
       declared !== undefined && new URL(declared).href === new URL(configured).href;
     for (const client of firstPartyClients.values()) {
+      if (client.unlisted === true && client.id !== reconnecting) continue;
       if (
         !same(server.authorization_endpoint, client.server.authorizationUrl) ||
         !same(server.token_endpoint, client.server.tokenUrl)
       )
         continue;
-      const scopes = discovered.scopes.length === 0 ? client.defaultScopes : discovered.scopes;
       const allowed = allowedScopes(client);
+      if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
+        const scopes = discovered.scopes.filter((scope) => allowed.includes(scope));
+        if (scopes.length === 0) continue;
+        return { client, scopes };
+      }
+      const scopes = discovered.scopes.length === 0 ? client.defaultScopes : discovered.scopes;
       if (!scopes.every((scope) => allowed.includes(scope))) continue;
       return { client, scopes };
     }
@@ -1273,8 +1288,14 @@ export const makeOAuth = (
    * document, then a client registered now. It uses the sign-in's own discovery rather than
    * discovering the service again. A newly registered client is stored at once, since the service
    * has already issued it; a document client is the host's configuration and is never stored.
+   * `reconnecting` names the operator's client that issued the grant a reconnect replaces, which
+   * is offered even when it is unlisted.
    */
-  const automaticChoice = (input: SignInScope, resolved: Resolved) =>
+  const automaticChoice = (
+    input: SignInScope,
+    resolved: Resolved,
+    reconnecting?: FirstPartyOAuthClientId,
+  ) =>
     Effect.gen(function* () {
       if (protocol === undefined || options === undefined)
         return yield* new OAuthClientUnavailable(input);
@@ -1286,7 +1307,7 @@ export const makeOAuth = (
           kind: "stored" as const,
           ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
         };
-      const firstParty = firstPartyClient(discovered);
+      const firstParty = firstPartyClient(discovered, reconnecting);
       if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
       if (registration === "client_id_metadata_document") {
         const url =
@@ -1358,17 +1379,22 @@ export const makeOAuth = (
       const { discovered, redirect } = resolved;
       const choice = input.client;
       const scope: ClientScope = { ...input, issuer: resolved.issuer };
+      const automatic = choice === undefined || Schema.is(OAuthAutomaticClient)(choice);
+      const row =
+        existing === undefined || !automatic
+          ? null
+          : yield* query(() =>
+              db.findFirst("oauthGrants", { where: (b) => b("id", "=", existing.id) }),
+            );
+      const previous =
+        existing === undefined || row === null
+          ? undefined
+          : yield* decrypt(existing.id, row.encrypted, OAuthGrant);
+      // The operator's client that issued the grant this reconnect replaces, offered again even
+      // when it is unlisted.
+      const reconnecting =
+        previous !== undefined && isFirstPartyGrant(previous) ? previous.firstParty : undefined;
       if (choice === undefined) {
-        const row =
-          existing === undefined
-            ? null
-            : yield* query(() =>
-                db.findFirst("oauthGrants", { where: (b) => b("id", "=", existing.id) }),
-              );
-        const previous =
-          existing === undefined || row === null
-            ? undefined
-            : yield* decrypt(existing.id, row.encrypted, OAuthGrant);
         const reusable =
           previous === undefined ||
           isFirstPartyGrant(previous) ||
@@ -1396,7 +1422,7 @@ export const makeOAuth = (
         // A removed client's credentials are withdrawn: the reconnect signs in automatically or
         // needs another client, and never reuses the grant's copy of them.
         if (holder?.kind === "withdrawn")
-          return yield* automaticChoice(input, resolved).pipe(
+          return yield* automaticChoice(input, resolved, reconnecting).pipe(
             Effect.catchTag("OAuthClientUnavailable", () =>
               Effect.fail(new OAuthClientNotFound({})),
             ),
@@ -1411,13 +1437,13 @@ export const makeOAuth = (
           // keeps it when the service offers no other. Either way a refusal fails rather than
           // fall back to the copy the grant holds of the same client.
           if (kept.source === "manual") return yield* keep;
-          return yield* automaticChoice(input, resolved).pipe(
+          return yield* automaticChoice(input, resolved, reconnecting).pipe(
             Effect.catchTag("OAuthClientUnavailable", () => keep),
           );
         }
         // No stored client holds or held the grant's copy, so reusing it uses no stored client's
         // credentials. Completion checks again, in case one is stored meanwhile.
-        return yield* automaticChoice(input, resolved).pipe(
+        return yield* automaticChoice(input, resolved, reconnecting).pipe(
           Effect.catchTag("OAuthClientUnavailable", (error) =>
             reusable === undefined
               ? Effect.fail(error)
@@ -1435,7 +1461,8 @@ export const makeOAuth = (
           return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         return { kind: "stored" as const, ...(yield* storedClient(choice.id, input, resolved)) };
       }
-      if (Schema.is(OAuthAutomaticClient)(choice)) return yield* automaticChoice(input, resolved);
+      if (Schema.is(OAuthAutomaticClient)(choice))
+        return yield* automaticChoice(input, resolved, reconnecting);
       if (choice.save === true && discovered.grant === "client_credentials")
         return yield* new OAuthSetupFailed({ reason: "invalid_client" });
       const client = yield* enteredClient(
@@ -1661,7 +1688,7 @@ export const makeOAuth = (
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       const operator = yield* operatorClient(firstParty.client.id);
       if (operator === undefined) return yield* new OAuthClientUnavailable(input);
-      const { scopeSeparator, authorizationParams } = firstParty.client.server;
+      const { scopeSeparator, authorizationParams, resource } = firstParty.client.server;
       const authorization = yield* protocol
         .authorize({
           server: operator.server,
@@ -1670,6 +1697,7 @@ export const makeOAuth = (
           scopes: firstParty.scopes,
           ...(scopeSeparator === undefined ? {} : { scopeSeparator }),
           ...(authorizationParams === undefined ? {} : { authorizationParams }),
+          ...(resource === undefined ? {} : { resource }),
         })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
       const id = OAuthAttemptId.make(`oauth_${yield* hash(authorization.state)}`);

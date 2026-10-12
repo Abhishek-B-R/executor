@@ -63,6 +63,41 @@ const googleAllowedScopes = [
 ];
 
 /**
+ * The user scopes Executor for Slack may ask for and a grant may hold: v1's `slackMcpUserScopes`
+ * (`packages/react/src/lib/slack-mcp-oauth.ts` in UsefulSoftwareCo/executor), the user scopes
+ * approved on v1's Slack MCP app. Slack's MCP resource advertises more, which a sign-in with this
+ * client leaves out, as v1 did.
+ */
+const slackMcpUserScopes = [
+  "search:read.public",
+  "search:read.private",
+  "search:read.mpim",
+  "search:read.im",
+  "search:read.files",
+  "search:read.users",
+  "chat:write",
+  "channels:history",
+  "groups:history",
+  "mpim:history",
+  "im:history",
+  "canvases:read",
+  "canvases:write",
+  "users:read",
+  "users:read.email",
+  "reactions:write",
+  "reactions:read",
+  "emoji:read",
+  "files:read",
+  "channels:write",
+  "groups:write",
+  "im:write",
+  "mpim:write",
+  "channels:read",
+  "groups:read",
+  "mpim:read",
+];
+
+/**
  * The clients an operator can turn on by setting their credentials.
  *
  * - `github` is v1's Executor.sh GitHub App. A GitHub App has no scopes, so it is offered only to
@@ -72,6 +107,13 @@ const googleAllowedScopes = [
  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
  *   user's other Google accounts in every organization. Its tokens go to Google's API hosts.
+ * - `slack` is Executor for Slack, v1's Slack MCP client (`apps/cloud/src/engine/first-party-oauth-
+ *   clients.ts` in UsefulSoftwareCo/executor). It signs in at Slack's user-token endpoints, which
+ *   Slack's MCP server (`mcp.slack.com`) names, with the resource `https://mcp.slack.com`, as v1
+ *   did. Slack may answer with the user's grant under `authed_user`, its scopes comma-separated.
+ *   It is unlisted, as in v1: Slack lets an app use MCP outside its own workspace only once it is
+ *   published in the Slack Marketplace, so it signs in no new accounts, but reconnects and renews
+ *   those it already holds. Its tokens go only to Slack's MCP server.
  */
 export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDefinition[] = [
   {
@@ -98,6 +140,22 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     defaultScopes: ["openid", "email", "profile"],
     allowedScopes: googleAllowedScopes,
     placement: { hosts: ["*.googleapis.com"] },
+  },
+  {
+    id: "slack",
+    label: "Executor for Slack",
+    server: {
+      authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+      tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+      grantedScopeSeparator: ",",
+      tokenResponse: { path: "authed_user" },
+      resource: "https://mcp.slack.com",
+    },
+    tokenEndpointAuthMethod: "client_secret_post",
+    defaultScopes: slackMcpUserScopes,
+    allowedScopes: slackMcpUserScopes,
+    placement: { hosts: ["mcp.slack.com"] },
+    unlisted: true,
   },
 ];
 

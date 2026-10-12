@@ -2729,6 +2729,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedUnlisted: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "an unlisted operator client shaped like Executor for Slack renews and reconnects its accounts with its own resource and Slack's nested grant, but signs in no new ones",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedGoogle: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",

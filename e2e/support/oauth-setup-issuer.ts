@@ -130,6 +130,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const tokenContentTypes: Array<string | undefined> = [];
   /** The `scope` parameter of the latest authorization request. */
   let authorizationScope: string | null | undefined;
+  /**
+   * The RFC 8707 `resource` parameter of the latest authorization request, code exchange and
+   * refresh; null when it named none.
+   */
+  let authorizationResource: string | null | undefined;
+  let exchangeResource: string | null | undefined;
+  let refreshResource: string | null | undefined;
   let tokenExchanges = 0;
   let tokenChecks: Readonly<Record<string, boolean>> = {};
   let refreshes = 0;
@@ -389,6 +396,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
         authorizationScope = params.get("scope");
+        authorizationResource = params.get("resource");
         const requested = authorizationScope?.split(" ") ?? [];
         const refusal =
           authorizeError ??
@@ -432,6 +440,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         }
         if (refreshing) refreshes++;
         else tokenExchanges++;
+        if (refreshing) refreshResource = input.get("resource");
+        else exchangeResource = input.get("resource");
         tokenContentTypes.push(contentType);
         if (tokenError === "reset") {
           const source = request.source;
@@ -1122,6 +1132,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       tokenChecks,
       tokenContentTypes: [...tokenContentTypes],
       authorizationScope,
+      authorizationResource,
+      exchangeResource,
+      refreshResource,
       refreshes,
       refreshChecks,
       lastExchangeAuth,

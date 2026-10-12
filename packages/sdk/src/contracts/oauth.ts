@@ -353,6 +353,11 @@ export const FirstPartyOAuthServer = Schema.Struct({
   authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
   tokenResponse: Schema.optionalKey(OAuthTokenResponse),
+  /**
+   * The RFC 8707 resource sent on the authorization request, the code exchange and every renewal,
+   * such as `https://mcp.slack.com`. A provider's own resource is never sent for this client.
+   */
+  resource: Schema.optionalKey(HttpUrl),
 });
 export type FirstPartyOAuthServer = typeof FirstPartyOAuthServer.Type;
 
@@ -381,7 +386,8 @@ export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
 /**
  * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
  * for a provider method only when the method's authorization and token endpoints are exactly the
- * client's and the scopes it asks for are among `allowedScopes`. Signing in, renewal and
+ * client's and the scopes it asks for are among `allowedScopes`; scopes the method only discovered
+ * in the resource's advertised list are narrowed to `allowedScopes` instead. Signing in, renewal and
  * revocation then use only the operator's server configuration, and the access token it issues
  * is managed: it reaches app code sealed, goes only as `placement` says, and a token response
  * reporting a scope outside `allowedScopes` is refused. Its secret never leaves the host: grants
@@ -400,6 +406,11 @@ export const FirstPartyOAuthClient = Schema.Struct({
   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
   allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
   placement: ManagedPlacement,
+  /**
+   * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
+   * grants keep renewing, so an operator can stop offering a client without stranding them.
+   */
+  unlisted: Schema.optionalKey(Schema.Boolean),
 }).check(
   Schema.makeFilter(
     (client) => (client.tokenEndpointAuthMethod === "none") === (client.clientSecret === undefined),

@@ -1360,9 +1360,16 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           : audienceFromScopes
             ? undefined
             : found?.resource;
+      // Scopes only the resource metadata lists are what the resource offers, not what an
+      // operation requires, so an operator's client may ask for fewer of them.
+      const advertised =
+        method.scopes === undefined &&
+        read.scopes === undefined &&
+        resourceScopes(found) !== undefined;
       const settings = {
         server,
         scopes: [...scopes],
+        ...(advertised ? { scopesAdvertised: true as const } : {}),
         // RFC 8414 lists what the server accepts; which one applies is the client's property.
         // A server open to public and secret clients leaves an undeclared choice to the client.
         ...(method.tokenEndpointAuthMethod === undefined &&

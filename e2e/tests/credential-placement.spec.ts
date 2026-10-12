@@ -19,7 +19,11 @@ import { credentialUpstream, type ReceivedRequest } from "../support/credential-
 import { Telemetry } from "../support/evidence.ts";
 import type { OperatorSettings } from "../support/managed-server.ts";
 import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
-import { oauthSetupIssuer, oauthSetupIssuerOn } from "../support/oauth-setup-issuer.ts";
+import {
+  oauthSetupIssuer,
+  oauthSetupIssuerOn,
+  type TokenShape,
+} from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -286,6 +290,12 @@ const operatorDefinition = (
     /** The header the token goes in, and its scheme; `Authorization: Bearer` by default. */
     readonly header?: string;
     readonly scheme?: string | null;
+    /** A path on the issuer the operator sends as its own RFC 8707 resource, as Slack's is. */
+    readonly resourcePath?: string;
+    /** Where the token response nests the grant, as Slack's `authed_user`. */
+    readonly tokenResponse?: { readonly path: string };
+    /** Withheld from new sign-ins; offered only to reconnect its own accounts. */
+    readonly unlisted?: boolean;
   } = {},
 ) => ({
   id: "synthetic-mail",
@@ -301,6 +311,10 @@ const operatorDefinition = (
     ...(options.authorizationParams === undefined
       ? {}
       : { authorizationParams: options.authorizationParams }),
+    ...(options.resourcePath === undefined
+      ? {}
+      : { resource: `${issuerOrigin}${options.resourcePath}` }),
+    ...(options.tokenResponse === undefined ? {} : { tokenResponse: options.tokenResponse }),
   },
   tokenEndpointAuthMethod: "client_secret_basic",
   defaultScopes: options.defaultScopes ?? ["mail.read"],
@@ -310,6 +324,7 @@ const operatorDefinition = (
     ...(options.header === undefined ? {} : { header: options.header }),
     ...(options.scheme === undefined ? {} : { scheme: options.scheme }),
   },
+  ...(options.unlisted === undefined ? {} : { unlisted: options.unlisted }),
 });
 /** The settings that turn the operator's client on: its definition and its credentials. */
 const operatorClients = (...definition: Parameters<typeof operatorDefinition>) => ({
@@ -334,7 +349,8 @@ const mailApp = (options: {
   readonly discover: string;
   /** Undefined declares no hosts. */
   readonly hosts: readonly string[] | undefined;
-  readonly scopes?: readonly string[];
+  /** Null declares none, so discovery reads what the resource advertises. */
+  readonly scopes?: readonly string[] | null;
   readonly scopeSeparator?: string;
   /** Extra sign-in parameters the provider declares. */
   readonly authorizationParams?: Readonly<Record<string, string>>;
@@ -362,7 +378,7 @@ const mail = defineProvider({
   auth: {
     oauth: oauth2({
       discover: ${JSON.stringify(options.discover)},
-      scopes: ${JSON.stringify(options.scopes ?? ["mail.read"])},
+      ${options.scopes === null ? "" : `scopes: ${JSON.stringify(options.scopes ?? ["mail.read"])},`}
       ${options.scopeSeparator === undefined ? "" : `scopeSeparator: ${JSON.stringify(options.scopeSeparator)},`}
       ${options.authorizationParams === undefined ? "" : `authorizationParams: ${JSON.stringify(options.authorizationParams)},`}
       ${options.rawToken === true ? "response: object({ access_token: raw(string()) })," : ""}
@@ -2179,6 +2195,180 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toMatch(
           /^Bearer synthetic-(?:access|refreshed)-token/,
         );
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedUnlisted.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, call } = yield* harness;
+        const twoHours = 2 * 60 * 60 * 1000;
+        // Executor for Slack's shape: the operator's client sends its own resource, and the
+        // service answers with the user's grant under `authed_user`, its scopes comma-separated.
+        const slack = {
+          resourcePath: "/operator-resource",
+          tokenResponse: { path: "authed_user" },
+        };
+        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
+          ...slack,
+          grantedScopeSeparator: ",",
+        });
+        const hosts = [issuerHost, storeHost];
+        const resource = `${issuer.origin}/operator-resource`;
+        const slackEnvelope: TokenShape = (tokens) => ({
+          ok: true,
+          app_id: "A0SYNTHETIC",
+          authed_user: { id: "U0SYNTHETIC", ...tokens, token_type: "user" },
+          team: { id: "T0SYNTHETIC" },
+        });
+        // Like Slack's MCP server, the resource advertises a scope the operator's client does not
+        // allow, and its challenge names none. Refresh tokens rotate, as Slack's do.
+        yield* issuer.configure({
+          scopes: ["mail.read", "mail.compose", "mail.delete"],
+          tokenShape: slackEnvelope,
+          scopeGrant: { defaults: [], separator: "," },
+          rotateRefreshTokens: true,
+        });
+        // The provider declares no scopes, so sign-in reads the ones the resource advertises.
+        const source = mailApp({
+          name: "Synthetic Mail",
+          discover: `${issuer.origin}/mcp`,
+          hosts,
+          scopes: null,
+          resource: `${issuer.origin}/resource`,
+          store: store.origin,
+          undeclared: store.undeclaredOrigin,
+        });
+        const Called = Schema.Struct({ token: Schema.String, status: Schema.Number });
+        /** Deploy the app and read setup for its provider. */
+        const deployed = Effect.gen(function* () {
+          const app = yield* deploy(`Synthetic Mail ${randomUUID().slice(0, 8)}`, source);
+          const provider = app.app.requirements.accounts.mail!.provider;
+          const setup = yield* body(
+            Setup,
+            yield* api.request(
+              actors.owner,
+              "GET",
+              `${prefix}/providers/${provider}/oauth/oauth/setup`,
+            ),
+          );
+          return { ...app, setup };
+        });
+        /** The authorization request a started sign-in sends the browser to. */
+        const sent = (started: { readonly status: number; readonly body: unknown }) =>
+          Effect.gen(function* () {
+            expect(started.status, JSON.stringify(started.body)).toBe(200);
+            const redirect = yield* body(Redirect, started);
+            return { redirect, url: new URL(redirect.authorizationUrl) };
+          });
+        /** The operator's client asks for the allowed scopes the resource advertises, and sends its resource. */
+        const expectOperatorRequest = (url: URL) => {
+          expect(url.searchParams.get("client_id")).toBe("first-party-client");
+          expect(url.searchParams.get("scope")).toBe("mail.read mail.compose");
+          expect(url.searchParams.get("resource")).toBe(resource);
+        };
+
+        // While the client is listed, a new account signs in with it.
+        const first = yield* deployed;
+        expect(first.setup).toMatchObject({
+          mode: "automatic",
+          firstParty: { label: "Executor for Synthetic Mail" },
+          scopes: ["mail.read", "mail.compose"],
+        });
+        const signIn = yield* startSignIn(first.path);
+        const firstSent = yield* sent(signIn.started);
+        expectOperatorRequest(firstSent.url);
+        const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
+        // The exchange sent the operator's resource, and the account holds the nested user token:
+        // the service accepts only tokens it issued.
+        expect((yield* issuer.metrics).exchangeResource).toBe(resource);
+        const used = yield* call(first.path, Called, "resource", signIn.profile);
+        expect(used.token).toMatch(handle);
+        expect(used.status).toBe(200);
+        expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
+
+        // The operator unlists the client. Two hours later its account's token has expired, and the
+        // grant renews with the operator's client: the refresh sends its resource, and the account
+        // reads the nested token the renewal returned.
+        const refreshed = (yield* issuer.metrics).refreshesIssued;
+        yield* restartWith(
+          operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
+          twoHours,
+        );
+        const renewed = yield* call(first.path, Called, "resource", signIn.profile);
+        expect(renewed.status).toBe(200);
+        const metrics = yield* issuer.metrics;
+        expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
+        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshResource).toBe(resource);
+        expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
+
+        // It signs in no new account: setup does not offer it, and nothing else can sign in.
+        const second = yield* deployed;
+        expect(second.setup.firstParty).toBeUndefined();
+        const refused = yield* startSignIn(second.path);
+        expect(refused.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+
+        // It still reconnects the account it holds.
+        const reconnecting = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", `${first.path}/connections`, {
+            requirement: "mail",
+            profile: signIn.profile,
+            account,
+          }),
+        );
+        const again = yield* sent(
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${reconnecting.id}/oauth/start`,
+            { method: "oauth", label: "Mail" },
+          ),
+        );
+        expectOperatorRequest(again.url);
+        expect(yield* completeSignIn(issuer, reconnecting.id, again.redirect)).toBe(account);
+        expect((yield* issuer.metrics).exchangeResource).toBe(resource);
+
+        // The reviewed Executor for Slack is unlisted as well: with its credentials set, a provider
+        // on Slack's user-token endpoints is not offered it.
+        yield* Effect.addFinalizer(() =>
+          restartWith({
+            EXECUTOR_OAUTH_SLACK_CLIENT_ID: "",
+            EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: "",
+          }).pipe(Effect.orDie),
+        );
+        yield* restartWith({
+          ...noOperatorClients,
+          EXECUTOR_OAUTH_SLACK_CLIENT_ID: "synthetic-slack-client",
+          EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: "synthetic-slack-secret",
+        });
+        const name = `Slack ${randomUUID().slice(0, 8)}`;
+        const slackApp = yield* deploy(
+          name,
+          endpointsApp(
+            name,
+            ["mcp.slack.com"],
+            {
+              authorizationUrl: "https://slack.com/oauth/v2_user/authorize",
+              tokenUrl: "https://slack.com/api/oauth.v2.user.access",
+            },
+            ["chat:write"],
+          ),
+        );
+        const slackSetup = yield* body(
+          Setup,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/providers/${slackApp.app.requirements.accounts.mail!.provider}/oauth/oauth/setup`,
+          ),
+        );
+        expect(slackSetup.firstParty).toBeUndefined();
+        const slackStarted = yield* startSignIn(slackApp.path);
+        expect(slackStarted.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
     ),
   );
