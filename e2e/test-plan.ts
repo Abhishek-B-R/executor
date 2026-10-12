@@ -4821,6 +4821,18 @@ export const scenarios = plan({
       local: na("The module counts are read from Cloud's delivered traces."),
     },
   },
+  largeOpenapiApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app with an 11 MB document builds within the compiler's memory and calls its API",
+    targets: {
+      "self-host": scheduled,
+      // Only a deployed compiler Worker has Cloudflare's memory limit.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",

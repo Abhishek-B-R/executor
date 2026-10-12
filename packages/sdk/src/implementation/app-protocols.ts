@@ -22,8 +22,8 @@ import { appBridge, nodeAppEntry } from "./worker-bridge.ts";
 /** One released host protocol, seen from this host. */
 export interface AppProtocol {
   readonly version: number;
-  /** Server entry retained in this protocol's Worker builds. */
-  readonly workerEntry: (files: readonly SourceFile[]) => string;
+  /** Server entry retained in this protocol's Worker builds. It imports `ctx.files` as a module. */
+  readonly workerEntry: string;
   /** Entry for the SDK's in-process Node runtime. */
   readonly nodeEntry: (files: readonly SourceFile[]) => string;
   /** Encode an invocation in the host's current model as this protocol's entry body. */

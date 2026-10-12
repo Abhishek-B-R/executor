@@ -154,6 +154,27 @@ export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
         });
         expect(unloaded.message).toContain('index.ts:2:23: Cannot find "./not-there.ts"');
 
+        // An imported JSON file that is not JSON fails at its first invalid character.
+        const json = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, query, object, router } from "apps";
+import settings from "./settings.json";
+export default defineApp({ accounts: {} }, { tools: router({
+  settings: query({ input: object({}) }, async () => settings),
+}) });`,
+          },
+          { path: "settings.json", content: '{\n  "name": "synthetic",\n  "items": [1, 2,]\n}' },
+        ]);
+        yield* evidence.json("invalid-json-failure.json", json.body);
+        expect(json.status).toBe(422);
+        const parsed = yield* body(BuildFailed, json);
+        expect(parsed).toMatchObject({
+          stage: "compile",
+          location: { file: "settings.json", line: 3, column: 18 },
+        });
+        expect(parsed.message).toContain("settings.json:3:18: Invalid JSON");
+
         // A declaration that throws while the Worker loads is located in its own file, and a
         // value passed where a schema belongs is named.
         const invalid = yield* deploy([

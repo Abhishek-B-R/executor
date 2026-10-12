@@ -514,14 +514,15 @@ ${
         { path: "index.ts", content: index },
         {
           path: "openapi.json",
-          content: json({
-            source: { document: options.document },
+          // The document is written without indentation, which would more than double a large
+          // API's source; the settings after it stay one per line.
+          content: `{\n  "source": { "document": ${JSON.stringify(options.document)} },\n${json({
             allowedOrigin: origin,
             securitySchemes: {},
             methods: {},
             oauth: [],
             ...(options.baseUrl === undefined ? {} : { baseUrl: options.baseUrl }),
-          }),
+          }).slice(2)}`,
         },
         ...(host === undefined
           ? []
