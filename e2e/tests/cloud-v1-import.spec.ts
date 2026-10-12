@@ -1442,27 +1442,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             .waitFor({ state: "visible", timeout: 50_000 }),
         );
         yield* browser.checkpoint("v1 import results");
-        // A finished import is not run again: it offers support instead.
-        const importButtons = yield* browser.use("A finished import offers support", (page) =>
-          page
-            .getByRole("button", { name: "Contact support", exact: true })
-            .waitFor({ state: "visible" })
-            .then(() =>
-              page
-                .getByRole("button", { name: /^(Import|Import again|Continue import)$/u })
-                .count(),
-            ),
+        // A finished import is not run again: it leads to the organization it filled, and offers
+        // support for anything missing.
+        const importButtons = yield* browser.use(
+          "A finished import leads to its organization",
+          (page) =>
+            page
+              .getByRole("link", { name: /^Open .+ →$/u })
+              .waitFor({ state: "visible" })
+              .then(() =>
+                page
+                  .getByRole("button", { name: "Something missing? Contact support", exact: true })
+                  .waitFor({ state: "visible" }),
+              )
+              .then(() =>
+                page
+                  .getByRole("button", { name: /^(Import|Import again|Continue import)$/u })
+                  .count(),
+              ),
         );
         expect(importButtons).toBe(0);
         yield* browser.use("Show the finished import's actions", (page) =>
           page
-            .getByRole("button", { name: "Contact support", exact: true })
+            .getByRole("button", { name: "Something missing? Contact support", exact: true })
             .scrollIntoViewIfNeeded(),
         );
         yield* browser.checkpoint("v1 import finished offers support");
         yield* browser.use("Contact support opens the support channels", (page) =>
           page
-            .getByRole("button", { name: "Contact support", exact: true })
+            .getByRole("button", { name: "Something missing? Contact support", exact: true })
             .click()
             .then(() =>
               page.getByRole("dialog", { name: "Get support" }).waitFor({ state: "visible" }),

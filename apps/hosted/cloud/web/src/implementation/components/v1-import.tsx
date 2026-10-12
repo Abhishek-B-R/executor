@@ -193,11 +193,6 @@ function Workspaces({
         <li key={organization.id} className="py-5 first:pt-0 last:pb-0">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-medium">{organization.name || "Workspace"}</h2>
-            {organization.target !== null && (
-              <a className="text-sm underline" href={`/org/${organization.target.slug}/apps`}>
-                Open {organization.target.name}
-              </a>
-            )}
           </div>
           {organization.eligible ? (
             <Preview id={organization.id} owned={choices.owned} into={into} />
@@ -265,7 +260,7 @@ function Preview({
           <ul className="flex flex-col divide-y border-y" aria-label="Items">
             {groups.map((group) => {
               const items = value.items.filter((item) => item.kind === group.kind);
-              if (items.length === 0) return null;
+              if (items.length === 0) return <EmptyGroup key={group.kind} group={group} />;
               return <Group key={group.kind} group={group} items={items} result={result} />;
             })}
           </ul>
@@ -286,51 +281,71 @@ function Preview({
               {error}
             </p>
           )}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            {started ? (
-              value.target !== null && (
-                <a className="text-sm underline" href={`/org/${value.target.slug}/apps`}>
-                  Open {value.target.name}
-                </a>
-              )
-            ) : (
-              <label className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
-                Import into
-                <Select value={target} onValueChange={setTarget} disabled={running}>
-                  <SelectTrigger className="w-[220px] text-foreground">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="new">A new organization</SelectItem>
-                    {owned.map((organization) => (
-                      <SelectItem key={organization.id} value={organization.id}>
-                        {organization.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </label>
-            )}
-            {/* A finished import is not run again; support can help with what did not import.
-                An interrupted one continues from the import map. */}
-            {finished ? (
+          {/* A finished import is not run again: the next step is the organization it filled,
+              and support helps with anything that did not come over. An interrupted import
+              continues from the import map. */}
+          {finished && value.target !== null ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <CloudSupport
                 trigger={
-                  <Button className="ml-auto" variant="outline">
-                    Contact support
-                  </Button>
+                  <button
+                    type="button"
+                    className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                  >
+                    Something missing? Contact support
+                  </button>
                 }
               />
-            ) : (
+              <Button asChild className="ml-auto">
+                <a href={`/org/${value.target.slug}/apps`}>Open {value.target.name} →</a>
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {!started && (
+                <label className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+                  Import into
+                  <Select value={target} onValueChange={setTarget} disabled={running}>
+                    <SelectTrigger className="w-[220px] text-foreground">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="new">A new organization</SelectItem>
+                      {owned.map((organization) => (
+                        <SelectItem key={organization.id} value={organization.id}>
+                          {organization.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              )}
               <Button className="ml-auto" onClick={start} disabled={running}>
                 {started ? "Continue import" : "Import"}
               </Button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       );
     })
     .exhaustive();
+}
+
+/** A kind the workspace has none of, so people see it was checked rather than missed. */
+function EmptyGroup({ group }: { readonly group: (typeof groups)[number] }) {
+  return (
+    <li className="flex items-center gap-3 py-3 text-muted-foreground">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted/60">
+        <HugeiconsIcon icon={group.icon} className="size-[18px]" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{group.title}</span>
+        <span className="block text-xs">{group.from}</span>
+      </span>
+      <span className="shrink-0 text-xs">None to import</span>
+      <span className="size-4 shrink-0" aria-hidden />
+    </li>
+  );
 }
 
 /** One kind of v1 item, collapsed to counts until opened. Problems open it. */
