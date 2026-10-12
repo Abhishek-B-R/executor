@@ -13,6 +13,8 @@ or generate HTML reports.
 
 ## Run
 
+The private HTTPS MCP scenario requires `openssl` on PATH to issue its temporary test certificate.
+
 ```sh
 bun install
 bunx playwright install chromium webkit

@@ -3343,7 +3343,7 @@ export const scenarios = plan({
   },
   privateHttpsMcp: {
     fixtures: "actors",
-    file: "private-https-mcp.spec.ts",
+    file: "mcp-auth-detection.spec.ts",
     title: "Private HTTPS MCP import and OAuth require an exact origin opt-in",
     targets: {
       "self-host": scheduled,

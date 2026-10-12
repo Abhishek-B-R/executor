@@ -262,6 +262,7 @@ export const mcpAuthServer = Effect.fn(function* (
     url: `${base}/mcp`,
     /** Dynamic client registration requests received. */
     registrations: Effect.sync(() => registrations),
+    /** HTTP requests received, including MCP and OAuth discovery. */
     requests: Effect.sync(() => requests),
   };
 });
