@@ -166,7 +166,8 @@ for example `'["https://mcp.example.com"]'`, to reach that origin when it resolv
 to a private address. Entries include the scheme, hostname and optional port,
 with no path or trailing slash. Other origins remain subject to the default
 network restrictions. Allowlist each origin used by the MCP server's OAuth
-metadata and endpoints separately, and keep TLS certificate verification enabled.
+metadata and endpoints separately. For an internal CA, set `NODE_EXTRA_CA_CERTS`
+to a PEM CA bundle mounted in the container; TLS verification still applies.
 
 Upgrades apply pending data steps at startup, before serving, and log a summary
 line starting `Data step pass finished`. Set `EXECUTOR_DATA_STEPS=report` to hold
