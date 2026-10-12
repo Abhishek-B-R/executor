@@ -63,6 +63,7 @@ import {
   type OAuthFailureCause,
   type OAuthOptions,
   type OAuthTokenServer,
+  type ImportOAuthGrant,
 } from "../contracts/oauth.ts";
 import {
   OAuthAutomaticClient,
@@ -2852,10 +2853,142 @@ export const makeOAuth = (
       };
     }).pipe(Effect.withSpan("oauth.revocation"));
 
+  /**
+   * Save an account whose grant another product issued (`OAuthGrantImport`). The grant keeps the
+   * client it was issued to and renews as that product did (`ImportOAuthGrant.renewal`), whatever
+   * the provider's method declares. An authorization-code client also becomes a stored client of
+   * the owner, as an entered client a sign-in keeps does, so a reconnect can name it.
+   */
+  const importGrant = (input: ImportOAuthGrant) =>
+    Effect.gen(function* () {
+      const { method, discovered, issuer } = yield* resolveSetup({
+        provider: input.provider,
+        method: input.method,
+        redirectUri: input.redirectUri,
+      });
+      const client = Redacted.value(input.client);
+      const { renewal } = input;
+      // Renewals send the issuing product's token endpoint, held to the same policy as a declared one.
+      const tokenEndpoint =
+        options === undefined ? undefined : parseEndpoint(renewal.tokenEndpoint, options.urlPolicy);
+      if (tokenEndpoint === undefined)
+        return yield* new OAuthSetupFailed({ reason: "discovery_blocked" });
+      const server = { ...discovered.server, token_endpoint: tokenEndpoint.href };
+      const resource = renewal.resource === undefined ? {} : { resource: renewal.resource };
+      const fields = yield* project(method.response, {
+        access_token: Redacted.value(input.accessToken),
+        token_type: "Bearer",
+      }).pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
+      const expires = input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt };
+      const createdAt = yield* Clock.currentTimeMillis;
+      const account = yield* decode(Account, {
+        id: AccountId.make(`acc_${yield* nextId}`),
+        provider: input.provider,
+        owner: input.owner,
+        label: input.label,
+        description: null,
+        method: input.method,
+        createdAt: new Date(createdAt),
+      });
+      const stored =
+        discovered.grant === "client_credentials"
+          ? undefined
+          : yield* Effect.gen(function* () {
+              const id = OAuthClientId.make(`oac_${yield* nextId}`);
+              const details = registrationCredentials(client);
+              return {
+                row: {
+                  id,
+                  owner: input.owner,
+                  provider: null,
+                  issuer,
+                  clientId: client.client_id,
+                  source: "manual" as const,
+                  hasSecret: client.token_endpoint_auth_method !== "none",
+                  automaticKey: null,
+                  confirmed: true,
+                  createdAt: new Date(createdAt),
+                  encrypted: yield* encrypt(id, details),
+                },
+                digest: yield* digestOf({ owner: input.owner, issuer }, details),
+              };
+            });
+      const grantOf = (oauthClient: OAuthClientId | undefined) =>
+        decode(
+          OAuthGrant,
+          discovered.grant === "client_credentials"
+            ? {
+                ...Struct.omit(discovered, ["resource"]),
+                server,
+                scopes: renewal.scopes,
+                ...resource,
+                client,
+                fields,
+                response: method.response,
+                generation: 0,
+                ...expires,
+              }
+            : {
+                server,
+                client,
+                ...(oauthClient === undefined ? {} : { oauthClient }),
+                response: method.response,
+                ...(renewal.scopes.length === 0 ? {} : { scopes: renewal.scopes }),
+                ...resource,
+                ...(discovered.tokenRequestFormat === undefined
+                  ? {}
+                  : { tokenRequestFormat: discovered.tokenRequestFormat }),
+                ...(discovered.tokenResponse === undefined
+                  ? {}
+                  : { tokenResponse: discovered.tokenResponse }),
+                fields,
+                ...(input.refreshToken === undefined
+                  ? {}
+                  : { refreshToken: Redacted.value(input.refreshToken) }),
+                generation: 0,
+                ...expires,
+              },
+        ).pipe(
+          Effect.mapError(() => new OAuthSetupFailed({ reason: "invalid_client" })),
+          Effect.flatMap((grant) => encrypt(account.id, grant)),
+        );
+      const encryptedCredentials = yield* encrypt(account.id, fields);
+      const ready = `ready_${yield* nextId}`;
+      yield* transaction(db, (tx) =>
+        Effect.gen(function* () {
+          // Credentials another stored client holds are that client; nothing is stored twice.
+          const saved =
+            stored === undefined
+              ? undefined
+              : yield* createStoredClient(tx, stored.row, stored.digest);
+          const oauthClient =
+            saved === undefined ? undefined : saved.stored ? saved.client.id : saved.holder;
+          yield* query(() =>
+            tx.create("accounts", { ...account, encryptedCredentials, credentialGeneration: 0 }),
+          );
+          if (lifecycle) yield* lifecycle.accountCreated(account);
+          const state = {
+            encrypted: yield* grantOf(oauthClient),
+            status: ready,
+            updatedAt: new Date(createdAt),
+          };
+          yield* query(() =>
+            tx.upsert("oauthGrants", {
+              where: (b) => b("id", "=", account.id),
+              create: { id: account.id, ...state },
+              update: state,
+            }),
+          );
+        }),
+      );
+      return account;
+    }).pipe(Effect.withSpan("oauth.importGrant"));
+
   return {
     revocation,
     clients,
     connections: { oauthSetup, startOAuth, completeOAuth },
+    importGrant,
     findOAuth,
     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
     resolveSelected,

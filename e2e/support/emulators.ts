@@ -59,6 +59,7 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
 
 /** The fields of v1 WorkOS listings that seeding reads back. */
 const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
+const V1Organization = Schema.Struct({ metadata: Schema.Record(Schema.String, Schema.String) });
 const V1Memberships = Schema.Struct({
   data: Schema.Array(
     Schema.Struct({ organization_id: Schema.String, organization_name: Schema.String }),
@@ -282,8 +283,10 @@ export const emulatorRequest = (
   path: string,
   payload?: unknown,
   token?: string,
+  /** Defaults to GET without a payload and POST with one. */
+  verb?: "PUT",
 ) => {
-  const method = payload === undefined ? "GET" : "POST";
+  const method = verb ?? (payload === undefined ? "GET" : "POST");
   const operation = `${method} ${path}`;
   const target = emulatorTarget(origin);
   const emulator = target?.label;
@@ -452,6 +455,40 @@ const make = Effect.gen(function* () {
       ),
       Effect.map(({ data }) => data.filter((message) => message.to.includes(email))),
     );
+  const v1Workspace = (emails: readonly [string, ...string[]]) =>
+    Effect.gen(function* () {
+      const name = `V1 ${randomUUID().slice(0, 8)}`;
+      const workos = value.services.workos;
+      yield* request(workos.baseUrl, "/_emulate/seed", {
+        users: emails.map((email) => ({ email, first_name: "Synthetic", last_name: "Member" })),
+        organizations: [{ name, members: emails }],
+      });
+      const users = yield* request(
+        workos.baseUrl,
+        `/user_management/users?email=${encodeURIComponent(emails[0])}`,
+        undefined,
+        workos.token,
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(V1Users)));
+      const user = users.data[0];
+      if (user === undefined)
+        return yield* new EmulatorFailed({ operation: "Read the seeded v1 member" });
+      const memberships = yield* request(
+        workos.baseUrl,
+        `/user_management/organization_memberships?user_id=${encodeURIComponent(user.id)}&limit=100`,
+        undefined,
+        workos.token,
+      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(V1Memberships)));
+      const membership = memberships.data.find((item) => item.organization_name === name);
+      if (membership === undefined)
+        return yield* new EmulatorFailed({ operation: "Read the seeded v1 organization" });
+      return { organization: membership.organization_id, user: user.id, name };
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof EmulatorFailed
+          ? error
+          : new EmulatorFailed({ operation: "Seed a v1 member", reason: "invalid response" }),
+      ),
+    );
   return {
     billingSubscription: (input: {
       readonly organizationId: string;
@@ -511,39 +548,48 @@ const make = Effect.gen(function* () {
      * that organization's WorkOS id. The organization starts empty and unbilled.
      */
     v1Member: (email: string) =>
-      Effect.gen(function* () {
-        const name = `V1 ${randomUUID().slice(0, 8)}`;
-        const workos = value.services.workos;
-        yield* request(workos.baseUrl, "/_emulate/seed", {
-          users: [{ email, first_name: "Synthetic", last_name: "Member" }],
-          organizations: [{ name, members: [email] }],
-        });
-        const users = yield* request(
-          workos.baseUrl,
-          `/user_management/users?email=${encodeURIComponent(email)}`,
-          undefined,
-          workos.token,
-        ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(V1Users)));
-        const user = users.data[0];
-        if (user === undefined)
-          return yield* new EmulatorFailed({ operation: "Read the seeded v1 member" });
-        const memberships = yield* request(
-          workos.baseUrl,
-          `/user_management/organization_memberships?user_id=${encodeURIComponent(user.id)}&limit=100`,
-          undefined,
-          workos.token,
-        ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(V1Memberships)));
-        const membership = memberships.data.find((item) => item.organization_name === name);
-        if (membership === undefined)
-          return yield* new EmulatorFailed({ operation: "Read the seeded v1 organization" });
-        return membership.organization_id;
-      }).pipe(
+      v1Workspace([email]).pipe(Effect.map((created) => created.organization)),
+    /**
+     * A new organization in the emulated v1 WorkOS whose active members are these emails, and the
+     * first member's WorkOS user id, which v1 rows use as `subject`.
+     */
+    v1Workspace,
+    /** A v1 organization's WorkOS metadata, as the emulated v1 WorkOS returns it. */
+    v1OrganizationMetadata: (organization: string) =>
+      request(
+        value.services.workos.baseUrl,
+        `/organizations/${encodeURIComponent(organization)}`,
+        undefined,
+        value.services.workos.token,
+      ).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(V1Organization)),
+        Effect.map((found) => found.metadata),
         Effect.mapError((error) =>
           error instanceof EmulatorFailed
             ? error
-            : new EmulatorFailed({ operation: "Seed a v1 member", reason: "invalid response" }),
+            : new EmulatorFailed({
+                operation: "Read v1 organization metadata",
+                reason: "invalid response",
+              }),
         ),
       ),
+    /** Set keys of a v1 organization's WorkOS metadata, as v1 might have before an import. */
+    setV1OrganizationMetadata: (organization: string, metadata: Record<string, string>) =>
+      request(
+        value.services.workos.baseUrl,
+        `/organizations/${encodeURIComponent(organization)}`,
+        { metadata },
+        value.services.workos.token,
+        "PUT",
+      ).pipe(Effect.asVoid),
+    /** Store a value in the emulated v1 WorkOS Vault under v1's object name. */
+    v1VaultObject: (name: string, secret: string) =>
+      request(
+        value.services.workos.baseUrl,
+        "/vault/v1/kv",
+        { name, value: secret, key_context: { app: "executor" } },
+        value.services.workos.token,
+      ).pipe(Effect.asVoid),
     /** Bill a v1 organization on a v1 plan, as v1 does: the Autumn customer id is its WorkOS id. */
     v1Plan: (organizationId: string, planId: "free" | "team") =>
       request(
@@ -558,7 +604,8 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.asVoid),
     /**
      * Fail the next membership read once. Only accounts seeded with `v1Member` reach that read,
-     * so other scenarios sharing this emulator never consume the fault.
+     * so other scenarios sharing this emulator never consume the fault. The v1 import reads
+     * memberships on every request, so its scenarios run on another local Cloud.
      */
     failNextV1MembershipRead: request(value.services.workos.baseUrl, "/_emulate/faults", {
       match: { method: "GET", pathPattern: "/user_management/organization_memberships" },

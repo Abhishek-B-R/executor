@@ -16,6 +16,7 @@ import { Route as CreateRouteImport } from './routes/create'
 import { Route as DeviceRouteImport } from './routes/device'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as V1ImportRouteImport } from './routes/v1-import'
 import { Route as AccountIndexRouteImport } from './routes/account.index'
 import { Route as AccountProfileRouteImport } from './routes/account.profile'
 import { Route as AccountSecurityRouteImport } from './routes/account.security'
@@ -79,6 +80,11 @@ const InviteRoute = InviteRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const V1ImportRoute = V1ImportRouteImport.update({
+  id: '/v1-import',
+  path: '/v1-import',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AccountIndexRoute = AccountIndexRouteImport.update({
@@ -253,6 +259,7 @@ export interface FileRoutesByFullPath {
   '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/v1-import': typeof V1ImportRoute
   '/account/profile': typeof AccountProfileRoute
   '/account/security': typeof AccountSecurityRoute
   '/account/tokens': typeof AccountTokensRoute
@@ -290,6 +297,7 @@ export interface FileRoutesByTo {
   '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/v1-import': typeof V1ImportRoute
   '/account/profile': typeof AccountProfileRoute
   '/account/security': typeof AccountSecurityRoute
   '/account/tokens': typeof AccountTokensRoute
@@ -328,6 +336,7 @@ export interface FileRoutesById {
   '/device': typeof DeviceRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/v1-import': typeof V1ImportRoute
   '/account/profile': typeof AccountProfileRoute
   '/account/security': typeof AccountSecurityRoute
   '/account/tokens': typeof AccountTokensRoute
@@ -368,6 +377,7 @@ export interface FileRouteTypes {
     | '/device'
     | '/invite'
     | '/login'
+    | '/v1-import'
     | '/account/profile'
     | '/account/security'
     | '/account/tokens'
@@ -405,6 +415,7 @@ export interface FileRouteTypes {
     | '/device'
     | '/invite'
     | '/login'
+    | '/v1-import'
     | '/account/profile'
     | '/account/security'
     | '/account/tokens'
@@ -442,6 +453,7 @@ export interface FileRouteTypes {
     | '/device'
     | '/invite'
     | '/login'
+    | '/v1-import'
     | '/account/profile'
     | '/account/security'
     | '/account/tokens'
@@ -481,6 +493,7 @@ export interface RootRouteChildren {
   DeviceRoute: typeof DeviceRoute
   InviteRoute: typeof InviteRoute
   LoginRoute: typeof LoginRoute
+  V1ImportRoute: typeof V1ImportRoute
   CreateAgentRoute: typeof CreateAgentRoute
   EmailUnsubscribeRoute: typeof EmailUnsubscribeRoute
   LoginSsoRoute: typeof LoginSsoRoute
@@ -539,6 +552,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/v1-import': {
+      id: '/v1-import'
+      path: '/v1-import'
+      fullPath: '/v1-import'
+      preLoaderRoute: typeof V1ImportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/account/': {
@@ -822,6 +842,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeviceRoute: DeviceRoute,
   InviteRoute: InviteRoute,
   LoginRoute: LoginRoute,
+  V1ImportRoute: V1ImportRoute,
   CreateAgentRoute: CreateAgentRoute,
   EmailUnsubscribeRoute: EmailUnsubscribeRoute,
   LoginSsoRoute: LoginSsoRoute,

@@ -80,6 +80,7 @@
         "@executor-js/hosted-cloud-web": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
         "@executor-js/marketing": "workspace:*",
+        "@executor-js/mcp-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "@executor-js/utils": "workspace:*",
@@ -91,6 +92,7 @@
         "better-auth": "1.7.5",
         "effect": "4.0.1",
         "fumadb-effect": "workspace:*",
+        "js-yaml": "5.4.2",
         "kysely": "0.29.6",
         "pg": "8.16.3",
         "postal-mime": "4.0.2",
@@ -479,7 +481,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.82",
+      "version": "0.0.1-beta.83",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",

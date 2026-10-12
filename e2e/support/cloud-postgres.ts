@@ -268,12 +268,50 @@ export const createV1Database = (input: {
 }) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const tables = ["integration", "connection", "oauth_client", "tool_policy", "artifact"];
+    // v1's columns that Cloud reads, with defaults so a scenario can insert only what it needs.
+    const owned = `row_id varchar(255) not null default gen_random_uuid()::text,
+      tenant varchar(255) not null, owner varchar(255) not null default 'org',
+      subject varchar(255) not null default ''`;
+    const times =
+      "created_at timestamp not null default now(), updated_at timestamp not null default now()";
+    const tables = {
+      integration: `row_id varchar(255) not null default gen_random_uuid()::text,
+        tenant varchar(255) not null, slug varchar(255) not null default gen_random_uuid()::text,
+        plugin_id text not null default 'mcp', name text, description text, config json,
+        health_check json, ${times}`,
+      connection: `${owned}, integration varchar(255) not null default '',
+        name varchar(255) not null default 'main', template text not null default 'none',
+        provider text not null default 'workos-vault', item_ids json not null default '{}',
+        oauth_client text, oauth_client_owner text, refresh_item_id text, expires_at bigint,
+        oauth_scope text, oauth_token_url text, ${times}`,
+      oauth_client: `${owned}, slug varchar(255) not null default gen_random_uuid()::text,
+        authorization_url text not null default '', token_url text not null default '',
+        "grant" text not null default 'authorization_code', client_id text not null default '',
+        client_secret_item_id text, token_endpoint_auth_method text, resource text,
+        origin_kind text, origin_issuer text, origin_redirect_uri text,
+        created_at timestamp not null default now()`,
+      tool_policy: `${owned}, id varchar(255) not null default gen_random_uuid()::text,
+        pattern text not null default '*', action text not null default 'approve',
+        position text not null default 'a0', ${times}`,
+      artifact: `${owned}, id varchar(255) not null default gen_random_uuid()::text,
+        title text not null default 'Artifact', description text,
+        code text not null default '', bindings json, ${times}`,
+      plugin_storage: `${owned}, plugin_id varchar(255) not null,
+        collection varchar(255) not null default '', key varchar(255) not null default '',
+        data json not null default '{}', ${times}`,
+      tool: `${owned}, integration varchar(255) not null, connection varchar(255) not null,
+        plugin_id text not null default 'mcp', name varchar(255) not null,
+        description text, annotations json, ${times}`,
+      organizations: `id text primary key, name text not null, slug text not null,
+        created_at timestamptz not null default now(), deleted_at timestamptz`,
+      blob: `row_id varchar(255) not null default gen_random_uuid()::text,
+        id varchar(255) not null default gen_random_uuid()::text,
+        namespace varchar(255) not null, key varchar(255) not null, value text not null`,
+    };
     const statements = [
-      ...tables.map((table) => `create table ${table} (tenant varchar(255) not null)`),
-      "create table plugin_storage (tenant varchar(255) not null, plugin_id varchar(255) not null)",
+      ...Object.entries(tables).map(([table, columns]) => `create table ${table} (${columns})`),
       `create role ${v1DatabaseReader} login password '${input.readerPassword}'`,
-      `grant select on ${[...tables, "plugin_storage"].join(", ")} to ${v1DatabaseReader}`,
+      `grant select on ${Object.keys(tables).join(", ")} to ${v1DatabaseReader}`,
     ];
     const psql = (database: string, sql: string) =>
       processes.exitCode(

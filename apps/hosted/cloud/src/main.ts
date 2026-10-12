@@ -60,7 +60,7 @@ import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
-import { cloudOnboarding } from "./infrastructure/onboarding.ts";
+import { cloudOnboarding, cloudV1Import } from "./infrastructure/onboarding.ts";
 import { Onboarding } from "./contracts/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
@@ -212,6 +212,7 @@ export default Api.make(
     const errorTunnel = yield* cloudErrorTunnel;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
+    const v1Import = yield* cloudV1Import.pipe(Effect.orDie);
     const auth = yield* cloudAuth(email.send, yield* Onboarding.pipe(Effect.provide(onboarding)));
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
@@ -412,6 +413,7 @@ export default Api.make(
       Layer.provide(billing),
       Layer.provide(removals),
       Layer.provide(onboarding),
+      Layer.provide(v1Import),
       Layer.provide(hostedMiddlewareLive),
       // Organization middleware reads the product's removal tombstones when it is built.
       Layer.provide(executor),

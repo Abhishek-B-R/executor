@@ -121,6 +121,29 @@ export const migrateOrganizationRemovalStarts = Effect.gen(function* () {
   )`;
 }).pipe(Effect.mapError(migrationFailed("product")));
 
+/**
+ * The v1 import map (`notes/v1-import.md`): one row per v1 item an import attempted, with the v2
+ * resource it created, why it failed, or why it had nothing to import (`skipped`). `(v1_kind, v1_id)` is unique, so no v1 item is created
+ * twice in v2. Additive: the running server never reads it.
+ */
+export const migrateV1ImportMap = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists private_v1_import_map (
+    v1_org_id text not null,
+    v1_kind text not null,
+    v1_id text not null,
+    v2_kind text,
+    v2_id text,
+    status text not null check (status in ('imported', 'failed', 'skipped')),
+    reason text,
+    source_hash text not null,
+    updated_at timestamptz not null default now(),
+    unique (v1_kind, v1_id),
+    check ((status = 'imported') = (v2_id is not null))
+  )`;
+  yield* sql`create index if not exists private_v1_import_map_org on private_v1_import_map (v1_org_id)`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
   Effect.gen(function* () {
@@ -140,6 +163,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "2_billing_seats": migrateBillingSeats,
         "3_app_domain_records": migrateAppDomainRecords,
         "4_organization_removal_starts": migrateOrganizationRemovalStarts,
+        "5_v1_import_map": migrateV1ImportMap,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

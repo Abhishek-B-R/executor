@@ -34,6 +34,7 @@
     "@executor-js/hosted-cloud-web": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",
     "@executor-js/marketing": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
@@ -45,6 +46,7 @@
     "better-auth": "1.7.5",
     "effect": "4.0.1",
     "fumadb-effect": "workspace:*",
+    "js-yaml": "5.4.2",
     "kysely": "0.29.6",
     "pg": "8.16.3",
     "postal-mime": "4.0.2"

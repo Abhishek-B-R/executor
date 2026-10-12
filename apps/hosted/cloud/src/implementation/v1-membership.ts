@@ -13,7 +13,7 @@ const Memberships = Schema.Struct({
 const Tenants = Schema.Array(Schema.Struct({ tenant: Schema.String }));
 
 /** v1's plans that cost nothing. Every other plan, including ones added later, is paid. */
-const freePlans: ReadonlyArray<string> = ["free", "free-pay-as-you-go"];
+export const freePlans: ReadonlyArray<string> = ["free", "free-pay-as-you-go"];
 
 /** v1's WorkOS environment, its database and billing, and the moment the check shipped. */
 export interface V1MembershipSettings {

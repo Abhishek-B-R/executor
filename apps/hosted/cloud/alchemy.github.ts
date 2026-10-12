@@ -19,6 +19,7 @@ import {
   missingV1MembershipCheckSince,
   missingV1WorkosKey,
 } from "./src/infrastructure/v1-membership-settings.ts";
+import { type V1ImportSwitch, v1ImportSetting } from "./src/infrastructure/v1-import-settings.ts";
 
 /**
  * Secrets seeded from the environment. `op run --env-file=.env.ci.op` resolves the 1Password
@@ -265,6 +266,18 @@ export default Alchemy.Stack(
       ...target,
       name: "CLOUD_BROWSER_ORIGIN",
       value: browserOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The v1 import's switch (`v1-import-settings.ts`): `on` lets production import v1
+     * workspaces. `.env.ci.op` sets it; unset is `off`.
+     */
+    const v1Import: V1ImportSwitch = yield* v1ImportSetting;
+    yield* GitHub.Variable("production-CLOUD_V1_IMPORT", {
+      ...target,
+      name: "CLOUD_V1_IMPORT",
+      value: v1Import,
       environment: production,
     }).pipe(retain());
 

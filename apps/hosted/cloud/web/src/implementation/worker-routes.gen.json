@@ -28,5 +28,7 @@
   "/mcp/authorize/",
   "/oauth/callback",
   "/oauth/callback/",
-  "/org/*"
+  "/org/*",
+  "/v1-import",
+  "/v1-import/"
 ]

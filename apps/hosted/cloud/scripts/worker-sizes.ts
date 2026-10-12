@@ -144,6 +144,8 @@ const production: Target = {
     V1_WORKOS_API_KEY: "unused",
     V1_MEMBERSHIP_CHECK_SINCE: "2026-01-01T00:00:00Z",
     V1_PLANETSCALE_DATABASE_NAME: "unused",
+    // Evaluate the v1 import's production path too: it binds v1's blob bucket.
+    CLOUD_V1_IMPORT: "on",
     SENTRY_ENABLED: "true",
     POSTHOG_ENABLED: "true",
     SENTRY_URL: "https://sentry.io",

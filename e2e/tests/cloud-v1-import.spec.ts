@@ -1,0 +1,2150 @@
+/**
+ * A v2 account that is the single member of a free Executor v1 workspace imports it. The scenarios
+ * write synthetic v1 rows into the managed Cloud's emulated v1 database, secrets into the emulated
+ * v1 WorkOS Vault under v1's object names, and read every result through Cloud's own API.
+ */
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { createHash, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { expect, layer } from "@effect/vitest";
+import { Effect, Layer, Ref, Schema } from "effect";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { TestLive, withCase } from "../support/case.ts";
+import { Browser } from "../support/browser.ts";
+import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
+import { credentialUpstream } from "../support/credential-upstream.ts";
+import { Emulators } from "../support/emulators.ts";
+import { Onboarding } from "../support/onboarding.ts";
+import { scenarios } from "../test-plan.ts";
+
+const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
+
+const Item = Schema.Struct({
+  kind: Schema.String,
+  id: Schema.String,
+  label: Schema.String,
+  dependsOn: Schema.Array(Schema.Struct({ kind: Schema.String, id: Schema.String })),
+  plan: Schema.Struct({
+    status: Schema.String,
+    reason: Schema.optionalKey(Schema.String),
+    note: Schema.optionalKey(Schema.String),
+  }),
+  result: Schema.NullOr(
+    Schema.Struct({
+      status: Schema.String,
+      v2Id: Schema.optionalKey(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+      needsRepair: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+});
+const Preview = Schema.Struct({
+  organization: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  items: Schema.Array(Item),
+  target: Schema.NullOr(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+});
+const Choices = Schema.Struct({
+  organizations: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      eligible: Schema.Boolean,
+      reason: Schema.NullOr(Schema.String),
+      v1Url: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+const Response = Schema.Struct({ status: Schema.Number, body: Schema.Unknown });
+const Refusal = Schema.Struct({ _tag: Schema.String, reason: Schema.optionalKey(Schema.String) });
+const ItemResult = Schema.Struct({
+  status: Schema.String,
+  v2Id: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+  note: Schema.optionalKey(Schema.String),
+  needsRepair: Schema.optionalKey(Schema.Boolean),
+});
+const Inventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+  accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  profiles: Schema.Array(Schema.Struct({ id: Schema.String, app: Schema.String })),
+});
+/** The inventory with each profile's accounts, to find the profile that selects an account. */
+const MailInventory = Schema.Struct({
+  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+  accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  profiles: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      app: Schema.String,
+      accounts: Schema.Record(
+        Schema.String,
+        Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+      ),
+    }),
+  ),
+});
+const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
+const Health = Schema.Struct({
+  info: Schema.NullOr(
+    Schema.Struct({
+      email: Schema.optional(Schema.String),
+      displayName: Schema.optional(Schema.String),
+    }),
+  ),
+  apps: Schema.Array(
+    Schema.Struct({
+      app: Schema.String,
+      checkable: Schema.Boolean,
+      check: Schema.NullOr(Schema.Struct({ status: Schema.String })),
+    }),
+  ),
+});
+const Source = Schema.Struct({
+  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+});
+const Connections = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    url: Schema.String,
+    policy: Schema.Struct({
+      apps: Schema.Array(
+        Schema.Struct({ app: Schema.String, runsAs: Schema.Unknown, tools: Schema.Unknown }),
+      ),
+    }),
+  }),
+);
+const Apps = Schema.Array(
+  Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    activeDeployment: Schema.NullOr(Schema.String),
+  }),
+);
+
+/** The keys the synthetic API answers: its user, a Google-style disabled API, and anything else 401. */
+const keys = {
+  good: "synthetic-good-key",
+  disabled: "synthetic-disabled-key",
+  revoked: "synthetic-revoked-key",
+} as const;
+const checkedEmail = "checked-member@example.test";
+/** The notes v2 shows for a toolkit that grants nothing and for every artifact. */
+const grantsNoConnection = "It grants no connection in this workspace.";
+const repairNote =
+  "It is imported as app source without a deployment: v2 apps cannot call other apps' tools yet, so its code needs rewriting before it runs.";
+/** A credential v1 kept in an MCP server's fixed headers; it must never reach generated source. */
+const fixedSecret = "synthetic-fixed-secret-0123456789";
+/**
+ * v1's compiled names for the Compiled API's operations: the operationId split only on `.` and `/`,
+ * one derived from the path when missing, and a collision told apart by the path's version.
+ */
+const compiledV1Names = [
+  "items.getV1ItemsId",
+  "items.itemsList",
+  "items.v1.createItem",
+  "items.v2.createItem",
+];
+
+/**
+ * A synthetic API with one safe read, \`GET /v1/me\`, recording each request's path, query and key.
+ * The disabled key gets Google's answer for an API that is not enabled in the client's project.
+ */
+const checkedApi = Effect.gen(function* () {
+  const received = yield* Ref.make<ReadonlyArray<{ path: string; key: string | undefined }>>([]);
+  const me = HttpRouter.add(
+    "GET",
+    "/v1/me",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const key = request.headers["x-key"];
+      yield* Ref.update(received, (all) => [...all, { path: request.url, key }]);
+      if (key === keys.good)
+        return yield* HttpServerResponse.json({ user: { email: checkedEmail } });
+      if (key === keys.disabled)
+        return yield* HttpServerResponse.json(
+          {
+            error: {
+              code: 403,
+              status: "PERMISSION_DENIED",
+              errors: [{ reason: "accessNotConfigured" }],
+              details: [{ reason: "SERVICE_DISABLED" }],
+            },
+          },
+          { status: 403 },
+        );
+      return yield* HttpServerResponse.json({ error: { code: 401 } }, { status: 401 });
+    }),
+  );
+  const services = yield* Layer.build(
+    HttpRouter.serve(me, { disableLogger: true, disableListenLog: true }).pipe(
+      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+    ),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  return { origin: `http://127.0.0.1:${server.address.port}`, received: Ref.get(received) };
+});
+
+/**
+ * A workspace whose OpenAPI integration declares v1's account check (an identity read with a pinned
+ * argument) and an empty base URL, a public MCP server that sends a credential in a fixed header,
+ * policies v1 never applied or that match no tool v1 listed, and two OpenAPI integrations from
+ * before v1 stored operations, whose tools v1 bound by compiling the document: one whose listed
+ * tools the document names, and one that lists a tool it does not.
+ */
+const seedChecks = (organization: string, user: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const ok = { "200": { description: "ok" } };
+    const compiledText = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Compiled API", version: "1" },
+      servers: [{ url: "https://api.example.com" }],
+      paths: {
+        "/v1/items": {
+          get: { operationId: "items_list", tags: ["items"], responses: ok },
+          post: { operationId: "createItem", tags: ["items"], responses: ok },
+        },
+        "/v2/items": { post: { operationId: "createItem", tags: ["items"], responses: ok } },
+        "/v1/items/{id}": {
+          get: {
+            tags: ["items"],
+            parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+            responses: ok,
+          },
+        },
+      },
+    });
+    const compiledHash = createHash("sha256").update(compiledText).digest("hex");
+    const compiled = `compiled_${randomUUID().slice(0, 6)}`;
+    const unmatched = `unmatched_${randomUUID().slice(0, 6)}`;
+    const document = {
+      openapi: "3.0.3",
+      info: { title: "Checked API", version: "1" },
+      servers: [{ url: `${origin}/v1` }],
+      paths: {
+        "/me": {
+          get: {
+            operationId: "getMe",
+            tags: ["me"],
+            parameters: [{ name: "fields", in: "query", schema: { type: "string" } }],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    };
+    const text = JSON.stringify(document);
+    const hash = createHash("sha256").update(text).digest("hex");
+    const api = `checked_${randomUUID().slice(0, 6)}`;
+    const mcp = `fixed_${randomUUID().slice(0, 6)}`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    const items = Object.fromEntries(
+      Object.keys(keys).map((name) => [name, `connection:user:${api}:${name}:token`]),
+    );
+    for (const [name, value] of Object.entries(keys))
+      yield* emulators.v1VaultObject(vaultName(userScope, items[name] ?? ""), value);
+    const tokenItem = (integration: string, connection: string) =>
+      `connection:user:${integration}:${connection}:token`;
+    for (const [integration, connection] of [
+      [compiled, "compiled"],
+      [unmatched, "unmatched"],
+    ] as const)
+      yield* emulators.v1VaultObject(
+        vaultName(userScope, tokenItem(integration, connection)),
+        `synthetic-${connection}-key`,
+      );
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic checked workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, health_check, created_at) values ($1, $2, 'openapi', 'Checked API', $3::json, $4::json, now() - interval '2 days')",
+        organization,
+        api,
+        JSON.stringify({
+          specHash: hash,
+          // v1 treats an empty base URL as unset and calls the document's server.
+          baseUrl: "",
+          authenticationTemplate: [
+            {
+              slug: "apikey-0",
+              kind: "apikey",
+              placements: [{ carrier: "header", name: "X-Key" }],
+            },
+          ],
+        }),
+        JSON.stringify({
+          operation: "me.get",
+          args: { fields: "email" },
+          identityField: "user.email",
+        }),
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${hash}`,
+        text,
+      ),
+      row(
+        "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', 'op.me.get', $2::json)",
+        organization,
+        JSON.stringify({
+          integration: api,
+          toolName: "me.get",
+          binding: {
+            method: "get",
+            pathTemplate: "/me",
+            servers: [{ url: `${origin}/v1` }],
+            parameters: [{ name: "fields", location: "query", required: false }],
+          },
+        }),
+      ),
+      ...Object.keys(keys).map((name, index) =>
+        row(
+          `insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'user', $2, $3, $4, 'apikey-0', $5::json, now() - interval '${3 - index} hours')`,
+          organization,
+          user,
+          api,
+          name,
+          JSON.stringify({ token: items[name] }),
+        ),
+      ),
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'user', $2, $3, 'good', 'openapi', 'me.get')",
+        organization,
+        user,
+        api,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, created_at) values ($1, $2, 'mcp', 'Fixed MCP', $3::json, now() - interval '1 day')",
+        organization,
+        mcp,
+        JSON.stringify({
+          transport: "remote",
+          endpoint: "https://mcp.example.com/mcp",
+          remoteTransport: "auto",
+          headers: { Authorization: `Bearer ${fixedSecret}`, "X-Client": "executor" },
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template) values ($1, 'user', $2, $3, 'fixed', 'none')",
+        organization,
+        user,
+        mcp,
+      ),
+      // v1 listed one of the server's tools under two names.
+      ...[
+        ["searchissues", "searchIssues"],
+        ["search_issues", "searchIssues"],
+      ].map(([name, upstream]) =>
+        row(
+          "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'user', $2, $3, 'fixed', 'mcp', $4, $5::json)",
+          organization,
+          user,
+          mcp,
+          name ?? "",
+          JSON.stringify({ mcp: { toolName: upstream } }),
+        ),
+      ),
+      // A connection that sent no credentials to an API whose other connections sign in.
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, created_at) values ($1, 'user', $2, $3, 'anonymous', 'none', now() - interval '1 hour')",
+        organization,
+        user,
+        api,
+      ),
+      // Rules v1 never applied, and one that matches no tool v1 listed.
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', 'removed_service.*', 'block')",
+        organization,
+      ),
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', 'executor.code.*', 'approve')",
+        organization,
+      ),
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', $2, 'require_approval')",
+        organization,
+        `${api}.*.*.me.unlisted`,
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${compiledHash}`,
+        compiledText,
+      ),
+      // No operation rows: v1 compiled the document and found each listed tool by its name.
+      ...[
+        {
+          integration: compiled,
+          name: "Compiled API",
+          connection: "compiled",
+          tools: compiledV1Names,
+        },
+        {
+          integration: unmatched,
+          name: "Unmatched API",
+          connection: "unmatched",
+          tools: ["items.itemsList", "items.archive"],
+        },
+      ].flatMap(({ integration, name, connection, tools }) => [
+        row(
+          "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', $3, $4::json)",
+          organization,
+          integration,
+          name,
+          JSON.stringify({
+            specHash: compiledHash,
+            authenticationTemplate: [
+              {
+                slug: "apikey-0",
+                kind: "apikey",
+                placements: [{ carrier: "header", name: "X-Key" }],
+              },
+            ],
+          }),
+        ),
+        row(
+          "insert into connection (tenant, owner, subject, integration, name, template, item_ids) values ($1, 'user', $2, $3, $4, 'apikey-0', $5::json)",
+          organization,
+          user,
+          integration,
+          connection,
+          JSON.stringify({ token: tokenItem(integration, connection) }),
+        ),
+        ...tools.map((tool) =>
+          row(
+            "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'user', $2, $3, $4, 'openapi', $5)",
+            organization,
+            user,
+            integration,
+            connection,
+            tool,
+          ),
+        ),
+      ]),
+    ]);
+    return { api, mcp };
+  });
+
+/** Call Cloud's API from the signed-in page, as the dashboard does. */
+const call = (step: string, method: "GET" | "POST", path: string, payload?: unknown) =>
+  Effect.gen(function* () {
+    const browser = yield* Browser;
+    return yield* browser
+      .use(step, (page) =>
+        page.evaluate(
+          ({ method, path, payload }) =>
+            fetch(path, {
+              method,
+              ...(payload === undefined
+                ? {}
+                : {
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify(payload),
+                  }),
+            }).then((response) =>
+              response.json().then((body: unknown) => ({ status: response.status, body })),
+            ),
+          { method, path, payload },
+        ),
+      )
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Response)));
+  });
+const decode = <S extends Schema.Top>(schema: S, response: typeof Response.Type) =>
+  Schema.decodeUnknownEffect(schema)(response.body);
+
+const googleSignIn = (email: string) =>
+  Effect.gen(function* () {
+    const onboarding = yield* Onboarding,
+      browser = yield* Browser;
+    yield* browser.use("Open Cloud sign-in", (page) => page.goto("/login"));
+    yield* onboarding.chooseSocial("google");
+    yield* browser.use("Choose the v1 member on the Google emulator", (page) =>
+      page.getByRole("button").filter({ hasText: email }).click(),
+    );
+    yield* browser.use("The v1 page offers the import", (page) =>
+      page.getByRole("link", { name: "Import from v1", exact: true }).waitFor({ state: "visible" }),
+    );
+  });
+
+/** v1's Vault object name for an item id, with its 200-character rule. */
+const vaultName = (scope: string, itemId: string) => {
+  const name = `${scope}/secrets/${encodeURIComponent(itemId)}`;
+  return name.length <= 200
+    ? name
+    : `${scope}/secrets/h~${createHash("sha256").update(itemId).digest("base64url")}`;
+};
+
+const spec = {
+  openapi: "3.0.3",
+  info: { title: "Synthetic widgets", version: "1" },
+  servers: [{ url: "https://api.example.com/v1" }],
+  security: [{ key: [] }],
+  paths: {
+    "/widgets": {
+      get: {
+        operationId: "listWidgets",
+        tags: ["widgets"],
+        responses: { "200": { description: "ok" } },
+      },
+      post: {
+        operationId: "createWidget",
+        tags: ["widgets"],
+        requestBody: {
+          content: { "application/json": { schema: { $ref: "#/components/schemas/Widget" } } },
+        },
+        responses: { "200": { description: "ok" } },
+      },
+    },
+    "/widgets/{id}": {
+      delete: {
+        operationId: "deleteWidget",
+        tags: ["widgets"],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: { "204": { description: "gone" } },
+      },
+    },
+    "/internal": {
+      get: { operationId: "internal", responses: { "200": { description: "ok" } } },
+    },
+  },
+  components: {
+    schemas: { Widget: { type: "object", properties: { name: { type: "string" } } } },
+    securitySchemes: { key: { type: "apiKey", in: "header", name: "X-Key" } },
+  },
+};
+
+/**
+ * The same document as YAML, as v1 stored specifications it fetched. A flow sequence across lines
+ * is valid YAML that only some parsers read.
+ */
+const specYaml = `openapi: 3.0.3
+info:
+  title: Synthetic widgets
+  version: "1"
+servers:
+  - url: https://api.example.com/v1
+security:
+  - key: []
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      tags: [
+        widgets
+        ]
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: createWidget
+      tags: [widgets]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Widget"
+      responses:
+        "200":
+          description: ok
+  /widgets/{id}:
+    delete:
+      operationId: deleteWidget
+      tags: [widgets]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: gone
+  /internal:
+    get:
+      operationId: internal
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    Widget:
+      type: object
+      properties:
+        name:
+          type: string
+  securitySchemes:
+    key:
+      type: apiKey
+      in: header
+      name: X-Key
+`;
+
+/**
+ * A workspace with an OpenAPI integration (an API key and an OAuth method), a remote MCP server
+ * whose v1 tool names differ from the server's, a local MCP server, and items that cannot move.
+ */
+const seedWorkspace = (
+  organization: string,
+  user: string,
+  slug: string,
+  format: "json" | "yaml" = "json",
+) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const text = format === "json" ? JSON.stringify(spec) : specYaml;
+    const hash = createHash("sha256").update(text).digest("hex");
+    const widgets = `widgets_${randomUUID().slice(0, 6)}`;
+    const tracker = `tracker_${randomUUID().slice(0, 6)}`;
+    const userKey = `connection:user:${widgets}:main:token`;
+    // Long enough that v1 stored it under its hashed name.
+    const orgKey = `connection:org:${widgets}:main:${"k".repeat(160)}:token`;
+    const accessKey = `oauth:user:${widgets}:signin`;
+    const refreshKey = `${accessKey}:refresh`;
+    const clientSecret = `oauth-client:org:${widgets}-client:secret`;
+    const trackerKey = `connection:user:${tracker}:main:token`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    const orgScope = `executor/org/${encodeURIComponent(organization)}`;
+    for (const [name, value] of [
+      [vaultName(userScope, userKey), "synthetic-user-key"],
+      [vaultName(orgScope, orgKey), "synthetic-workspace-key"],
+      [vaultName(userScope, accessKey), "synthetic-access-token"],
+      [vaultName(userScope, refreshKey), "synthetic-refresh-token"],
+      [vaultName(orgScope, clientSecret), "synthetic-client-secret"],
+      [vaultName(userScope, trackerKey), "synthetic-tracker-key"],
+    ] as const)
+      yield* emulators.v1VaultObject(name, value);
+    const openapi = {
+      specHash: hash,
+      authenticationTemplate: [
+        { slug: "apikey-0", kind: "apikey", placements: [{ carrier: "header", name: "X-Key" }] },
+        {
+          slug: "oauth2",
+          kind: "oauth2",
+          authorizationUrl: "https://auth.example.com/authorize",
+          tokenUrl: "https://auth.example.com/token",
+          scopes: ["widgets"],
+        },
+      ],
+    };
+    const mcp = {
+      transport: "remote",
+      endpoint: "https://mcp.example.com/mcp",
+      remoteTransport: "auto",
+      headers: { "X-Client": "executor" },
+      queryParams: { region: "eu" },
+      authenticationTemplate: [
+        {
+          slug: "header",
+          kind: "apikey",
+          placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+        },
+        { slug: "oauth2", kind: "oauth2" },
+      ],
+    };
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const v1Names = { list: "widgets.list", create: "widgets.create", remove: "widgets.remove" };
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic v1 workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, created_at) values ($1, $2, 'openapi', 'Widgets', $3::json, now() - interval '3 days')",
+        organization,
+        widgets,
+        JSON.stringify(openapi),
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, created_at) values ($1, $2, 'mcp', 'Tracker', $3::json, now() - interval '2 days')",
+        organization,
+        tracker,
+        JSON.stringify(mcp),
+      ),
+      row(
+        `insert into integration (tenant, slug, plugin_id, name, config) values ($1, 'local_files', 'mcp', 'Local files', '{"transport":"stdio","command":"files"}')`,
+        organization,
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${hash}`,
+        text,
+      ),
+      ...Object.entries({
+        [v1Names.list]: ["get", "/widgets"],
+        [v1Names.create]: ["post", "/widgets"],
+        [v1Names.remove]: ["delete", "/widgets/{id}"],
+      }).map(([tool, [method, path]]) =>
+        row(
+          "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+          organization,
+          `op.${tool}`,
+          JSON.stringify({
+            integration: widgets,
+            toolName: tool,
+            binding: { method, pathTemplate: path },
+          }),
+        ),
+      ),
+      // Connections, oldest first: the user's API key, the workspace's, then an OAuth sign-in.
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'user', $2, $3, 'main', 'apikey-0', $4::json, now() - interval '3 days')",
+        organization,
+        user,
+        widgets,
+        JSON.stringify({ token: userKey }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'org', '', $2, 'main', 'apikey-0', $3::json, now() - interval '2 days')",
+        organization,
+        widgets,
+        JSON.stringify({ token: orgKey }),
+      ),
+      row(
+        "insert into oauth_client (tenant, owner, subject, slug, authorization_url, token_url, \"grant\", client_id, client_secret_item_id, token_endpoint_auth_method, origin_kind) values ($1, 'org', '', $2, 'https://auth.example.com/authorize', 'https://auth.example.com/token', 'authorization_code', 'synthetic-client', $3, 'basic', 'manual')",
+        organization,
+        `${widgets}-client`,
+        clientSecret,
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner, refresh_item_id, expires_at, created_at) values ($1, 'user', $2, $3, 'signin', 'oauth2', $4::json, $5, 'org', $6, $7::bigint, now() - interval '1 day')",
+        organization,
+        user,
+        widgets,
+        JSON.stringify({ token: accessKey }),
+        `${widgets}-client`,
+        refreshKey,
+        String(Date.now() + 3_600_000),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids) values ($1, 'user', $2, $3, 'main', 'header', $4::json)",
+        organization,
+        user,
+        tracker,
+        JSON.stringify({ token: trackerKey }),
+      ),
+      // Executor's own OAuth apps are not in v2 yet (#1186).
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner) values ($1, 'user', $2, $3, 'linear', 'oauth2', '{\"token\":\"oauth:user:linear:token\"}', 'first-party:linear', 'org')",
+        organization,
+        user,
+        tracker,
+      ),
+      // What v1 last listed: v1 names per connection, and the MCP server's own names.
+      ...[v1Names.list, v1Names.create, v1Names.remove].map((name) =>
+        row(
+          "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'user', $2, $3, 'main', 'openapi', $4)",
+          organization,
+          user,
+          widgets,
+          name,
+        ),
+      ),
+      ...[
+        // v1 lower-cased MCP names and joined other characters with `_`, numbering a name an
+        // earlier tool already took.
+        ["searchissues", "searchIssues"],
+        ["create_issue", "create-issue"],
+        ["create_issue_2", "create_issue"],
+      ].map(([name, upstream]) =>
+        row(
+          "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'user', $2, $3, 'main', 'mcp', $4, $5::json)",
+          organization,
+          user,
+          tracker,
+          name ?? "",
+          JSON.stringify({ mcp: { toolName: upstream } }),
+        ),
+      ),
+      // A tool v1 listed before it stored the server's own name; v1 cannot call it.
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'user', $2, $3, 'main', 'mcp', 'stale_tool')",
+        organization,
+        user,
+        tracker,
+      ),
+      // Policies: the workspace blocks deleting; the member approves creating without asking.
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'a0')",
+        organization,
+        `${widgets}.*.*.${v1Names.remove}`,
+      ),
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'user', $2, $3, 'approve', 'a0')",
+        organization,
+        user,
+        `${widgets}.user.main.${v1Names.create}`,
+      ),
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', 'removed_service.*', 'block')",
+        organization,
+      ),
+      // A toolkit with no rules grants nothing; it still becomes a connection.
+      row(
+        "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'toolkits', 'toolkits', 'tk_1', $2::json)",
+        organization,
+        JSON.stringify({ id: "tk_1", name: "Support", slug: "support" }),
+      ),
+      row(
+        "insert into artifact (tenant, owner, subject, title) values ($1, 'user', $2, 'Dashboard')",
+        organization,
+        user,
+      ),
+    ]);
+    return { widgets, tracker, v1Names };
+  });
+
+/**
+ * A workspace with toolkits and artifacts: an MCP server that takes an API key, a public MCP server
+ * with two connections, a personal toolkit over both that blocks one tool and asks before another,
+ * an org toolkit that names a personal connection (which v1 never served through it), and two
+ * artifacts, one with stored bindings and one saved before bindings existed.
+ */
+const seedToolkits = (organization: string, user: string, slug: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const hosted = `hosted_${randomUUID().slice(0, 6)}`;
+    const open = `open_${randomUUID().slice(0, 6)}`;
+    const key = `connection:user:${hosted}:main:token`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    yield* emulators.v1VaultObject(vaultName(userScope, key), "synthetic-hosted-key");
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const tool = (integration: string, connection: string, name: string) =>
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'user', $2, $3, $4, 'mcp', $5, $6::json)",
+        organization,
+        user,
+        integration,
+        connection,
+        name,
+        JSON.stringify({ mcp: { toolName: name } }),
+      );
+    const toolkitRow = (owner: "org" | "user", collection: string, data: Record<string, string>) =>
+      row(
+        `insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, '${owner}', $2, 'toolkits', $3, $4, $5::json)`,
+        organization,
+        owner === "user" ? user : "",
+        collection,
+        data.id ?? "",
+        JSON.stringify(data),
+      );
+    const dashboard = `function App() {
+  const items = useQuery(tools.${hosted}.list_items.queryOptions({}));
+  const other = useQuery(tools.missing_service("other").records.list.queryOptions({}));
+  return <Card>{items.data?.length ?? 0} {other.data?.length ?? 0}</Card>;
+}`;
+    const legacy = `function App() {
+  const found = useQuery(tools.${open}.user.first.search.queryOptions({ query: "synthetic" }));
+  return <pre>{JSON.stringify(found.data)}</pre>;
+}`;
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic toolkit workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, created_at) values ($1, $2, 'mcp', 'Hosted', $3::json, now() - interval '2 days')",
+        organization,
+        hosted,
+        JSON.stringify({
+          transport: "remote",
+          endpoint: "https://mcp.example.com/hosted",
+          authenticationTemplate: [
+            {
+              slug: "header",
+              kind: "apikey",
+              placements: [{ carrier: "header", name: "Authorization", prefix: "Bearer " }],
+            },
+          ],
+        }),
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config, created_at) values ($1, $2, 'mcp', 'Open', $3::json, now() - interval '1 day')",
+        organization,
+        open,
+        JSON.stringify({
+          transport: "remote",
+          endpoint: "https://mcp.example.com/open",
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'user', $2, $3, 'main', 'header', $4::json, now() - interval '2 days')",
+        organization,
+        user,
+        hosted,
+        JSON.stringify({ token: key }),
+      ),
+      // Two connections of a public app: the second depends on the first.
+      ...["first", "second"].map((name, index) =>
+        row(
+          `insert into connection (tenant, owner, subject, integration, name, template, created_at) values ($1, 'user', $2, $3, $4, 'none', now() - interval '${10 - index} hours')`,
+          organization,
+          user,
+          open,
+          name,
+        ),
+      ),
+      ...["list_items", "create_item", "delete_item", "purge_items"].map((name) =>
+        tool(hosted, "main", name),
+      ),
+      tool(open, "first", "search"),
+      tool(open, "second", "search"),
+      // The workspace blocks purging everywhere.
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'a0')",
+        organization,
+        `${hosted}.*.*.purge_items`,
+      ),
+      toolkitRow("user", "toolkits", { id: "tk_support", name: "Support", slug: "support" }),
+      toolkitRow("user", "toolkitConnections", {
+        id: "tkconn_1",
+        toolkitId: "tk_support",
+        pattern: `${hosted}.user.main.*`,
+        position: "a0",
+      }),
+      toolkitRow("user", "toolkitConnections", {
+        id: "tkconn_2",
+        toolkitId: "tk_support",
+        pattern: `${open}.user.first.*`,
+        position: "a1",
+      }),
+      toolkitRow("user", "toolkitPolicies", {
+        id: "tkpol_1",
+        toolkitId: "tk_support",
+        pattern: `${hosted}.*.*.delete_item`,
+        action: "block",
+        position: "a0",
+      }),
+      toolkitRow("user", "toolkitPolicies", {
+        id: "tkpol_2",
+        toolkitId: "tk_support",
+        pattern: `${hosted}.*.*.create_item`,
+        action: "require_approval",
+        position: "a1",
+      }),
+      // An org toolkit never served a personal connection's tools.
+      toolkitRow("org", "toolkits", { id: "tk_shared", name: "Shared", slug: "shared" }),
+      toolkitRow("org", "toolkitConnections", {
+        id: "tkconn_3",
+        toolkitId: "tk_shared",
+        pattern: `${hosted}.user.main.*`,
+        position: "a0",
+      }),
+      row(
+        "insert into artifact (tenant, owner, subject, title, description, code, bindings) values ($1, 'user', $2, 'Dashboard', 'Synthetic dashboard', $3, $4::json)",
+        organization,
+        user,
+        dashboard,
+        JSON.stringify({
+          [hosted]: { integration: hosted, owner: "user", connection: "main" },
+          other: { integration: "missing_service", owner: "user", connection: "main" },
+        }),
+      ),
+      row(
+        "insert into artifact (tenant, owner, subject, title, code) values ($1, 'user', $2, 'Legacy view', $3)",
+        organization,
+        user,
+        legacy,
+      ),
+    ]);
+    return { hosted, open };
+  });
+
+/**
+ * OpenAPI integrations whose requests depend on how v1 read them, against a loopback service
+ * that records what it receives: a YAML specification with a repeated key, operations that name
+ * their own server, a webhook, a method without a name, a public API, and one whose operations
+ * call two hosts.
+ */
+const seedRequests = (organization: string, user: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const suffix = randomUUID().slice(0, 6);
+    const keyItem = `connection:user:requests_${suffix}:main:token`;
+    yield* emulators.v1VaultObject(
+      vaultName(
+        `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`,
+        keyItem,
+      ),
+      "synthetic-requests-key",
+    );
+    // js-yaml, which v1 parsed with, keeps the last of a repeated key.
+    const requests = [
+      "openapi: 3.1.0",
+      "info:",
+      "  title: Synthetic requests",
+      "  version: '1'",
+      "  description: first",
+      "  description: second",
+      "servers:",
+      `  - url: ${origin}/root`,
+      "paths:",
+      "  /items:",
+      "    get:",
+      "      operationId: listItems",
+      "      tags: [items]",
+      "      servers:",
+      `        - url: ${origin}/v2`,
+      "      responses:",
+      "        '200':",
+      "          description: ok",
+      "  /ping:",
+      "    get:",
+      "      operationId: ping",
+      "      tags: [items]",
+      "      responses:",
+      "        '200':",
+      "          description: ok",
+      "webhooks:",
+      "  itemCreated:",
+      "    post:",
+      "      requestBody:",
+      "        content:",
+      "          application/json:",
+      "            schema:",
+      "              $ref: '#/components/schemas/Event'",
+      "      responses:",
+      "        '200':",
+      "          description: ok",
+      "components:",
+      "  schemas:",
+      "    Event:",
+      "      type: object",
+      "",
+    ].join("\n");
+    const document = (title: string, paths: Record<string, unknown>) =>
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title, version: "1" },
+        servers: [{ url: `${origin}/public` }],
+        paths,
+      });
+    const ok = { "200": { description: "ok" } };
+    const status = document("Synthetic status", {
+      "/health": { get: { operationId: "health", tags: ["status"], responses: ok } },
+    });
+    const split = document("Synthetic split", {
+      "/a": { get: { operationId: "a", tags: ["split"], responses: ok } },
+      "/b": {
+        get: {
+          operationId: "b",
+          tags: ["split"],
+          servers: [{ url: "https://other.example.com" }],
+          responses: ok,
+        },
+      },
+    });
+    const integrations = [
+      {
+        slug: `requests_${suffix}`,
+        name: "Requests",
+        text: requests,
+        template: [
+          { slug: "", kind: "apikey", placements: [{ carrier: "header", name: "X-Api-Key" }] },
+        ],
+        operations: { "items.list": ["get", "/items"], "items.ping": ["get", "/ping"] },
+      },
+      {
+        slug: `status_${suffix}`,
+        name: "Status",
+        text: status,
+        template: [],
+        operations: { "status.health": ["get", "/health"] },
+      },
+      {
+        slug: `split_${suffix}`,
+        name: "Split",
+        text: split,
+        template: [],
+        operations: { "split.a": ["get", "/a"], "split.b": ["get", "/b"] },
+      },
+    ];
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic requests workspace",
+        slug,
+      ),
+      ...integrations.flatMap((integration) => {
+        const hash = createHash("sha256").update(integration.text).digest("hex");
+        return [
+          row(
+            "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', $3, $4::json)",
+            organization,
+            integration.slug,
+            integration.name,
+            JSON.stringify({ specHash: hash, authenticationTemplate: integration.template }),
+          ),
+          row(
+            "insert into blob (namespace, key, value) values ($1, $2, $3)",
+            `o:${organization}/openapi`,
+            `spec/${hash}`,
+            integration.text,
+          ),
+          ...Object.entries(integration.operations).map(([tool, [method, path]]) =>
+            row(
+              "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+              organization,
+              `op.${integration.slug}.${tool}`,
+              JSON.stringify({
+                integration: integration.slug,
+                toolName: tool,
+                binding: { method, pathTemplate: path },
+              }),
+            ),
+          ),
+        ];
+      }),
+      // v1 accepted a method without a slug.
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids) values ($1, 'user', $2, $3, 'main', '', $4::json)",
+        organization,
+        user,
+        `requests_${suffix}`,
+        JSON.stringify({ token: keyItem }),
+      ),
+    ]);
+  });
+
+/**
+ * A synthetic OAuth service: two token endpoints, as two v1 clients named, that renew any refresh
+ * token, and an API (`GET /api/me`) that answers only the renewed access token. It records each
+ * token request's path, client authentication and form, and each API request's authorization.
+ */
+const oauthService = Effect.gen(function* () {
+  const renewedToken = "synthetic-renewed-access-token";
+  const tokens = yield* Ref.make<
+    ReadonlyArray<{ path: string; authorization: string | undefined; form: URLSearchParams }>
+  >([]);
+  const calls = yield* Ref.make<ReadonlyArray<string | undefined>>([]);
+  const token = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const form = new URLSearchParams(yield* request.text.pipe(Effect.orElseSucceed(() => "")));
+    yield* Ref.update(tokens, (all) => [
+      ...all,
+      {
+        path: new URL(request.url, "http://service").pathname,
+        authorization: request.headers.authorization,
+        form,
+      },
+    ]);
+    return yield* HttpServerResponse.json({
+      access_token: renewedToken,
+      token_type: "Bearer",
+      expires_in: 3600,
+    });
+  });
+  const routes = Layer.mergeAll(
+    HttpRouter.add("POST", "/token", token),
+    HttpRouter.add("POST", "/other/token", token),
+    HttpRouter.add(
+      "GET",
+      "/api/me",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        yield* Ref.update(calls, (all) => [...all, request.headers.authorization]);
+        return request.headers.authorization === `Bearer ${renewedToken}`
+          ? yield* HttpServerResponse.json({ email: "mail-member@example.test" })
+          : yield* HttpServerResponse.json({ error: "unauthenticated" }, { status: 401 });
+      }),
+    ),
+  );
+  const services = yield* Layer.build(
+    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+    ),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  return {
+    origin: `http://127.0.0.1:${server.address.port}`,
+    renewedToken,
+    tokens: Ref.get(tokens),
+    calls: Ref.get(calls),
+  };
+});
+
+/**
+ * An OpenAPI integration whose OAuth method, like v1's Outlook preset, declares no authorization
+ * URL, endpoints and scopes no client uses, and a second method under the same slug. Each connection signed in through its own v1 client:
+ * `renewed` through a confidential client with a resource, with granted scopes and an expired
+ * token; `second` through a public client at other endpoints; `untrusted` recorded a token
+ * endpoint v1 no longer trusted.
+ */
+const seedRenewal = (organization: string, user: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const mail = `mail_${randomUUID().slice(0, 6)}`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    const orgScope = `executor/org/${encodeURIComponent(organization)}`;
+    const access = (name: string) => `oauth:user:${mail}:${name}`;
+    const refresh = (name: string) => `${access(name)}:refresh`;
+    const secret = `oauth-client:org:${mail}-confidential:secret`;
+    for (const name of ["renewed", "second", "untrusted"]) {
+      yield* emulators.v1VaultObject(
+        vaultName(userScope, access(name)),
+        `synthetic-${name}-access`,
+      );
+      yield* emulators.v1VaultObject(
+        vaultName(userScope, refresh(name)),
+        `synthetic-${name}-refresh`,
+      );
+    }
+    yield* emulators.v1VaultObject(vaultName(orgScope, secret), "synthetic-confidential-secret");
+    const document = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic mail", version: "1" },
+      servers: [{ url: `${origin}/api` }],
+      paths: {
+        "/me": {
+          get: { operationId: "me", tags: ["mail"], responses: { "200": { description: "ok" } } },
+        },
+      },
+    });
+    const hash = createHash("sha256").update(document).digest("hex");
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const client = (
+      name: string,
+      authorize: string,
+      token: string,
+      resource: string | null,
+      secretItem: string | null,
+    ) =>
+      row(
+        "insert into oauth_client (tenant, owner, subject, slug, authorization_url, token_url, \"grant\", client_id, client_secret_item_id, token_endpoint_auth_method, resource, origin_kind) values ($1, 'org', '', $2, $3, $4, 'authorization_code', $5, nullif($6, ''), 'basic', nullif($7, ''), 'manual')",
+        organization,
+        `${mail}-${name}`,
+        authorize,
+        token,
+        `synthetic-${name}-client`,
+        secretItem ?? "",
+        resource ?? "",
+      );
+    const connection = (
+      name: string,
+      clientName: string,
+      expiresAt: number,
+      scope: string | null,
+      tokenUrl: string | null,
+    ) =>
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner, refresh_item_id, expires_at, oauth_scope, oauth_token_url) values ($1, 'user', $2, $3, $4, 'oauth2', $5::json, $6, 'org', $7, $8::bigint, nullif($9, ''), nullif($10, ''))",
+        organization,
+        user,
+        mail,
+        name,
+        JSON.stringify({ token: access(name) }),
+        `${mail}-${clientName}`,
+        refresh(name),
+        String(expiresAt),
+        scope ?? "",
+        tokenUrl ?? "",
+      );
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic mail workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', 'Mail', $3::json)",
+        organization,
+        mail,
+        JSON.stringify({
+          specHash: hash,
+          authenticationTemplate: [
+            {
+              slug: "oauth2",
+              kind: "oauth2",
+              authorizationUrl: "",
+              tokenUrl: "https://method.example.com/token",
+              scopes: ["method.scope"],
+            },
+            // A specification with both OAuth flows gave v1 two methods under one slug; v1 used
+            // the first.
+            { slug: "oauth2", kind: "oauth2", authorizationUrl: "", tokenUrl: "", scopes: [] },
+          ],
+        }),
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${hash}`,
+        document,
+      ),
+      row(
+        "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+        organization,
+        `op.${mail}.mail.me`,
+        JSON.stringify({
+          integration: mail,
+          toolName: "mail.me",
+          binding: { method: "get", pathTemplate: "/me" },
+        }),
+      ),
+      client("confidential", `${origin}/authorize`, `${origin}/token`, `${origin}/api`, secret),
+      client("public", `${origin}/other/authorize`, `${origin}/other/token`, null, null),
+      // Expired, so the first call renews it.
+      connection(
+        "renewed",
+        "confidential",
+        Date.now() - 60_000,
+        "mail.read  offline_access",
+        `${origin}/token`,
+      ),
+      connection("second", "public", Date.now() + 3_600_000, null, null),
+      connection(
+        "untrusted",
+        "confidential",
+        Date.now() + 3_600_000,
+        null,
+        "https://elsewhere.example.com/token",
+      ),
+    ]);
+  });
+
+const status = (preview: typeof Preview.Type, kind: string, label: string) =>
+  preview.items
+    .filter((item) => item.kind === kind && item.label === label)
+    .map((item) => item.result?.status ?? item.plan.status);
+
+layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
+  it.effect(scenarios.v1ImportPreview.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedWorkspace(own.organization, own.user, `v1-${randomUUID().slice(0, 8)}`);
+        const other = yield* emulators.identity("google");
+        const shared = yield* emulators.v1Workspace([identity.email, other.email]);
+        const paid = yield* emulators.v1Member(identity.email);
+        yield* emulators.v1Plan(paid, "team");
+        const someoneElse = yield* emulators.v1Member(other.email);
+        yield* googleSignIn(identity.email);
+
+        const choices = yield* call("List importable workspaces", "GET", "/api/v1-import").pipe(
+          Effect.flatMap((response) => decode(Choices, response)),
+        );
+        expect(
+          [...choices.organizations]
+            .map((organization) => ({
+              id: organization.id,
+              eligible: organization.eligible,
+              reason: organization.reason,
+            }))
+            .sort((a, b) => (a.id < b.id ? -1 : 1)),
+        ).toEqual(
+          [
+            { id: own.organization, eligible: true, reason: null },
+            { id: shared.organization, eligible: false, reason: "multiple_members" },
+            { id: paid, eligible: false, reason: "paid" },
+          ].sort((a, b) => (a.id < b.id ? -1 : 1)),
+        );
+
+        const response = yield* call(
+          "Preview the workspace",
+          "GET",
+          `/api/v1-import/${own.organization}`,
+        );
+        expect(response.status).toBe(200);
+        const preview = yield* decode(Preview, response);
+        expect(preview.target).toBeNull();
+        expect(status(preview, "integration", "Widgets")).toEqual(["will_import"]);
+        expect(status(preview, "integration", "Tracker")).toEqual(["will_import"]);
+        expect(preview.items.find((item) => item.label === "Local files")?.plan).toEqual({
+          status: "unsupported",
+          reason: "Local (stdio) MCP servers do not run in Executor Cloud.",
+        });
+        expect(status(preview, "connection", "main")).toEqual([
+          "will_import",
+          "will_import",
+          "will_import",
+        ]);
+        expect(status(preview, "connection", "signin")).toEqual(["will_import"]);
+        expect(preview.items.find((item) => item.label === "linear")?.plan.reason).toContain(
+          "Executor's own",
+        );
+        // A rule for a removed integration never applied in v1: nothing to import, not a failure.
+        expect(preview.items.find((item) => item.label === "removed_service.*")?.plan).toEqual({
+          status: "skipped",
+          reason: "Its integration no longer exists in v1.",
+        });
+        expect(preview.items.find((item) => item.label === "Support")?.plan).toEqual({
+          status: "will_import",
+          note: grantsNoConnection,
+        });
+        expect(preview.items.find((item) => item.label === "Dashboard")?.plan).toEqual({
+          status: "will_import",
+          note: repairNote,
+        });
+
+        for (const [organization, reason] of [
+          [shared.organization, "multiple_members"],
+          [paid, "paid"],
+          [someoneElse, "not_member"],
+        ] as const) {
+          const refused = yield* call(
+            `Refuse a ${reason} workspace`,
+            "GET",
+            `/api/v1-import/${organization}`,
+          );
+          expect(refused.status).toBe(403);
+          expect(yield* decode(Refusal, refused)).toMatchObject({
+            _tag: "V1ImportNotEligible",
+            reason,
+          });
+        }
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportRun.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          browser = yield* Browser;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        const slug = `v1-${randomUUID().slice(0, 8)}`;
+        const seeded = yield* seedWorkspace(own.organization, own.user, slug);
+        // v1 keeps its own metadata on the organization; the import must leave it.
+        yield* emulators.setV1OrganizationMetadata(own.organization, { v1_setting: "synthetic" });
+        yield* googleSignIn(identity.email);
+
+        // The browser drives the import from the v1 page.
+        yield* browser.use("Open the import", (page) =>
+          page.getByRole("link", { name: "Import from v1", exact: true }).click(),
+        );
+        yield* browser.use("Import into a new organization", (page) =>
+          page.getByRole("button", { name: "Import", exact: true }).click(),
+        );
+        yield* browser.use("The import finishes", (page) =>
+          page
+            .getByText(/ imported, 1 with nothing to import, \d+ not imported\.$/u)
+            .waitFor({ state: "visible", timeout: 50_000 }),
+        );
+        yield* browser.checkpoint("v1 import results");
+        // A finished import is not run again: it offers support instead.
+        const importButtons = yield* browser.use("A finished import offers support", (page) =>
+          page
+            .getByRole("button", { name: "Contact support", exact: true })
+            .waitFor({ state: "visible" })
+            .then(() =>
+              page
+                .getByRole("button", { name: /^(Import|Import again|Continue import)$/u })
+                .count(),
+            ),
+        );
+        expect(importButtons).toBe(0);
+        yield* browser.use("Show the finished import's actions", (page) =>
+          page
+            .getByRole("button", { name: "Contact support", exact: true })
+            .scrollIntoViewIfNeeded(),
+        );
+        yield* browser.checkpoint("v1 import finished offers support");
+        yield* browser.use("Contact support opens the support channels", (page) =>
+          page
+            .getByRole("button", { name: "Contact support", exact: true })
+            .click()
+            .then(() =>
+              page.getByRole("dialog", { name: "Get support" }).waitFor({ state: "visible" }),
+            )
+            .then(() => page.keyboard.press("Escape")),
+        );
+        // The artifact is imported but does not run until it is repaired, and its row says so.
+        yield* browser.use("Show the toolkit and artifact results", (page) =>
+          page
+            .getByRole("list", { name: "Items" })
+            .evaluate((list) => list.scrollTo(0, list.scrollHeight)),
+        );
+        yield* browser.use("The artifact needs repair", (page) =>
+          page.getByText("Imported, needs repair", { exact: true }).waitFor({ state: "visible" }),
+        );
+        yield* browser.checkpoint("v1 import toolkit and artifact results");
+
+        const preview = yield* call(
+          "Read the results",
+          "GET",
+          `/api/v1-import/${own.organization}`,
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        expect(preview.target?.slug).toBe(slug);
+        const target = preview.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+
+        // v1's WorkOS organization records where the workspace went, beside its other metadata.
+        const moved = yield* emulators.v1OrganizationMetadata(own.organization);
+        expect(moved).toEqual({
+          v1_setting: "synthetic",
+          executor_v2_org_slug: target.slug,
+          executor_v2_moved_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/u),
+        });
+        // Finishing again leaves it as it was, time included.
+        const finishedAgain = yield* call(
+          "Finish the import again",
+          "POST",
+          `/api/v1-import/${own.organization}/finish`,
+        );
+        expect(finishedAgain.status).toBe(200);
+        expect(yield* emulators.v1OrganizationMetadata(own.organization)).toEqual(moved);
+
+        // The sidebar now links back to the workspace's v1 dashboard instead of offering the import.
+        const v1Url = `https://executor.sh/${slug}`;
+        const choices = yield* call(
+          "List workspaces after the import",
+          "GET",
+          "/api/v1-import",
+        ).pipe(Effect.flatMap((response) => decode(Choices, response)));
+        expect(choices.organizations).toEqual([
+          { id: own.organization, eligible: true, reason: null, v1Url },
+        ]);
+        yield* browser.use("Open the new organization", (page) =>
+          page.goto(`/org/${target.slug}/apps`),
+        );
+        const back = yield* browser.use("The sidebar links back to v1", (page) => {
+          const link = page.getByRole("link", { name: "Back to v1", exact: true });
+          return link
+            .waitFor({ state: "visible" })
+            .then(() =>
+              Promise.all([
+                link.getAttribute("href"),
+                link.getAttribute("target"),
+                page.getByRole("button", { name: /Import your data/u }).count(),
+              ]),
+            );
+        });
+        expect(back).toEqual([v1Url, "_blank", 0]);
+        yield* browser.checkpoint("v1 import back to v1 sidebar");
+        expect(status(preview, "integration", "Widgets")).toEqual(["imported"]);
+        expect(status(preview, "integration", "Tracker")).toEqual(["imported"]);
+        expect(status(preview, "connection", "main")).toEqual(["imported", "imported", "imported"]);
+        expect(status(preview, "connection", "signin")).toEqual(["imported"]);
+        expect(status(preview, "connection", "linear")).toEqual(["failed"]);
+        expect(status(preview, "tool_policy", `${seeded.widgets}.*.*.widgets.remove`)).toEqual([
+          "imported",
+        ]);
+        expect(status(preview, "tool_policy", "removed_service.*")).toEqual(["skipped"]);
+        expect(status(preview, "toolkit", "Support")).toEqual(["imported"]);
+        expect(status(preview, "artifact", "Dashboard")).toEqual(["imported"]);
+        expect(preview.items.find((item) => item.label === "Dashboard")?.result?.needsRepair).toBe(
+          true,
+        );
+
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const widgets = inventory.apps.find((app) => app.name === "Widgets");
+        expect(inventory.apps.map((app) => app.name)).toEqual(
+          expect.arrayContaining(["Widgets", "Tracker"]),
+        );
+        // The personal connection keeps its name; the workspace's is suffixed. Team setup adds
+        // the Executor app's own account beside them.
+        expect(
+          inventory.accounts
+            .map((account) => account.label)
+            .filter((label) => label !== "Your Executor access")
+            .sort(),
+        ).toEqual(["main", "main", "main (workspace)", "signin"]);
+        const profiles = inventory.profiles.filter((profile) => profile.app === widgets?.id);
+        expect(profiles).toHaveLength(3);
+
+        // Tools keep v1's names; the blocked one is left out.
+        for (const profile of profiles) {
+          const listed = yield* call(
+            "List the imported tools",
+            "GET",
+            `/api/organizations/${target.id}/apps/${widgets?.id}/tools?profile=${profile.id}`,
+          );
+          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+          const tools = yield* decode(Tools, listed);
+          expect(tools.items.map((tool) => tool.name).sort()).toEqual([
+            "widgets.create",
+            "widgets.list",
+          ]);
+        }
+
+        // Importing an item again returns what it created.
+        const integration = preview.items.find(
+          (item) => item.kind === "integration" && item.label === "Widgets",
+        );
+        const again = yield* call(
+          "Import an imported item again",
+          "POST",
+          `/api/v1-import/${own.organization}/items/integration/${integration?.id}`,
+        ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+        expect(again).toEqual({ status: "imported", v2Id: widgets?.id });
+
+        // A second workspace goes into the organization the first created, in dependency order.
+        const second = yield* emulators.v1Workspace([identity.email]);
+        const more = yield* seedWorkspace(
+          second.organization,
+          second.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+          "yaml",
+        );
+        const started = yield* call(
+          "Start importing into the existing organization",
+          "POST",
+          `/api/v1-import/${second.organization}/start`,
+          { target: { kind: "existing", organization: target.id } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        expect(started.target?.id).toBe(target.id);
+        const connection = started.items.find((item) => item.kind === "connection");
+        const early = yield* call(
+          "A connection before its integration",
+          "POST",
+          `/api/v1-import/${second.organization}/items/connection/${connection?.id}`,
+        );
+        expect(early.status).toBe(409);
+        expect(yield* decode(Refusal, early)).toMatchObject({ _tag: "V1ImportDependencyPending" });
+        const tracker = started.items.find(
+          (item) => item.kind === "integration" && item.label === "Tracker",
+        );
+        const renamed = yield* call(
+          "Import the second workspace's MCP integration",
+          "POST",
+          `/api/v1-import/${second.organization}/items/integration/${tracker?.id}`,
+        ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+        expect(renamed.status).toBe("imported");
+        // Its specification is YAML that v1's parser reads.
+        const yamlWidgets = started.items.find(
+          (item) => item.kind === "integration" && item.label === "Widgets",
+        );
+        const fromYaml = yield* call(
+          "Import the second workspace's OpenAPI integration",
+          "POST",
+          `/api/v1-import/${second.organization}/items/integration/${yamlWidgets?.id}`,
+        ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+        expect(fromYaml.status, fromYaml.reason).toBe("imported");
+        const apps = yield* call(
+          "Read the organization again",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        // The organization already had a Tracker app, so this one is numbered.
+        expect(apps.apps.map((app) => app.name)).toEqual(
+          expect.arrayContaining(["Tracker (v1 2)"]),
+        );
+        expect(more.tracker).not.toBe(seeded.tracker);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+  it.effect(scenarios.v1ImportChecks.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const upstream = yield* checkedApi;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        const seeded = yield* seedChecks(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+
+        const preview = yield* call(
+          "Preview the workspace",
+          "GET",
+          `/api/v1-import/${own.organization}`,
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        // Rules v1 never applied have nothing to import; they are not failures.
+        expect(preview.items.find((item) => item.label === "removed_service.*")?.plan).toEqual({
+          status: "skipped",
+          reason: "Its integration no longer exists in v1.",
+        });
+        expect(preview.items.find((item) => item.label === "executor.code.*")?.plan).toEqual({
+          status: "skipped",
+          reason: "It applies to v1's built-in tools, which v2 does not have.",
+        });
+        expect(status(preview, "integration", "Checked API")).toEqual(["will_import"]);
+        expect(status(preview, "integration", "Fixed MCP")).toEqual(["will_import"]);
+        expect(status(preview, "integration", "Compiled API")).toEqual(["will_import"]);
+
+        // Post every item in order, as the import page does.
+        const started = yield* call(
+          "Start the import",
+          "POST",
+          `/api/v1-import/${own.organization}/start`,
+          { target: { kind: "new" } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        const target = started.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+        const results = new Map<string, typeof ItemResult.Type>();
+        for (const item of started.items) {
+          const result = yield* call(
+            `Import ${item.kind} ${item.label}`,
+            "POST",
+            `/api/v1-import/${own.organization}/items/${item.kind}/${item.id}`,
+          ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+          results.set(item.label, result);
+        }
+        expect(results.get("Checked API")?.status, results.get("Checked API")?.reason).toBe(
+          "imported",
+        );
+        expect(results.get("Fixed MCP")?.status, results.get("Fixed MCP")?.reason).toBe("imported");
+        expect(results.get("Compiled API")?.status, results.get("Compiled API")?.reason).toBe(
+          "imported",
+        );
+        // A tool v1 listed that the document does not name fails the integration by name.
+        expect(results.get("Unmatched API")).toMatchObject({
+          status: "failed",
+          reason: "v2 would not provide 1 of its v1 tools: items.archive.",
+        });
+        for (const name of [...Object.keys(keys), "fixed", "anonymous"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+        // The tool v1 listed twice is imported once, under its lower snake case name.
+        expect(results.get("Fixed MCP")?.note).toBe(
+          "v1 listed a tool under two names; search_issues is now searchissues.",
+        );
+        expect(results.get("removed_service.*")).toEqual({
+          status: "skipped",
+          reason: "Its integration no longer exists in v1.",
+        });
+        expect(results.get("executor.code.*")?.status).toBe("skipped");
+        // A rule that matches no tool v1 listed still moves, and says so.
+        expect(results.get(`${seeded.api}.*.*.me.unlisted`)).toMatchObject({
+          status: "imported",
+          note: "It matches no tool v1 last listed for its integration.",
+        });
+
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const appId = (name: string) => inventory.apps.find((app) => app.name === name)?.id;
+        const accountId = (label: string) =>
+          inventory.accounts.find((account) => account.label === label)?.id;
+
+        // The fixed credential is the MCP account's field; only the non-credential header stays in
+        // the app's source.
+        expect(accountId("fixed")).toBeDefined();
+        // The connection without credentials is an account of the app's "No credentials" method.
+        expect(accountId("anonymous")).toBeDefined();
+
+        // Without stored operations, the tools v1 listed keep the names v1 compiled for them.
+        const compiledApp = appId("Compiled API");
+        const compiledProfile = inventory.profiles.find((profile) => profile.app === compiledApp);
+        expect(compiledProfile).toBeDefined();
+        const compiledTools = yield* call(
+          "List the compiled API's tools",
+          "GET",
+          `/api/organizations/${target.id}/apps/${compiledApp}/tools?profile=${compiledProfile?.id}`,
+        );
+        expect(compiledTools.status, JSON.stringify(compiledTools.body)).toBe(200);
+        expect((yield* decode(Tools, compiledTools)).items.map((tool) => tool.name).sort()).toEqual(
+          compiledV1Names,
+        );
+        const source = yield* call(
+          "Read the MCP app's deployed source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${appId("Fixed MCP")}/source`,
+        );
+        expect(source.status, JSON.stringify(source.body)).toBe(200);
+        const files = (yield* decode(Source, source)).files;
+        const written = JSON.stringify(files);
+        expect(written).not.toContain(fixedSecret);
+        expect(written).toContain("X-Client");
+        expect(files.find((file) => file.path === "provider.ts")?.content).toContain(
+          '"fixed header Authorization"',
+        );
+
+        // v1's check: its request and identity field for a working key, Google's disabled-API 403
+        // as a missing permission rather than a refused sign-in, and a refused key.
+        const check = (label: string) =>
+          call(
+            `Check the ${label} account`,
+            "POST",
+            `/api/organizations/${target.id}/accounts/${accountId(label)}/health`,
+          ).pipe(
+            Effect.tap((response) =>
+              Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+            ),
+            Effect.flatMap((response) => decode(Health, response)),
+          );
+        const checked = appId("Checked API");
+        const verdict = (health: typeof Health.Type) =>
+          health.apps.find((app) => app.app === checked);
+        const good = yield* check("good");
+        expect(verdict(good)).toMatchObject({ checkable: true, check: { status: "healthy" } });
+        expect(good.info?.email).toBe(checkedEmail);
+        expect(verdict(yield* check("disabled"))?.check?.status).toBe("forbidden");
+        expect(verdict(yield* check("revoked"))?.check?.status).toBe("credentials_rejected");
+        expect(yield* upstream.received).toEqual(
+          [keys.good, keys.disabled, keys.revoked].map((key) => ({
+            path: "/v1/me?fields=email",
+            key,
+          })),
+        );
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportToolkits.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        const seeded = yield* seedToolkits(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+        );
+        yield* googleSignIn(identity.email);
+
+        const preview = yield* call(
+          "Preview the workspace",
+          "GET",
+          `/api/v1-import/${own.organization}`,
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        const item = (kind: string, label: string) =>
+          preview.items.find((candidate) => candidate.kind === kind && candidate.label === label);
+        expect(item("toolkit", "Support")?.plan).toEqual({ status: "will_import" });
+        expect(item("toolkit", "Shared")?.plan).toEqual({
+          status: "will_import",
+          note: grantsNoConnection,
+        });
+        expect(item("artifact", "Dashboard")?.plan).toEqual({
+          status: "will_import",
+          note: repairNote,
+        });
+        // Toolkits and artifacts wait for the integrations and connections they use.
+        expect(item("toolkit", "Support")?.dependsOn).toEqual(
+          expect.arrayContaining([
+            { kind: "integration", id: item("integration", "Hosted")?.id },
+            { kind: "integration", id: item("integration", "Open")?.id },
+            { kind: "connection", id: item("connection", "main")?.id },
+            { kind: "connection", id: item("connection", "first")?.id },
+          ]),
+        );
+        expect(item("artifact", "Dashboard")?.dependsOn).toEqual([
+          { kind: "integration", id: item("integration", "Hosted")?.id },
+          { kind: "connection", id: item("connection", "main")?.id },
+        ]);
+
+        const started = yield* call(
+          "Start the import",
+          "POST",
+          `/api/v1-import/${own.organization}/start`,
+          { target: { kind: "new" } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        const target = started.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+        const results = new Map<string, typeof ItemResult.Type>();
+        for (const posted of started.items) {
+          const response = yield* call(
+            `Import ${posted.kind} ${posted.label}`,
+            "POST",
+            `/api/v1-import/${own.organization}/items/${posted.kind}/${posted.id}`,
+          );
+          expect(response.status, JSON.stringify(response.body)).toBe(200);
+          results.set(posted.label, yield* decode(ItemResult, response));
+        }
+        for (const name of ["Hosted", "Open", "main", "first", "second"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+
+        // The personal toolkit: its granted tools and profiles, without the tool it blocked; the
+        // tool the workspace blocks is not in the app, so the toolkit cannot select it.
+        const support = results.get("Support");
+        expect(support).toMatchObject({
+          status: "imported",
+          note: "1 tool v1 allowed only through this toolkit is blocked in the workspace, so it is left out: Hosted purge_items.",
+        });
+        expect(results.get("Shared")).toMatchObject({
+          status: "imported",
+          note: grantsNoConnection,
+        });
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const appId = (name: string) => inventory.apps.find((app) => app.name === name)?.id;
+        const connections = yield* call(
+          "List the scoped MCP connections",
+          "GET",
+          `/api/organizations/${target.id}/mcp-connections`,
+        ).pipe(Effect.flatMap((response) => decode(Connections, response)));
+        const scoped = connections.find((connection) => connection.id === support?.v2Id);
+        expect(scoped?.name).toBe("Support");
+        expect(scoped?.url).toContain(`connection=${support?.v2Id}`);
+        expect([...(scoped?.policy.apps ?? [])].sort((a, b) => (a.app < b.app ? -1 : 1))).toEqual(
+          [
+            {
+              app: appId("Hosted"),
+              runsAs: [{ kind: "profile", id: results.get("main")?.v2Id }],
+              tools: { kind: "selected", names: ["create_item", "list_items"] },
+            },
+            {
+              app: appId("Open"),
+              runsAs: [{ kind: "app" }],
+              tools: { kind: "selected", names: ["search"] },
+            },
+          ].sort((a, b) => ((a.app ?? "") < (b.app ?? "") ? -1 : 1)),
+        );
+        expect(
+          connections.find((connection) => connection.id === results.get("Shared")?.v2Id)?.policy
+            .apps,
+        ).toEqual([]);
+
+        // The toolkit asked before creating, so the app asks every caller.
+        const source = yield* call(
+          "Read the MCP app's deployed source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${appId("Hosted")}/source`,
+        ).pipe(Effect.flatMap((response) => decode(Source, response)));
+        const rules = source.files.find((file) => file.path === "tools.ts")?.content ?? "";
+        expect(rules).toContain('"create_item": "always"');
+        expect(rules).not.toContain('"delete_item"');
+
+        // Artifacts become apps with source and no deployment, and say what needs repair.
+        const dashboard = results.get("Dashboard");
+        expect(dashboard).toEqual({
+          status: "imported",
+          v2Id: expect.any(String),
+          needsRepair: true,
+          note: `${repairNote} Its calls map to ${seeded.hosted} → Hosted (main). other: Its integration no longer exists in v1.`,
+        });
+        expect(results.get("Legacy view")).toMatchObject({
+          status: "imported",
+          needsRepair: true,
+          note: `${repairNote} Its calls map to ${seeded.open}.user.first → Open (first).`,
+        });
+        const apps = yield* call(
+          "List the apps",
+          "GET",
+          `/api/organizations/${target.id}/apps`,
+        ).pipe(Effect.flatMap((response) => decode(Apps, response)));
+        expect(apps.find((app) => app.id === dashboard?.v2Id)).toMatchObject({
+          name: "Dashboard",
+          activeDeployment: null,
+        });
+        // Its package files are not read here: managed local Cloud has no Git storage for app
+        // source, and the v1 import runs only there.
+
+        // Importing again keeps the same connection and app.
+        const again = yield* call(
+          "Import the toolkit again",
+          "POST",
+          `/api/v1-import/${own.organization}/items/toolkit/${item("toolkit", "Support")?.id}`,
+        ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+        expect(again.v2Id).toBe(support?.v2Id);
+        const reimported = yield* call(
+          "Import the artifact again",
+          "POST",
+          `/api/v1-import/${own.organization}/items/artifact/${item("artifact", "Dashboard")?.id}`,
+        ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+        expect(reimported).toEqual(dashboard);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportRequests.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const upstream = yield* credentialUpstream;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedRequests(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+
+        // Post every item in order, as the import page does.
+        const started = yield* call(
+          "Start the import",
+          "POST",
+          `/api/v1-import/${own.organization}/start`,
+          { target: { kind: "new" } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        const target = started.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+        const results = new Map<string, typeof ItemResult.Type>();
+        for (const item of started.items) {
+          const result = yield* call(
+            `Import ${item.kind} ${item.label}`,
+            "POST",
+            `/api/v1-import/${own.organization}/items/${item.kind}/${item.id}`,
+          ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+          results.set(item.label, result);
+        }
+        for (const name of ["Requests", "Status", "main"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+        // An account's credentials go to one origin, so an API whose operations call two hosts
+        // cannot be imported.
+        expect(results.get("Split")).toMatchObject({
+          status: "failed",
+          reason:
+            "Its operations call 2 hosts, and an imported app sends an account's credentials to one.",
+        });
+
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const appId = (name: string) => inventory.apps.find((app) => app.name === name)?.id;
+        const profile = inventory.profiles.find((entry) => entry.app === appId("Requests"));
+        expect(profile).toBeDefined();
+        // The imported account is the only one this workspace had; account tools take its id.
+        const account = inventory.accounts.find((entry) => entry.label === "main")?.id;
+        expect(account).toBeDefined();
+        const send = (step: string, app: string | undefined, tool: string, profile?: string) =>
+          call(step, "POST", `/api/organizations/${target.id}/apps/${app}/tools/call`, {
+            ...(profile === undefined ? {} : { profile }),
+            tool,
+            kind: "query",
+            input: profile === undefined ? {} : { accountId: account, input: {} },
+          });
+        // Each operation goes to its own server, with the key from the method v1 left unnamed.
+        for (const [tool, path] of [
+          ["items.list", "/v2/items"],
+          ["items.ping", "/root/ping"],
+        ] as const) {
+          const sent = yield* send(`Call ${tool}`, appId("Requests"), tool, profile?.id);
+          expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+          const received = (yield* upstream.received).at(-1);
+          expect(received?.url).toBe(path);
+          expect(received?.headers["x-api-key"]).toBe("synthetic-requests-key");
+        }
+        // A public API's app loads and calls it without an account.
+        const health = yield* send("Call the public API", appId("Status"), "status.health");
+        expect(health.status, JSON.stringify(health.body)).toBe(200);
+        const received = (yield* upstream.received).at(-1);
+        expect(received?.url).toBe("/public/health");
+        expect(received?.headers["x-api-key"]).toBeUndefined();
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+  it.effect(scenarios.v1ImportOAuthRenewal.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const service = yield* oauthService;
+        const { origin } = service;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedRenewal(own.organization, own.user, `v1-${randomUUID().slice(0, 8)}`, origin);
+        yield* googleSignIn(identity.email);
+
+        const started = yield* call(
+          "Start the import",
+          "POST",
+          `/api/v1-import/${own.organization}/start`,
+          { target: { kind: "new" } },
+        ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+        // v1 made a connection whose recorded token endpoint it no longer trusted reconnect.
+        expect(started.items.find((item) => item.label === "untrusted")?.plan).toEqual({
+          status: "unsupported",
+          reason:
+            "v1 no longer trusted the token endpoint its sign-in recorded. Reconnect it in v2.",
+        });
+        const target = started.target;
+        if (target === null) return yield* Effect.die("The import chose no organization");
+        const results = new Map<string, typeof ItemResult.Type>();
+        for (const item of started.items) {
+          if (item.plan.status !== "will_import") continue;
+          const result = yield* call(
+            `Import ${item.kind} ${item.label}`,
+            "POST",
+            `/api/v1-import/${own.organization}/items/${item.kind}/${item.id}`,
+          ).pipe(Effect.flatMap((response) => decode(ItemResult, response)));
+          results.set(item.label, result);
+        }
+        // The method declares no authorization URL, yet the app builds: it signs in at each client's.
+        for (const name of ["Mail", "renewed", "second"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(MailInventory, response)));
+        const app = inventory.apps.find((entry) => entry.name === "Mail")?.id;
+        expect(app).toBeDefined();
+        // A reconnect signs in where v1 did: each connection's client, never the method's endpoints.
+        const source = yield* call(
+          "Read the mail app's deployed source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${app}/source`,
+        );
+        expect(source.status, JSON.stringify(source.body)).toBe(200);
+        const written = JSON.stringify((yield* decode(Source, source)).files);
+        for (const url of [
+          `${origin}/authorize`,
+          `${origin}/token`,
+          `${origin}/other/authorize`,
+          `${origin}/other/token`,
+        ])
+          expect(written).toContain(JSON.stringify(url).slice(1, -1));
+        expect(written).not.toContain("method.example.com");
+
+        // The expired account renews on its first call, as v1 refreshed it.
+        const account = inventory.accounts.find((entry) => entry.label === "renewed")?.id;
+        const profile = inventory.profiles.find(
+          (entry) =>
+            entry.app === app &&
+            Object.values(entry.accounts)
+              .flat()
+              .includes(account ?? ""),
+        );
+        expect(profile).toBeDefined();
+        const sent = yield* call(
+          "Call the mail API as the renewed account",
+          "POST",
+          `/api/organizations/${target.id}/apps/${app}/tools/call`,
+          {
+            profile: profile?.id,
+            tool: "mail.me",
+            kind: "query",
+            input: { accountId: account, input: {} },
+          },
+        );
+        expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+        expect(yield* service.calls).toEqual([`Bearer ${service.renewedToken}`]);
+        const tokens = yield* service.tokens;
+        expect(tokens.map((request) => request.path)).toEqual(["/token"]);
+        const renewal = tokens[0];
+        expect(renewal?.authorization).toBe(
+          `Basic ${Buffer.from("synthetic-confidential-client:synthetic-confidential-secret").toString("base64")}`,
+        );
+        expect(Object.fromEntries(renewal?.form ?? [])).toEqual({
+          grant_type: "refresh_token",
+          refresh_token: "synthetic-renewed-refresh",
+          scope: "mail.read offline_access",
+          resource: `${origin}/api`,
+        });
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+});

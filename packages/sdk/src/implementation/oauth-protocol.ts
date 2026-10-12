@@ -1732,24 +1732,29 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       client: OAuthRegistration;
       refreshToken: string;
       resource?: string | undefined;
+      /** Asked for again only when the grant names them; see `OAuthGrant`. */
+      scopes?: readonly string[] | undefined;
       tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
       tokenResponse?: OAuthTokenResponse | undefined;
     }) =>
       request(
         async (settings) => {
           const server = metadata(input.server);
+          const additionalParameters = {
+            ...(input.scopes === undefined || input.scopes.length === 0
+              ? {}
+              : { scope: input.scopes.join(" ") }),
+            ...(input.resource === undefined ? {} : { resource: input.resource }),
+          };
           const response = await tokenResponse(
             await oauth.refreshTokenGrantRequest(
               server,
               input.client,
               clientAuth(input.client),
               input.refreshToken,
-              {
-                ...settings,
-                ...(input.resource === undefined
-                  ? {}
-                  : { additionalParameters: { resource: input.resource } }),
-              },
+              Object.keys(additionalParameters).length === 0
+                ? settings
+                : { ...settings, additionalParameters },
             ),
             input.tokenResponse,
           );

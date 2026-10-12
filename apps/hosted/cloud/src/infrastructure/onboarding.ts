@@ -17,11 +17,21 @@ import {
   type V1MembershipSettings,
 } from "../implementation/v1-membership.ts";
 import { LocalDatabaseUrl } from "../contracts/database.ts";
+import { V1Import, V1ImportUnavailable } from "../contracts/v1-import.ts";
+import { makeV1Import, v1ImportDisabled } from "../implementation/v1-import/service.ts";
+import type { V1SourceSettings } from "../implementation/v1-import/source.ts";
+import { v1R2Blobs } from "./v1-blobs.ts";
+import {
+  v1DashboardOrigin,
+  v1ImportOnlyProduction,
+  v1ImportSetting,
+} from "./v1-import-settings.ts";
 import { billingSettings } from "./billing.ts";
 import { cloudDatabaseConnection, v1DatabaseConnection } from "./database.ts";
 import {
   CheckSince,
   missingV1MembershipCheckSince,
+  missingV1PlanetscaleDatabase,
   missingV1WorkosKey,
 } from "./v1-membership-settings.ts";
 
@@ -172,6 +182,111 @@ export const cloudOnboarding = Effect.gen(function* () {
           Effect.provide(RuntimeContext.phantom),
           Effect.mapError(() => new OnboardingUnavailable()),
         ),
+    }),
+  );
+});
+
+/** Emulated Cloud's v1: the WorkOS emulator, a loopback v1 database and its `blob` table. */
+const cloudV1EmulatedSource = (
+  emulators: Option.Option<Redacted.Redacted<typeof EmulatedServices.Type>>,
+) =>
+  Effect.gen(function* () {
+    const database = yield* cloudV1Database(false, Option.isSome(emulators));
+    if (Option.isNone(emulators) || Option.isNone(database))
+      return Option.none<Effect.Effect<V1SourceSettings>>();
+    const workos = Redacted.value(emulators.value).workos;
+    const billing = yield* billingSettings;
+    const connection = database.value;
+    return Option.some<Effect.Effect<V1SourceSettings>>(
+      Effect.gen(function* () {
+        return {
+          workosUrl: workos.baseUrl,
+          workosKey: Redacted.make(workos.token),
+          database: yield* connection,
+          billing: { serverUrl: yield* billing.serverUrl, secretKey: yield* billing.secretKey },
+          blobs: "postgres",
+          dashboardOrigin: v1DashboardOrigin,
+        } satisfies V1SourceSettings;
+      }),
+    );
+  });
+
+/** Production's v1, read-only: its WorkOS, its database role, Autumn and its blob bucket. */
+const cloudV1ProductionSource = Effect.gen(function* () {
+  const key = (yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(Config.option)).pipe(
+    Option.filter((value) => configured(Redacted.value(value))),
+  );
+  if (Option.isNone(key)) return yield* Effect.die(new Error(missingV1WorkosKey));
+  const database = yield* cloudV1Database(true, false);
+  if (Option.isNone(database)) return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
+  const connection = database.value;
+  const billing = yield* billingSettings;
+  const blobs = yield* v1R2Blobs;
+  return Option.some<Effect.Effect<V1SourceSettings>>(
+    Effect.gen(function* () {
+      return {
+        workosUrl: "https://api.workos.com",
+        workosKey: key.value,
+        database: yield* connection,
+        billing: { serverUrl: yield* billing.serverUrl, secretKey: yield* billing.secretKey },
+        blobs,
+        dashboardOrigin: v1DashboardOrigin,
+      } satisfies V1SourceSettings;
+    }),
+  );
+});
+
+/**
+ * The v1 import (`notes/v1-import.md`). It copies the workspace: v1 keeps working, and the v1
+ * moved flag is not used.
+ *
+ * - Emulated Cloud with a v1 database (managed local Cloud) reads the emulated v1 WorkOS and its
+ *   Vault, the v1 database (blobs from its `blob` table, as v1 keeps them without R2) and Autumn.
+ * - Production runs it only when `CLOUD_V1_IMPORT=on` (`v1-import-settings.ts`, off by default).
+ *   It then reads v1's WorkOS (`V1_WORKOS_API_KEY`, also the sign-in check's), v1's database
+ *   through the read-only role (`V1_DATABASE_URL`), the Autumn account v2 bills from (v1 billed
+ *   there too), and v1's blob bucket through the `V1_BLOBS` binding.
+ * - Everywhere else, and on production while the switch is off, every request answers
+ *   `V1ImportUnavailable`. Another deployed stage refuses `on`: only production reaches v1.
+ */
+export const cloudV1Import = Effect.gen(function* () {
+  const emulators = yield* cloudEmulators;
+  const production = Option.getOrUndefined(yield* stageName) === productionStage;
+  const enabled = (yield* v1ImportSetting) === "on";
+  if (enabled && !production && Option.isNone(emulators))
+    return yield* Effect.die(new Error(v1ImportOnlyProduction));
+  const source = production
+    ? enabled
+      ? yield* cloudV1ProductionSource
+      : Option.none<Effect.Effect<V1SourceSettings>>()
+    : yield* cloudV1EmulatedSource(emulators);
+  if (Option.isNone(source)) return Layer.succeed(V1Import, v1ImportDisabled);
+  const settings = source.value;
+  const service = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      return yield* makeV1Import(yield* settings).pipe(Effect.provide(FetchHttpClient.layer));
+    }),
+  );
+  const run =
+    <A, E>(operation: (importer: typeof V1Import.Service) => Effect.Effect<A, E>) =>
+    () =>
+      service.pipe(
+        Effect.mapError(() => new V1ImportUnavailable()),
+        Effect.flatMap(operation),
+        Effect.provide(RuntimeContext.phantom),
+      );
+  return Layer.succeed(
+    V1Import,
+    V1Import.of({
+      choices: (request) => run((importer) => importer.choices(request))(),
+      preview: (request, organization) =>
+        run((importer) => importer.preview(request, organization))(),
+      start: (request, organization, input) =>
+        run((importer) => importer.start(request, organization, input))(),
+      item: (request, organization, item) =>
+        run((importer) => importer.item(request, organization, item))(),
+      finish: (request, organization) =>
+        run((importer) => importer.finish(request, organization))(),
     }),
   );
 });

@@ -2,9 +2,9 @@ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user
 import { ApiError } from "@executor-js/utils/api-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
-import { AuthMethodName } from "./provider.ts";
-import { AccountConnectionId } from "./shared.ts";
-import { Schema } from "effect";
+import { AuthMethodName, type AuthMethodInvalid, type ProviderNotFound } from "./provider.ts";
+import { AccountConnectionId, type CredentialsError, type StorageError } from "./shared.ts";
+import { Schema, type Effect, type Redacted } from "effect";
 import {
   CredentialHost,
   OAuthAuthorizationParams,
@@ -1332,6 +1332,12 @@ export const OAuthGrant = Schema.Union([
     /** The stored client signed in with. The grant keeps its own copy for renewal. */
     oauthClient: Schema.optionalKey(OAuthClientId),
     refreshToken: Schema.optional(Schema.NonEmptyString),
+    /**
+     * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
+     * product that issued the grant sent them; other refreshes ask for none, keeping what was
+     * granted (RFC 6749 §6).
+     */
+    scopes: Schema.optionalKey(Schema.Array(Schema.String)),
     /** Nested grant location frozen at sign-in; renewals read the same member. */
     tokenResponse: Schema.optional(OAuthTokenResponse),
     generation: grantGeneration,
@@ -1371,3 +1377,48 @@ export type OAuthFirstPartyGrant = Extract<
 /** Whether a grant was issued to the operator's client. */
 export const isFirstPartyGrant = (grant: OAuthGrant): grant is OAuthFirstPartyGrant =>
   "firstParty" in grant;
+
+/**
+ * An account whose OAuth grant was issued by another product, as the Executor v1 importer saves
+ * it (`notes/v1-import.md`). Internal to that importer and deleted with it; not part of the HTTP
+ * or Promise API.
+ */
+export interface ImportOAuthGrant {
+  readonly owner: OwnerId;
+  readonly provider: ProviderId;
+  readonly method: string;
+  readonly label: string;
+  /** The callback the client was registered with, for an authorization-code grant. */
+  readonly redirectUri?: string | undefined;
+  /** The client the grant was issued to, with its secret. */
+  readonly client: Redacted.Redacted<OAuthRegistration>;
+  readonly accessToken: Redacted.Redacted<string>;
+  readonly refreshToken?: Redacted.Redacted<string> | undefined;
+  /** Epoch milliseconds when the access token expires. */
+  readonly expiresAt?: number | undefined;
+  /**
+   * How renewals ask for a token, as the product that issued the grant did. It replaces what the
+   * provider's method declares: the token endpoint, the scopes asked for again (none when empty)
+   * and the RFC 8707 resource (none when absent).
+   */
+  readonly renewal: {
+    readonly tokenEndpoint: string;
+    readonly scopes: readonly string[];
+    readonly resource?: string | undefined;
+  };
+}
+/** Host-only access to {@link ImportOAuthGrant}. */
+export const OAuthGrantImport = Symbol("executor.OAuthGrantImport");
+export interface OAuthGrantImport {
+  /**
+   * Save the account, its encrypted grant (ready to use and renew) and its client in one
+   * transaction, as completing a sign-in does. The provider's method must be OAuth with the same
+   * grant. Runs the provider's discovery, but no token request.
+   */
+  readonly importOAuthGrant: (
+    input: ImportOAuthGrant,
+  ) => Effect.Effect<
+    typeof Account.Type,
+    StorageError | CredentialsError | ProviderNotFound | AuthMethodInvalid | OAuthSetupFailed
+  >;
+}

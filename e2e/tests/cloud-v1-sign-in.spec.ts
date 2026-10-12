@@ -4,12 +4,11 @@
  * makes, the managed Cloud's emulated v1 database as v1's read-only login, and the emulated
  * Autumn account, only for accounts that have not already used v2.
  */
-import { randomBytes } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
-import { DateTime, Effect, FileSystem, Layer, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { DateTime, Effect, Layer, Schema } from "effect";
 import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
+import { writeRows } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { Target } from "../support/platform.ts";
@@ -25,40 +24,6 @@ const Refused = Schema.Struct({
 });
 
 const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
-
-/**
- * Apply statements in one transaction to a managed Cloud database: Cloud's own
- * (`sso-database.json`) or the emulated v1 database (`v1-database.json`).
- */
-const writeRows = (
-  database: "sso-database.json" | "v1-database.json",
-  statements: ReadonlyArray<{ readonly sql: string; readonly params?: ReadonlyArray<string> }>,
-) =>
-  Effect.gen(function* () {
-    const target = yield* Target,
-      fs = yield* FileSystem.FileSystem,
-      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const file = `${target.directory}/v1-rows-${randomBytes(6).toString("hex")}.json`;
-    yield* fs.writeFileString(file, JSON.stringify(statements), { mode: 0o600 });
-    const output = yield* processes
-      .string(
-        ChildProcess.make(
-          "node",
-          [
-            "apps/hosted/testing/cloud-rows-fixture.ts",
-            "--configuration",
-            `${target.directory}/${database}`,
-            "--statements",
-            file,
-          ],
-          { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
-        ),
-      )
-      .pipe(Effect.ensuring(fs.remove(file).pipe(Effect.ignore)));
-    return yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(Schema.Array(Schema.Array(Schema.Unknown))),
-    )(output);
-  });
 
 /** Give a v1 organization a row in one of the v1 tables that hold its data. */
 const v1Data = (organizationId: string, table: "connection" | "artifact") =>

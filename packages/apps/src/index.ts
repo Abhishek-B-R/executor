@@ -101,6 +101,7 @@ export {
   router,
   dynamicRouter,
   withApprovals,
+  renameTools,
   type OperationChild,
   type OperationDeclaration,
   type RouterDeclaration,

@@ -4,6 +4,7 @@ import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
 import { PrefetchHost } from "../contracts/profiles.ts";
+import { OAuthGrantImport } from "../contracts/oauth.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -215,6 +216,7 @@ export const createExecutor = (
           blobs: options.blobs,
         }),
       },
+      [OAuthGrantImport]: { importOAuthGrant: oauth.importGrant },
       [StorageHost]: {
         transaction: (effect) =>
           db.transaction(effect).pipe(

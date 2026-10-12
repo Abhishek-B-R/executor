@@ -6511,6 +6511,43 @@ export const scenarios = plan({
       "Cloud sign-in admits members of only empty free v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
+  v1ImportPreview: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import previews a single-member workspace and refuses shared, paid and other members' workspaces",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportRun: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import moves a workspace into a new organization with v1's tool names, accounts, profiles and approvals, records the move on v1's WorkOS organization, links back to v1, and imports another into it in dependency order",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportChecks: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import carries v1's account checks with their identity field, keeps fixed credentials out of app source, skips policies v1 never applied, and names OpenAPI tools v1 stored no operations for as v1 compiled them",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportToolkits: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import turns toolkits into scoped MCP connections with v1's tools, profiles and approvals, and artifacts into undeployed apps that need repair",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportRequests: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public and unnamed-method APIs, and refuses an API whose operations call several hosts",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportOAuthRenewal: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import signs in and renews OAuth accounts with each connection's v1 client, granted scopes and resource, not the integration's method, and refuses a token endpoint v1 no longer trusted",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   localSkills: {
     file: "local-skills.spec.ts",
     title: "local MCP skills follow configured copies and deployment versions",
