@@ -3,7 +3,7 @@
  * and initializes only this Worker, not the API with its routes, auth and executor.
  */
 import * as Cloudflare from "alchemy/Cloudflare";
-import type { WorkerLoader } from "@cloudflare/workers-types";
+import type { DurableObjectNamespace, WorkerLoader } from "@cloudflare/workers-types";
 import { Effect, Layer, Option, Schema } from "effect";
 import { EvaluatedSupervisor } from "@executor-js/app-data/evaluated";
 import { coloOf } from "./infrastructure/colo.ts";
@@ -21,6 +21,8 @@ import {
   IsolateStarted,
   makeAppRunner,
   serveAppRunner,
+  type AppDataHost,
+  type AppRunnerHost,
   type RemoteCapabilities,
 } from "@executor-js/sdk/workerd";
 import { owned, withRemoteSpan } from "@executor-js/telemetry";
@@ -44,6 +46,13 @@ const NativeLoader = Schema.declare(
     value !== null &&
     "get" in value &&
     typeof value.get === "function",
+);
+const NativeSupervisors = Schema.declare(
+  (value): value is Pick<DurableObjectNamespace, "idFromName"> =>
+    typeof value === "object" &&
+    value !== null &&
+    "idFromName" in value &&
+    typeof value.idFromName === "function",
 );
 
 /**
@@ -125,6 +134,57 @@ const currentTrace = Effect.currentSpan.pipe(
   Effect.map(Option.getOrUndefined),
 );
 
+/** What every runner in this Worker reads builds from and loads app code with. */
+const runnerBindings = Effect.gen(function* () {
+  const environment = yield* Cloudflare.WorkerEnvironment;
+  const credentials = yield* appCredentialOutbound;
+  // The runner reads builds itself, by the ID each invocation names, so callers never load,
+  // decode or send app code. The cache keys match the ones a deploy warms.
+  const blobs = yield* cloudBuildReader;
+  const origin = yield* cloudOrigin.pipe(Effect.orDie);
+  /**
+   * A runner for one call. Built for each call, never shared across requests: a fiber woken by
+   * another request's shared Effect continues in that request's I/O context, so concurrent calls
+   * waiting on one shared build would count their Dynamic Workers against the first caller's limit.
+   */
+  return (options: {
+    readonly data: (app: string) => AppDataHost;
+    readonly waitUntil: (task: Promise<unknown>) => void;
+    readonly within?: AppRunnerHost["within"];
+  }) =>
+    Effect.gen(function* () {
+      const read = cachedRuntimeBuilds(
+        origin,
+        {
+          record: (build) =>
+            loadCloudBuildRecord(build).pipe(Effect.provideService(BlobStore, blobs)),
+          framework: (identity) =>
+            loadCloudFramework(identity).pipe(Effect.provideService(BlobStore, blobs)),
+        },
+        // A cache write outlives the read that missed; the call's own work does not wait on it.
+        (write) =>
+          Effect.context<never>().pipe(
+            Effect.flatMap((services) =>
+              Effect.sync(() => options.waitUntil(Effect.runPromiseWith(services)(write))),
+            ),
+          ),
+      );
+      return serveAppRunner(
+        makeAppRunner({
+          loader: yield* Schema.decodeUnknownEffect(NativeLoader)(environment.AppDataLoader).pipe(
+            Effect.orDie,
+          ),
+          outbound: yield* credentials.outbound,
+          credentialKey: credentials.key,
+          data: options.data,
+          waitUntil: options.waitUntil,
+          ...(options.within === undefined ? {} : { within: options.within }),
+        }),
+        read,
+      );
+    });
+});
+
 const AppDataSupervisorLive = AppDataSupervisor.make(
   Effect.gen(function* () {
     // Alchemy provisions the binding. Its current wrapper does not expose getDurableObjectClass.
@@ -132,12 +192,35 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
     const state = yield* Cloudflare.DurableObjectState;
     const environment = yield* Cloudflare.WorkerEnvironment;
     const credentials = yield* appCredentialOutbound;
+    const runnerFor = yield* runnerBindings;
     return Effect.gen(function* () {
       const loader = yield* Schema.decodeUnknownEffect(NativeLoader)(
         environment.AppDataLoader,
       ).pipe(Effect.orDie);
+      // Each supervisor is named by its app's immutable ID. Its own object ID, not a caller, says
+      // which app that is: the ID `getByName` derives from that name. Derived locally, no I/O.
+      const supervisors = yield* Schema.decodeUnknownEffect(NativeSupervisors)(
+        environment.AppDataSupervisor,
+      ).pipe(Effect.orDie);
+      const serves = (app: string) => state.raw.id.equals(supervisors.idFromName(app));
       // Facets send through this Worker's fetch, specialized for their app.
-      const supervisor = yield* makeFacetSupervisor(state.raw, loader, yield* credentials.outbound);
+      const supervisor = yield* makeFacetSupervisor(
+        state.raw,
+        loader,
+        yield* credentials.outbound,
+        serves,
+      );
+      // A database call's runner runs here, beside the facet it calls: the caller reaches this
+      // object directly instead of through a runner isolate that would only forward the call.
+      const local: AppDataHost = {
+        invoke: (input, load, elicit, controls) =>
+          supervisor
+            .invoke(input, load, elicit, controls)
+            .pipe(Effect.withSpan("runtime.app.data.invoke")),
+        cancel: (id) => supervisor.cancel(id),
+        cache: (namespace, command) => supervisor.cache(namespace, command),
+      };
+      const waitUntil = (task: Promise<unknown>) => state.raw.waitUntil(task);
       const colo = () => coloOf((lookup) => state.raw.waitUntil(Effect.runPromise(lookup)));
       // Start this isolate's colo lookup as the instance starts, ahead of its first reply.
       colo();
@@ -168,6 +251,18 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
             ),
           ),
         cancel: (id: string) => supervisor.cancel(id),
+        /**
+         * Run a database call (see `runsInFacet`) with its runner in this object. Only this
+         * object's own app is served: the runner refuses an invocation of any other app, or one
+         * that is not a database call, before it reads a build or loads code. The object's own ID,
+         * not the caller, says which app that is (`serves`).
+         */
+        run: (invocation: string, capabilities: RemoteCapabilities) =>
+          runnerFor({
+            data: () => local,
+            waitUntil,
+            within: { supervisor: { serves } },
+          }).pipe(Effect.flatMap((served) => served.invoke(invocation, capabilities))),
         fetch: Effect.gen(function* () {
           const [response, socket] = yield* Cloudflare.upgrade();
           // upgrade already accepts the socket; send the initial revision without accepting twice.
@@ -207,95 +302,64 @@ export default AppData.make(
   Effect.gen(function* () {
     const credentials = yield* appCredentialOutbound;
     const databases = yield* appDataSupervisors;
-    const environment = yield* Cloudflare.WorkerEnvironment;
-    // The runner reads builds itself, by the ID each invocation names, so callers never load,
-    // decode or send app code. The cache keys match the ones a deploy warms.
-    const blobs = yield* cloudBuildReader;
-    const origin = yield* cloudOrigin.pipe(Effect.orDie);
-    // Built for each call, never shared across requests: a fiber woken by another request's
-    // shared Effect continues in that request's I/O context, so concurrent calls waiting on one
-    // shared build would count their Dynamic Workers against the first caller's limit.
+    const runnerFor = yield* runnerBindings;
     const runner = Effect.gen(function* () {
       const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
-      const read = cachedRuntimeBuilds(
-        origin,
-        {
-          record: (build) =>
-            loadCloudBuildRecord(build).pipe(Effect.provideService(BlobStore, blobs)),
-          framework: (identity) =>
-            loadCloudFramework(identity).pipe(Effect.provideService(BlobStore, blobs)),
-        },
-        // A cache write outlives the read that missed; the call's own work does not wait on it.
-        (write) =>
-          Effect.context<never>().pipe(
-            Effect.flatMap((services) =>
-              Effect.sync(() => waitUntil(Effect.runPromiseWith(services)(write))),
-            ),
-          ),
-      );
-      return serveAppRunner(
-        makeAppRunner({
-          loader: yield* Schema.decodeUnknownEffect(NativeLoader)(environment.AppDataLoader).pipe(
-            Effect.orDie,
-          ),
-          outbound: yield* credentials.outbound,
-          credentialKey: credentials.key,
-          data: (app) => {
-            const target = databases.getByName(app);
-            // Commands this invocation sent its supervisor so far; the first also opens the stub.
-            let commands = 0;
-            // The runner asks for this per invocation. One trace can carry several invocations,
-            // such as an execution's tool calls, and only the one whose wake started the
-            // supervisor paid for that start. Opaque and never reported.
-            const invocation = crypto.randomUUID();
-            const colo = () => coloOf((lookup) => waitUntil(Effect.runPromise(lookup)));
-            // Start this isolate's colo lookup with the invocation, ahead of its first command.
-            colo();
-            return {
-              invoke: (input, load, elicit, controls) =>
-                target
-                  .invoke(input, load, elicit, controls)
-                  .pipe(Effect.provide(RuntimeContext.phantom)),
-              cancel: (id) => target.cancel(id).pipe(Effect.provide(RuntimeContext.phantom)),
-              // No caller waits on it, so it is background work, not the call's Executor time. It
-              // carries the invocation, so this call's commands report the start it made.
-              wake: (reason) =>
-                currentTrace.pipe(
-                  Effect.flatMap((trace) => target.wake(trace, invocation)),
-                  Effect.tap(annotateWake),
-                  Effect.provide(RuntimeContext.phantom),
-                  owned("background", "runtime.cloud.wake", {
-                    attributes: { "executor.wake.reason": reason },
+      return yield* runnerFor({
+        waitUntil,
+        data: (app) => {
+          const target = databases.getByName(app);
+          // Commands this invocation sent its supervisor so far; the first also opens the stub.
+          let commands = 0;
+          // The runner asks for this per invocation. One trace can carry several invocations,
+          // such as an execution's tool calls, and only the one whose wake started the
+          // supervisor paid for that start. Opaque and never reported.
+          const invocation = crypto.randomUUID();
+          const colo = () => coloOf((lookup) => waitUntil(Effect.runPromise(lookup)));
+          // Start this isolate's colo lookup with the invocation, ahead of its first command.
+          colo();
+          return {
+            invoke: (input, load, elicit, controls) =>
+              target
+                .invoke(input, load, elicit, controls)
+                .pipe(Effect.provide(RuntimeContext.phantom)),
+            cancel: (id) => target.cancel(id).pipe(Effect.provide(RuntimeContext.phantom)),
+            // No caller waits on it, so it is background work, not the call's Executor time. It
+            // carries the invocation, so this call's commands report the start it made.
+            wake: (reason) =>
+              currentTrace.pipe(
+                Effect.flatMap((trace) => target.wake(trace, invocation)),
+                Effect.tap(annotateWake),
+                Effect.provide(RuntimeContext.phantom),
+                owned("background", "runtime.cloud.wake", {
+                  attributes: { "executor.wake.reason": reason },
+                }),
+              ),
+            cache: (namespace, command) =>
+              Schema.decodeUnknownEffect(CacheCommand)(command).pipe(
+                Effect.tap((parsed) =>
+                  Effect.annotateCurrentSpan({
+                    "cache.operation": parsed.operation,
+                    "cache.command.index": ++commands,
+                    ...(parsed.operation === "acquire" && parsed.reads !== undefined
+                      ? { "cache.reads": parsed.reads.length }
+                      : {}),
                   }),
                 ),
-              cache: (namespace, command) =>
-                Schema.decodeUnknownEffect(CacheCommand)(command).pipe(
-                  Effect.tap((parsed) =>
-                    Effect.annotateCurrentSpan({
-                      "cache.operation": parsed.operation,
-                      "cache.command.index": ++commands,
-                      ...(parsed.operation === "acquire" && parsed.reads !== undefined
-                        ? { "cache.reads": parsed.reads.length }
-                        : {}),
-                    }),
+                Effect.flatMap((parsed) =>
+                  currentTrace.pipe(
+                    Effect.flatMap((trace) => target.cache(namespace, parsed, trace, invocation)),
                   ),
-                  Effect.flatMap((parsed) =>
-                    currentTrace.pipe(
-                      Effect.flatMap((trace) => target.cache(namespace, parsed, trace, invocation)),
-                    ),
-                  ),
-                  Effect.tap(annotateCacheSupervisor),
-                  // Read after the reply, so a fresh isolate's lookup had the round trip to answer.
-                  Effect.tap(() => Effect.annotateCurrentSpan("cache.caller.colo", colo())),
-                  Effect.provide(RuntimeContext.phantom),
-                  Effect.withSpan("runtime.cloud.cache"),
                 ),
-            };
-          },
-          waitUntil,
-        }),
-        read,
-      );
+                Effect.tap(annotateCacheSupervisor),
+                // Read after the reply, so a fresh isolate's lookup had the round trip to answer.
+                Effect.tap(() => Effect.annotateCurrentSpan("cache.caller.colo", colo())),
+                Effect.provide(RuntimeContext.phantom),
+                Effect.withSpan("runtime.cloud.cache"),
+              ),
+          };
+        },
+      });
     });
     return {
       // Only app isolates' outbound requests reach this Worker's fetch; nothing routes to it.

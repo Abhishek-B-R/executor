@@ -34,6 +34,8 @@ const staleClockToleranceMs = 10;
  * supervisor's wait. A facet's synchronous SQL and code never move its clock, so that gap also
  * holds the app's code on the call that started it. The app Worker's own start is already the
  * runner's (`runtime.app.rpc.start`), outside its wait. A warm hop's gap is transit and stays out.
+ * A runner inside the supervisor (Cloud database calls) is reached in the supervisor's object, so
+ * the caller's hop holds the supervisor's start and the runner's hop to the supervisor is local.
  */
 export const runtimeCallParts = (
   callerWaitMs: number,
@@ -71,8 +73,12 @@ export const runtimeCallParts = (
   const known =
     runner.started !== undefined && (supervisor === undefined || supervisor.started !== undefined);
   const started = known ? StartedPart.literals.filter((part) => reported.has(part)) : undefined;
+  // A runner inside the supervisor has no start of its own: the caller's hop to it holds the
+  // supervisor's.
+  const runnerHopStarted =
+    runner.host === "supervisor" ? reported.has("supervisor") : reported.has("runner");
   const startMs =
-    (reported.has("runner") ? gaps.runner : 0) +
+    (runnerHopStarted ? gaps.runner : 0) +
     (reported.has("supervisor") ? (gaps.supervisor ?? 0) : 0) +
     (reported.has("facet") ? gaps.app : 0);
   const leaseMs = app.leaseMs ?? 0;

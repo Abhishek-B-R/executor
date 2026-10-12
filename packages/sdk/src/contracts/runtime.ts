@@ -68,6 +68,11 @@ export const IsolateTiming = Schema.Struct({
   waitMs: Schema.Finite,
   /** What started for this call, as this isolate saw it; see `StartedPart`. */
   started: Schema.optionalKey(Schema.Array(StartedPart)),
+  /**
+   * `supervisor`: the runner ran inside the app's data supervisor, so the caller's hop to it, not
+   * the runner's to the supervisor, holds the supervisor's start.
+   */
+  host: Schema.optionalKey(Schema.Literal("supervisor")),
 });
 export type IsolateTiming = typeof IsolateTiming.Type;
 

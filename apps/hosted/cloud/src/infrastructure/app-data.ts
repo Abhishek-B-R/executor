@@ -2,6 +2,7 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Effect } from "effect";
 import type { makeFacetSupervisor } from "@executor-js/app-data/cloudflare";
+import type { RemoteCapabilities } from "@executor-js/sdk/workerd";
 import { AppData } from "./app-data-worker.ts";
 
 type FacetSupervisor = Effect.Success<ReturnType<typeof makeFacetSupervisor>>;
@@ -17,6 +18,11 @@ type Supervisor = Pick<FacetSupervisor, "invoke" | "cancel" | "evaluated" | "wak
     trace?: string,
     invocation?: string,
   ) => Effect.Effect<unknown, Effect.Error<ReturnType<FacetSupervisor["observedCache"]>>>;
+  /**
+   * Run a call that uses the app's database (see `runsInFacet`) with its runner inside this
+   * supervisor, as the AppData Worker's runner `invoke` runs any call.
+   */
+  readonly run: (invocation: string, capabilities: RemoteCapabilities) => Effect.Effect<string>;
 };
 /**
  * One supervisor name is one immutable configured-app ID, across deployments. The namespace, with

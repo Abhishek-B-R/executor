@@ -111,6 +111,14 @@ export interface AppRunnerHost {
    * against the residency's limit. True once it is unloaded. Supplied with a residency.
    */
   readonly unloadFacet?: (app: string, identity: string) => Effect.Effect<boolean, unknown>;
+  /**
+   * Set when this runner runs inside an app's data supervisor, which Cloud calls directly for a call
+   * that uses the app's database (see `runsInFacet`). `serves` says whether that supervisor is the
+   * one named for an app, from its own object ID. Such a runner serves only that app's database
+   * calls and refuses anything else before it reads a build, seals an account or loads code. It has
+   * no isolate of its own to start, and its caller's hop to it carries the supervisor's start.
+   */
+  readonly within?: { readonly supervisor: { readonly serves: (app: string) => boolean } };
 }
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
@@ -363,13 +371,14 @@ export const appWorker = (
   facetIdentity(invocation.build, invocation.accounts).pipe(
     Effect.map((identity) => ({
       identity,
-      mode:
-        invocation.database && dataOperations.has(invocation.command.operation)
-          ? ("facet" as const)
-          : ("worker" as const),
+      mode: runsInFacet(invocation) ? ("facet" as const) : ("worker" as const),
       name: `${invocation.app}:${identity}`,
     })),
   );
+
+/** Whether a call runs in the app's data facet, under its data supervisor, rather than its Worker. */
+export const runsInFacet = (invocation: Pick<AppInvocation, "database" | "command">) =>
+  invocation.database && dataOperations.has(invocation.command.operation);
 
 /**
  * The accounts a bundle of this protocol reads. A bundle that reads sealed handles gets the
@@ -452,7 +461,7 @@ export const RunnerIngress = Context.Reference<
  * across isolates. It also tells what started for this call: the runner's isolate, and what the
  * runner reached (see `IsolateStarted`).
  */
-const runnerTiming = () => {
+const runnerTiming = (within: AppRunnerHost["within"]) => {
   let waitMs = 0;
   const startedParts = new Set<StartedPart>();
   let startsKnown = true;
@@ -472,7 +481,9 @@ const runnerTiming = () => {
   const report = <E, R>(invoke: Effect.Effect<unknown, E, R>) =>
     Effect.gen(function* () {
       const ingress = (yield* RunnerIngress) ?? (yield* runnerIngress);
-      if (ingress.first) startedParts.add("runner");
+      // Inside the supervisor, the start before this clock began is the supervisor's, which it
+      // reports itself.
+      if (ingress.first && within === undefined) startedParts.add("runner");
       const started = ingress.receivedAt;
       const result = yield* invoke.pipe(
         Effect.provideService(IsolateStarted, (part) => {
@@ -486,7 +497,12 @@ const runnerTiming = () => {
             ...result,
             // `started` is sent whenever it is known, so a warm call is told apart from a runner
             // that predates it or a part that did not say.
-            runner: { elapsedMs, waitMs, ...(startsKnown ? { started: [...startedParts] } : {}) },
+            runner: {
+              elapsedMs,
+              waitMs,
+              ...(startsKnown ? { started: [...startedParts] } : {}),
+              ...(within === undefined ? {} : { host: "supervisor" as const }),
+            },
           }
         : result;
     });
@@ -754,8 +770,16 @@ export const makeAppRunner = (host: AppRunnerHost) => {
      * selection, so renewed credentials, other runs and other calls of the same selection reuse it.
      */
     invoke: (invocation: AppInvocation, capabilities: AppCapabilities) => {
-      const timing = runnerTiming();
+      const timing = runnerTiming(host.within);
       return Effect.gen(function* () {
+        // A supervisor's runner serves only its own app's database calls: it never loads an app
+        // Worker into the supervisor's isolate, and never pairs one app's code or accounts with
+        // another app's storage, whatever a caller of the supervisor sends.
+        if (
+          host.within !== undefined &&
+          (!host.within.supervisor.serves(invocation.app) || !runsInFacet(invocation))
+        )
+          return yield* failed("internal");
         const { identity, mode, name } = yield* appWorker(invocation).pipe(
           Effect.catch(() => failed("internal")),
         );

@@ -271,10 +271,18 @@ const accounted = (trace: { readonly spans: readonly Span[]; readonly tool: Span
     /^(runner)?,?(app)?,?(supervisor)?,?(supervisor-isolate)?,?(facet)?,?(facet-worker)?$/,
   );
   // Start-up is exactly the gap of each hop whose child started inside its parent's wait: the
-  // runner's isolate, the supervisor's object, and the facet. Every other gap is unclocked.
+  // runner's isolate, the supervisor's object, and the facet. Every other gap is unclocked. A
+  // runner inside the supervisor (Cloud database calls) is reached in the supervisor's object, so
+  // the caller's hop to it holds the supervisor's start.
   const parts = new Set(started.split(","));
+  const runnerHost = runtime.tags["executor.runner.host"];
+  expect(runnerHost === undefined || runnerHost === "supervisor").toBe(true);
+  const runnerHopStarted =
+    runnerHost === "supervisor" ? parts.has("supervisor") : parts.has("runner");
+  // Only the supervisor's runner can report no runner start on a call whose supervisor started.
+  if (runnerHost === "supervisor") expect(parts.has("runner")).toBe(false);
   expect(own.start).toBeCloseTo(
-    (parts.has("runner") ? gaps[0]! : 0) +
+    (runnerHopStarted ? gaps[0]! : 0) +
       (parts.has("supervisor") ? gaps[1]! : 0) +
       (parts.has("facet") ? gaps[2]! : 0),
     3,
@@ -1148,6 +1156,12 @@ export default defineApp({ accounts: {} }, { tools: router({
         ).toBeGreaterThanOrEqual(milliseconds(timing.runtime.tags, "executor.app.gap_ms"));
         // Cloud's supervisor joins the trace with its own span for the call.
         if (below(trace.spans, timing.tool, "runtime.cloud.call").length > 0) {
+          // Cloud sends a database call to the app's supervisor, which runs its runner itself.
+          expect(timing.runtime.tags["executor.runner.host"]).toBe("supervisor");
+          // Only an AppData version older than `run` sends the call to the shared runner instead.
+          expect(
+            trace.spans.filter(({ tags }) => tags["executor.runner.fallback"] !== undefined),
+          ).toEqual([]);
           const supervisor = yield* traced(app, "database-supervisor-trace.json").pipe(
             Effect.flatMap(({ spans }) => {
               const span = spans.find(

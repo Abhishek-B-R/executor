@@ -68,7 +68,7 @@ export const cloudExecutor = Effect.fn(function* (
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
   const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
   const firstPartyClients = yield* firstPartyOAuthClients.pipe(Effect.orDie);
-  const makeRuntime = yield* cloudRuntime(origin);
+  const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
   // App storage, hosted permission checks and Better Auth share the event's client.

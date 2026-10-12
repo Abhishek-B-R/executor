@@ -26,7 +26,10 @@ export const FacetBundle = WorkerBundle;
 /** The outer host has already authorized this exact app invocation. No credentials are persisted here. */
 export const FacetInvocation = Schema.Struct({
   id: Schema.NonEmptyString,
-  /** The app, which binds the facet's outbound network to it. */
+  /**
+   * The app, which binds the facet's outbound network to it. A supervisor serves only the app it is
+   * named for, so it refuses an invocation of any other.
+   */
   app: Schema.NonEmptyString,
   identity: Schema.NonEmptyString,
   body: Schema.String,
@@ -204,6 +207,12 @@ export const makeFacetSupervisor = (
    * and applies the host's routing rules.
    */
   globalOutbound: (app: string) => Fetcher,
+  /**
+   * Whether this object is the supervisor named for `app`, from its own ID (for example
+   * `state.id.equals(namespace.idFromName(app))`). Its storage is that app's, so it refuses an
+   * invocation of any other app.
+   */
+  serves: (app: string) => boolean,
   /**
    * Unload the Worker of a facet replaced for another account selection. A workerd host whose
    * process never unloads named Workers itself sets this; Cloudflare unloads them.
@@ -683,6 +692,10 @@ export const makeFacetSupervisor = (
                 const invocation = yield* Schema.decodeUnknownEffect(
                   Schema.toType(FacetInvocation),
                 )(input).pipe(Effect.mapError(failed));
+                // Each supervisor is named by its app's immutable ID (`getByName`). Its storage is
+                // that app's, so it never runs another app's code or outbound against it, whoever
+                // sent the invocation.
+                if (!serves(invocation.app)) return yield* failed();
                 const handle = {
                   cancel: yield* Deferred.make<void>(),
                   done: yield* Deferred.make<void>(),

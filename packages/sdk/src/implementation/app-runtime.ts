@@ -233,6 +233,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
               "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
               "executor.runner.wait_ms": runner.waitMs,
               "executor.runner.gap_ms": parts.gaps.runner,
+              // The runner ran inside the app's data supervisor, which the caller reached directly.
+              ...(runner.host === undefined ? {} : { "executor.runner.host": runner.host }),
               ...(supervisor === undefined
                 ? {}
                 : {

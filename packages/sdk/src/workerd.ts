@@ -16,6 +16,7 @@ export { workerdHostHandler } from "./implementation/workerd-client.ts";
 export {
   IsolateStarted,
   makeAppRunner,
+  runsInFacet,
   type AppRunner,
   type AppRunnerHost,
   type AppDataHost,

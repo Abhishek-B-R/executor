@@ -2,6 +2,7 @@
 import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 import type {
+  DurableObjectId,
   DurableObjectState,
   ExecutionContext,
   WorkerLoader,
@@ -125,7 +126,10 @@ interface Environment {
   readonly APP_WORKERS?: number | null;
   /** Seconds an idle app Worker stays loaded, zero for no idle unloading, or null for the default. */
   readonly APP_WORKER_IDLE_SECONDS?: number | null;
-  readonly DATA: { getByName(name: string): DataEntrypoint };
+  readonly DATA: {
+    getByName(name: string): DataEntrypoint;
+    idFromName(name: string): DurableObjectId;
+  };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
 }
@@ -365,7 +369,13 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
     this.#supervisor = Effect.runPromise(
-      makeFacetSupervisor(ctx, env.LOADER, appOutbound(ctx), true),
+      makeFacetSupervisor(
+        ctx,
+        env.LOADER,
+        appOutbound(ctx),
+        (app) => ctx.id.equals(env.DATA.idFromName(app)),
+        true,
+      ),
     );
   }
   async invoke(
