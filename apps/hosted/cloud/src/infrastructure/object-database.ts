@@ -21,8 +21,8 @@ import type { SqlClient } from "effect/sql";
 import {
   ConnectionReservations,
   type OpenedConnections,
-  cloudDatabaseConnection,
   cloudDatabasePool,
+  cloudDirectDatabaseConnection,
 } from "./database.ts";
 
 /**
@@ -111,7 +111,7 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * has no teardown hook for evicted objects; eviction drops their sockets.
  */
 export const cloudObjectDatabase = Effect.gen(function* () {
-  const connection = yield* cloudDatabaseConnection;
+  const connection = yield* cloudDirectDatabaseConnection;
   return Effect.fn(function* (owner: string) {
     // Owned by the object for its whole life; only windows are ever closed.
     const root = Scope.makeUnsafe();

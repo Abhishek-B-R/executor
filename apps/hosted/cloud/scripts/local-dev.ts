@@ -161,7 +161,7 @@ const main = Effect.scoped(
       CI: "true",
       ALCHEMY_HOME: localDevelopmentFiles.alchemyHome,
       NODE_ENV: "development",
-      // Local Worker and R2 need an account-shaped ID, never a real account.
+      // Local Worker, R2 and Hyperdrive need an account-shaped ID, never a real account.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: secrets.betterAuthSecret,

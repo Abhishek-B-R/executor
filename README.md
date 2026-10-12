@@ -79,8 +79,8 @@ in these files, never resolved credentials. Vault and item references also stay
 out of tracked scripts. Edit values in 1Password, then restart the affected
 process. Keep encryption/signing keys stable.
 
-Cloud uses Alchemy's PlanetScale database and role resources; Workers connect
-through PlanetScale's PgBouncer.
+Cloud uses Alchemy's PlanetScale database and role resources. Worker events reach
+PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer directly.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
 and frontend through Alchemy with service emulators and no credentials.
 `bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
