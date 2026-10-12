@@ -111,6 +111,20 @@ export const AppView = Schema.Literals([
   "settings",
 ]);
 export type AppView = typeof AppView.Type;
+/** Assistants with a setup guide, as setup URLs name them. */
+export const AssistantId = Schema.Literals([
+  "claude",
+  "chatgpt",
+  "cursor",
+  "claude-code",
+  "codex",
+  "devin",
+  "grok-bot",
+  "grok",
+  "muse",
+  "other",
+]);
+export type AssistantId = typeof AssistantId.Type;
 /** Host routing remains typed by that host's TanStack tree. */
 export interface AppLinkProps {
   readonly app: AppId;

@@ -428,6 +428,91 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         yield* browser.use("Open Connections", (page) =>
           page.goto(`/org/${actors.organization.slug}/connect`),
         );
+        yield* browser.use("Show assistant-specific instructions", (page) =>
+          page.getByRole("heading", { name: "Connect an assistant", exact: true }).waitFor(),
+        );
+        yield* browser.use("Choose Codex", (page) =>
+          page.getByRole("button", { name: "Codex", exact: true }).click(),
+        );
+        yield* browser.use("Allow clipboard access", (page) =>
+          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
+        );
+        yield* browser.use("Copy the Codex sign-in command", (page) =>
+          page.getByRole("button", { name: "Copy sign-in command", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the copied sign-in command", (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          ),
+        ).toBe("codex mcp login executor");
+        yield* browser.use("Copy the Codex command", (page) =>
+          page.getByRole("button", { name: "Copy assistant setup", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the copied command", (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          ),
+        ).toBe(`codex mcp add executor --url '${targetHosts(target).mcp}/mcp'`);
+        yield* browser.use("Switch to Claude", (page) =>
+          page.getByRole("button", { name: "Claude", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Claude offers its connector settings", (page) =>
+            page
+              .getByRole("link", { name: "Open Claude connectors", exact: true })
+              .getAttribute("href"),
+          ),
+        ).toBe("https://claude.ai/customize/connectors");
+        yield* browser.use("The captured screenshot loads beside the steps", (page) =>
+          page.waitForFunction(() => {
+            const image = document.querySelector(
+              `img[alt="Claude's Add custom connector dialog with Executor entered"]`,
+            );
+            return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+          }),
+        );
+        yield* browser.checkpoint("Claude setup with live screenshot");
+        yield* browser.use("Enlarge the Claude screenshot", (page) =>
+          page
+            .getByRole("button", {
+              name: "Enlarge screenshot: Claude’s Add custom connector dialog",
+              exact: true,
+            })
+            .click(),
+        );
+        yield* browser.use("The full-size screenshot opens", (page) =>
+          page
+            .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
+            .getByRole("img")
+            .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Close the full-size screenshot", (page) =>
+          page.keyboard.press("Escape"),
+        );
+        yield* browser.use("Choose Cursor plugin setup", (page) =>
+          page.getByRole("button", { name: "Cursor", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Cursor links to our published plugin", (page) =>
+            page
+              .getByRole("link", { name: "Install Executor for Cursor", exact: true })
+              .getAttribute("href"),
+          ),
+        ).toBe("https://cursor.com/marketplace/usefulsoftwareco");
+        yield* browser.use("Choose Grok Bot plugin setup", (page) =>
+          page.getByRole("button", { name: "Grok Bot", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Grok Bot uses the same plugin", (page) =>
+            page
+              .getByRole("link", { name: "Install Executor for Grok Bot", exact: true })
+              .getAttribute("href"),
+          ),
+        ).toBe("https://cursor.com/marketplace/usefulsoftwareco");
+        yield* browser.use("Grok Bot installs the plugin by command", (page) =>
+          page.getByText("/add-plugin executor", { exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Assistant setup with sign-in instructions");
         yield* browser.use("Choose personal access token setup", (page) =>
           page.getByRole("tab", { name: "Personal access token", exact: true }).click(),
         );
@@ -479,6 +564,19 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
             .getByText(`${targetHosts(target).mcp}/mcp?connection=${saved?.id}`)
             .first()
             .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Choose Codex for the scoped connection", (page) =>
+          page.getByRole("button", { name: "Codex", exact: true }).click(),
+        );
+        yield* browser.use("Copy the scoped setup command", (page) =>
+          page.getByRole("button", { name: "Copy assistant setup", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Read the scoped setup command", (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          ),
+        ).toBe(
+          `codex mcp add executor --url '${targetHosts(target).mcp}/mcp?connection=${saved?.id}'`,
         );
         yield* browser.checkpoint("Saved connection with its MCP URL");
         yield* browser.use("Revoke the connection", (page) =>
