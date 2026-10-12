@@ -206,7 +206,13 @@ export const makeMcp = (options: McpOptions) =>
                     call: (input) =>
                       caller.pipe(
                         Effect.flatMap(({ id }) =>
-                          executeNative(executions, id, options.backend, callTools(input)),
+                          executeNative(
+                            executions,
+                            id,
+                            options.backend,
+                            callTools(input),
+                            "client",
+                          ),
                         ),
                         observeExecution("mcp.call"),
                       ),

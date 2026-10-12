@@ -764,6 +764,16 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpNativeCallApproval: {
+    fixtures: "actors",
+    file: "mcp-direct-calls.spec.ts",
+    title: "Native MCP call leaves approval to the client's confirmation of the call",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared MCP path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpCatalogRefresh: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",

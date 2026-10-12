@@ -63,7 +63,9 @@ and tool input share one pending-interaction manager and resume operation. Adapt
 `ToolInvocationOptions` on both `callTool` and `resumeInvocation`; these capabilities
 belong to the live invocation. Each invocation owns a scope that can outlive
 the HTTP response returning its prompt. Native delivery sends the prompt and
-answers through the same manager as the model-mode `resume` tool. See [tool input](../../notes/tool-elicitation.md).
+answers through the same manager as the model-mode `resume` tool. Native `call` is
+the exception for policy approvals: the client confirms the destructive tool call
+itself, so its run accepts approvals at once (`ApprovalMode` `client`). See [tool input](../../notes/tool-elicitation.md).
 
 HTTP/SSE and stdio MCP helpers forward upstream forms through that same tool-input
 capability. Delivery mode does not change the upstream call, and policy consent

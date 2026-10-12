@@ -95,6 +95,11 @@ const interactionTool = (call: {
  * only the prompt, as the client's own elicitation request.
  */
 export type PendingTransport = "result" | "prompt";
+/**
+ * Who answers a policy approval: the user through a pending interaction (`ask`), or the MCP client,
+ * which already confirmed the destructive tool call that started the run (`client`).
+ */
+export type ApprovalMode = "ask" | "client";
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 /** UTF-8 bytes of the JSON a transport sends for this interaction. */
 const sentBytes = (transport: PendingTransport, request: PendingInteraction) =>
@@ -130,6 +135,7 @@ type Event =
 type Run = {
   readonly id: string;
   readonly transport: PendingTransport;
+  readonly approval: ApprovalMode;
   readonly scheduling: ReturnType<typeof programScheduler>;
   readonly caller: string;
   readonly scope: Scope.Closeable;
@@ -383,6 +389,56 @@ export const makeExecutions = (
      * otherwise. A request over the budget is never offered: the saved call is cancelled, so it can
      * never run, and the call fails with the request's size.
      */
+    /**
+     * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
+     * approved call runs as a resumed one does, so its failures reach the caller the same way.
+     */
+    const approveNow = (
+      run: Run,
+      backend: McpBackend<Error>,
+      operation: Operation,
+      request: typeof ToolPending.Type,
+    ): Effect.Effect<ToolCallResult, Error> =>
+      backend
+        .resumeInvocation(
+          request,
+          { action: "accept" },
+          {
+            elicitation: elicitation(
+              run,
+              operation,
+              interactionTool({
+                app: request.invocation.app,
+                tool: request.invocation.tool,
+                profile: request.invocation.profile,
+                expectedProfileRevision: request.invocation.profileRevision,
+              }),
+            ),
+          },
+        )
+        .pipe(
+          Effect.flatMap((result) =>
+            Match.value(result).pipe(
+              Match.when({ status: "completed" }, (result) => Effect.succeed(result)),
+              Match.when({ status: "denied" }, () => Effect.fail(new ApprovalDenied())),
+              Match.when({ status: "cancelled" }, () => Effect.fail(new ApprovalCancelled())),
+              Match.when(
+                { status: "failed", reason: "execution-failed", context: "unconfirmed" },
+                () => Effect.fail(new ApprovalUnavailable({ reason: "context-unconfirmed" })),
+              ),
+              Match.when({ status: "failed", reason: "execution-failed" }, ({ error }) =>
+                Effect.fail(error),
+              ),
+              Match.when({ status: "failed" }, ({ reason }) =>
+                Effect.fail(new ApprovalUnavailable({ reason })),
+              ),
+              Match.when({ status: "already-consumed" }, () =>
+                Effect.fail(new ApprovalUnavailable({ reason: "answered" })),
+              ),
+              Match.exhaustive,
+            ),
+          ),
+        );
     const offer = (
       run: Run,
       backend: McpBackend<Error>,
@@ -484,10 +540,12 @@ export const makeExecutions = (
                         "executor.tool.name": input.tool,
                       },
                     }),
-                    Effect.flatMap((result): Effect.Effect<ToolCallResult, ApprovalTooLarge> =>
+                    Effect.flatMap((result): Effect.Effect<ToolCallResult, Error> =>
                       result.status === "completed"
                         ? Effect.succeed(result)
-                        : offer(run, backend, result),
+                        : run.approval === "client"
+                          ? approveNow(run, backend, operation, result)
+                          : offer(run, backend, result),
                     ),
                   ),
               (result, response) => {
@@ -678,6 +736,7 @@ export const makeExecutions = (
         backend: McpBackend<Error>,
         work: Program,
         transport: PendingTransport,
+        approval: ApprovalMode = "ask",
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
           const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;
@@ -688,6 +747,7 @@ export const makeExecutions = (
           const run: Run = {
             id: crypto.randomUUID(),
             transport,
+            approval,
             caller,
             scheduling: programScheduler(scheduler),
             scope: yield* Scope.make(),

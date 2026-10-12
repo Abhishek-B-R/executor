@@ -44,50 +44,63 @@ const Pending = Schema.Struct({
   requestId: Schema.String,
 });
 
+/** A personal access token and the app above, deployed for one scenario. */
+const fixture = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}`;
+  const key = yield* body(
+    Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+    yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+      name: "Direct calls",
+    }),
+  );
+  yield* Effect.addFinalizer(() =>
+    api
+      .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+      .pipe(Effect.orDie),
+  );
+  const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+    name: `Direct calls ${randomUUID().slice(0, 8)}`,
+    files: [{ path: "index.ts", content: source }, appsManifest],
+  });
+  expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+  const app = yield* body(App, deployed);
+  yield* Effect.addFinalizer(() =>
+    api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+  );
+  return { key, app, organization: actors.organization.id };
+});
+
+/** Call one MCP tool and keep its structured result as evidence. */
+const callTool = (
+  client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>,
+  label: string,
+  name: string,
+  args: Record<string, unknown>,
+) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence;
+    const result = yield* client.use(label, (client, signal) =>
+      client.callTool({ name, arguments: args }, undefined, { signal }),
+    );
+    yield* evidence.json(
+      `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
+      result.structuredContent,
+    );
+    return result.structuredContent;
+  });
+
 layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
   it.effect(scenarios.mcpDirectCalls.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          mcp = yield* McpClient,
-          evidence = yield* Evidence;
-        const prefix = `/api/organizations/${actors.organization.id}`;
-        const key = yield* body(
-          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
-          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
-            name: "Direct calls",
-          }),
-        );
-        yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
-            .pipe(Effect.orDie),
-        );
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-          name: `Direct calls ${randomUUID().slice(0, 8)}`,
-          files: [{ path: "index.ts", content: source }, appsManifest],
-        });
-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const app = yield* body(App, deployed);
-        yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-        );
-        const client = yield* mcp.connect(key.key, "direct-calls", {
-          organization: actors.organization.id,
-        });
+        const mcp = yield* McpClient;
+        const { key, app, organization } = yield* fixture;
+        const client = yield* mcp.connect(key.key, "direct-calls", { organization });
         const tool = (label: string, name: string, args: Record<string, unknown>) =>
-          Effect.gen(function* () {
-            const result = yield* client.use(label, (client, signal) =>
-              client.callTool({ name, arguments: args }, undefined, { signal }),
-            );
-            yield* evidence.json(
-              `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
-              result.structuredContent,
-            );
-            return result.structuredContent;
-          });
+          callTool(client, label, name, args);
 
         const listed = yield* client.use("List the MCP tools", (client) => client.listTools());
         expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
@@ -167,6 +180,51 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           value: { path: review, ok: true, value: { reviewed: "ship it" } },
           toolCalls: [{ name: review, outcome: "success" }],
         });
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.mcpNativeCallApproval.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const mcp = yield* McpClient;
+        const { key, app, organization } = yield* fixture;
+        const client = yield* mcp.connect(key.key, "native-direct-calls", {
+          organization,
+          mode: "native",
+        });
+        const review = `tools[${JSON.stringify(app.slug)}].review`;
+
+        // The client confirms each call itself: call is marked destructive and open-world.
+        const listed = yield* client.use("List the MCP tools", (client) => client.listTools());
+        expect(listed.tools.find((tool) => tool.name === "call")?.annotations).toMatchObject({
+          readOnlyHint: false,
+          destructiveHint: true,
+          openWorldHint: true,
+        });
+
+        // That confirmation answers the app's approval policy, so call asks nothing more.
+        const called = yield* Schema.decodeUnknownEffect(Completed)(
+          yield* callTool(client, "Call a tool that needs approval", "call", {
+            calls: { path: review, input: { note: "native" } },
+          }),
+        );
+        expect(called.execution).toMatchObject({
+          ok: true,
+          value: { path: review, ok: true, value: { reviewed: "native" } },
+          toolCalls: [{ name: review, outcome: "success" }],
+        });
+        expect(yield* client.elicitationCount).toBe(0);
+
+        // A program has no per-call confirmation, so execute still asks through the client.
+        const executed = yield* Schema.decodeUnknownEffect(Completed)(
+          yield* callTool(client, "Execute a tool that needs approval", "execute", {
+            code: `return await ${review}({ note: "program" })`,
+          }),
+        );
+        expect(executed.execution).toMatchObject({ ok: true, value: { reviewed: "program" } });
+        expect(yield* client.elicitationCount).toBe(1);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

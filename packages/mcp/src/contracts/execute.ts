@@ -529,11 +529,19 @@ export const CallTool = McpTool.make("call", {
   success: McpExecutionResult,
   failure: ExecutionRejected,
 }).annotate(McpTool.Meta, ExecutionResultMeta);
-/** Native-mode calls obtain decisions through server-initiated MCP requests. */
+/**
+ * Native-mode calls. The tool is marked destructive and open-world, so the MCP client confirms each
+ * call before it runs; that confirmation answers the apps' approval policies, which are not asked
+ * again. Tool input still opens the client's own prompt.
+ */
 export const NativeCallTool = McpTool.make("call", {
-  description: `${callDescription} Approvals and tool input open the MCP client's own prompt, and the call continues.`,
+  description: `${callDescription} Your MCP client confirms each call before it runs, so approvals do not ask again. Tool input opens the client's own prompt, and the call continues.`,
   dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
   parameters: CallInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpTool.Readonly, false)
+  .annotate(McpTool.Destructive, true)
+  .annotate(McpTool.OpenWorld, true);
