@@ -281,8 +281,11 @@ type Place = {
 type Target = Place & {
   /** The target's routers by router path. The root router has path "". */
   readonly routers: ReadonlyMap<string, ToolRouter>;
-  /** Where its tools are called: the deployment they were listed from and the profile. */
-  readonly deployment: DeploymentId | undefined;
+  /**
+   * The profile its tools are called with. Calls name no deployment: the host runs each on the
+   * app's active deployment when the call starts, so a deploy earlier in the same program, or
+   * since the app was loaded, is the one called.
+   */
   readonly selection: Effect.Success<ReturnType<typeof listTools>>["selection"];
 };
 /** One callable tool of a loaded target. */
@@ -939,7 +942,6 @@ function catalog(
             backend
               .callTool({
                 app: entry.target.id,
-                deployment: entry.target.deployment,
                 ...entry.target.selection,
                 tool: entry.tool.name,
                 kind: entry.tool.readOnly === true ? "query" : "mutation",
@@ -1119,7 +1121,6 @@ function catalog(
           const described: Target = {
             ...placeOf(app, target),
             routers: new Map(catalog.routers.map((router) => [router.path, router])),
-            deployment: catalog.deployment,
             selection: catalog.selection,
           };
           for (const tool of catalog.tools)

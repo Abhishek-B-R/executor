@@ -1,4 +1,4 @@
-/** A deploy reaches a profile's MCP tools without a profile change, and execute says when it can't. */
+/** A deploy reaches a profile's MCP tools without a profile change, in the same execute and the next. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -14,10 +14,11 @@ import { McpClient } from "../support/mcp-client.ts";
 
 const source = (
   tools: string,
+  health = "healthy",
 ) => `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Redeploy fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const ping=query({description:"Ping the service",input:object({})},async()=>"pong");
-const diagnose=query({description:"Diagnose the service",input:object({})},async()=>"healthy");
+const diagnose=query({description:"Diagnose the service",input:object({})},async()=>${JSON.stringify(health)});
 export default defineApp({accounts:{service}}, async () => ({ tools: router({ ${tools} }) }));`;
 const accountFree = `import {defineApp,query,object,router} from "apps";
 export default defineApp({accounts:{}}, async () => ({ tools: router({ ping: query({input:object({})},async()=>"pong") }) }));`;
@@ -171,19 +172,42 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
           reconciledDeployment: live.activeDeployment,
         });
 
-        // Deploying and calling in one execute: the program loaded the app before the deploy, so
-        // the call names that deployment and the next execute instead of a removed tool.
         const { profile: management } = yield* managementApp(actors.owner);
         const executor = `const executor = tools.executor.profiles[${JSON.stringify(management.id)}];`;
         const organization = { organization: actors.organization.id };
-        const files = JSON.stringify([
-          { path: "index.ts", content: source("ping, diagnose, status: ping") },
-          appsManifest,
+        const deployFrom = (content: string) =>
+          `await executor.appManagement.deploy({ path: ${JSON.stringify({ ...organization, app: app.id })}, body: { files: ${JSON.stringify([{ path: "index.ts", content }, appsManifest])} } })`;
+
+        // Deploying and calling an existing tool in one execute: the program loaded the app
+        // before the deploy, and the call still runs on the deployment the program just made.
+        const changed = yield* execute(
+          "Deploy and call a changed tool in one execute",
+          `${executor}
+const deployed = ${deployFrom(source("ping, diagnose", "recovered"))};
+return { deployment: deployed.app.activeDeployment, health: await ${tools}.diagnose({}) };`,
+        );
+        expect(changed.execution.error, JSON.stringify(changed)).toBeUndefined();
+        expect(changed.execution.toolCalls).toEqual([
+          expect.objectContaining({ outcome: "success" }),
+          expect.objectContaining({ outcome: "success" }),
         ]);
+        const { deployment: recovered, health } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ deployment: Schema.String, health: Schema.String }),
+        )(changed.execution.value);
+        expect(recovered).not.toBe(live.activeDeployment);
+        expect(health).toBe("recovered");
+        const nextChanged = yield* execute(
+          "Call the changed tool in the next execute",
+          `return await ${tools}.diagnose({});`,
+        );
+        expect(nextChanged.execution.value, JSON.stringify(nextChanged)).toBe("recovered");
+
+        // A tool the deploy added is not in the program's listing of the app, so the program
+        // names the deployment it listed and the next execute instead of a removed tool.
         const sameProgram = yield* execute(
           "Deploy and call the new tool in one execute",
           `${executor}
-await executor.appManagement.deploy({ path: ${JSON.stringify({ ...organization, app: app.id })}, body: { files: ${files} } });
+${deployFrom(source("ping, diagnose, status: ping", "recovered"))};
 return await ${tools}.status({});`,
         );
         expect(sameProgram.execution.toolCalls).toEqual([
@@ -191,7 +215,7 @@ return await ${tools}.status({});`,
         ]);
         expect(sameProgram.execution.error?.kind).toBe("UnknownTool");
         expect(sameProgram.execution.error?.suggestions).toEqual([
-          `This execute loaded '${app.slug}' from deployment ${live.activeDeployment} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
+          `This execute loaded '${app.slug}' from deployment ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
         ]);
         const nextProgram = yield* execute(
           "Call the new tool in the next execute",

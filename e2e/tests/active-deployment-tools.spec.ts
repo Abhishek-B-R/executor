@@ -248,13 +248,17 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
           (yield* resume(pending.requestId)).structuredContent,
         );
         expect(resumed.execution).toEqual({ ok: true, value: { version: 1 } });
-        const racedResult = yield* Schema.decodeUnknownEffect(Completed)(
+        // The program's next call runs on the promoted deployment, under its approval policy, not
+        // the one the program listed the app from.
+        const racedNext = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* resume(racedPending.requestId)).structuredContent,
         );
         expect(
-          racedResult.execution.ok,
-          "A catalog pin cannot authorize another new call after promotion",
-        ).toBe(false);
+          (yield* Schema.decodeUnknownEffect(Completed)(
+            (yield* resume(racedNext.requestId)).structuredContent,
+          )).execution,
+          "A catalog listed before promotion cannot authorize another new call",
+        ).toEqual({ ok: true, value: { version: 2 } });
         const fresh = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* execute()).structuredContent,
         );
