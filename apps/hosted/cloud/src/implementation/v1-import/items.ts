@@ -242,13 +242,18 @@ const plannedMethod = (plan: ConnectionPlan): PlannedMethod | undefined => {
     case "first_party": {
       // v1 signed in at its own app's endpoints, which v2's client of the same name has. The
       // method declares them, so v2 signs it in, renews it and reconnects it with that client;
-      // an MCP server names them itself. Its scopes are what v1 asked that app for.
+      // an MCP server names them itself. Its scopes are what v1 asked that app for. A client
+      // that allows no scopes (the GitHub App's) asks for none, so an MCP method says so: left
+      // to discovery, it would ask for the scopes the server advertises (GitHub's MCP server
+      // lists `repo`, `gist` and more), and such a client is not offered for those.
       const { method, client, scopes } = access;
       const oauth =
         plan.decoded.plugin === "mcp"
           ? {
               discover: plan.decoded.config.endpoint,
-              ...(scopes.length === 0 ? {} : { scopes: [...scopes] }),
+              ...(scopes.length === 0 && (client.allowedScopes ?? client.defaultScopes).length > 0
+                ? {}
+                : { scopes: [...scopes] }),
             }
           : {
               authorizationUrl: client.server.authorizationUrl,

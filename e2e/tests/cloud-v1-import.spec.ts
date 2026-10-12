@@ -1565,9 +1565,11 @@ const seedRenewal = (organization: string, user: string, slug: string, origin: s
  * (`v1FirstPartyClients`), on the port this Cloud's operator settings name. Each client's token
  * endpoint renews any refresh token, Slack's under `authed_user` with its scopes comma-separated.
  * Each API answers only its client's renewed access token: Google's and GitHub's OpenAPI
- * operations, and Slack's MCP server, which challenges any other request with its resource
- * metadata. The two GitHub-shaped clients that send tokens to `v1GitHubHosts` each have an API
- * and an upload path. It records each token request's client, path and form, and each API
+ * operations, Slack's MCP server, and an MCP server shaped as GitHub's, which names the GitHub
+ * client's endpoints under its own issuer path and advertises scopes the client does not allow.
+ * Each MCP server challenges any other request with its resource metadata, on whichever host the
+ * request named. The two GitHub-shaped clients that send tokens to `v1GitHubHosts` each have an
+ * API and an upload path. It records each token request's client, path and form, and each API
  * request's host, path and authorization.
  */
 const firstPartyService = (port: number) =>
@@ -1622,57 +1624,73 @@ const firstPartyService = (port: number) =>
           ? yield* HttpServerResponse.json(body)
           : yield* HttpServerResponse.json({ error: "unauthenticated" }, { status: 401 });
       });
-    const challenge = HttpServerResponse.empty({
-      status: 401,
-      headers: {
-        "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/slack/mcp"`,
-      },
-    });
-    const mcp = Effect.gen(function* () {
-      const authorization = yield* recordCall;
-      if (authorization !== `Bearer ${renewed("slack")}`) return challenge;
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      const message = yield* request.json.pipe(
-        Effect.flatMap(
-          Schema.decodeUnknownEffect(
-            Schema.Struct({
-              id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
-              method: Schema.String,
-            }),
-          ),
-        ),
-        Effect.orDie,
+    /** This service's origin under the host the request named. */
+    const requested = Effect.map(
+      HttpServerRequest.HttpServerRequest,
+      (request) => `http://${request.headers.host ?? new URL(origin).host}`,
+    );
+    const challenge = (client: "slack" | "github") =>
+      Effect.map(requested, (at) =>
+        HttpServerResponse.empty({
+          status: 401,
+          headers: {
+            "www-authenticate": `Bearer resource_metadata="${at}/.well-known/oauth-protected-resource/${client}/mcp"`,
+          },
+        }),
       );
-      if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
-      const result =
-        message.method === "initialize"
-          ? {
-              protocolVersion: "2025-03-26",
-              capabilities: { tools: {} },
-              serverInfo: { name: "synthetic-slack-mcp", version: "1" },
-            }
-          : message.method === "tools/list"
+    const mcp = (client: "slack" | "github") =>
+      Effect.gen(function* () {
+        const authorization = yield* recordCall;
+        if (authorization !== `Bearer ${renewed(client)}`) return yield* challenge(client);
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const message = yield* request.json.pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.Struct({
+                id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+                method: Schema.String,
+              }),
+            ),
+          ),
+          Effect.orDie,
+        );
+        if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
+        const result =
+          message.method === "initialize"
             ? {
-                tools: [
-                  {
-                    name: "whoami",
-                    description: "The signed-in user.",
-                    inputSchema: { type: "object", properties: {} },
-                    annotations: { readOnlyHint: true },
-                  },
-                ],
+                protocolVersion: "2025-03-26",
+                capabilities: { tools: {} },
+                serverInfo: { name: `synthetic-${client}-mcp`, version: "1" },
               }
-            : message.method === "tools/call"
-              ? { content: [{ type: "text", text: "synthetic-slack-member" }] }
-              : undefined;
-      return yield* HttpServerResponse.json({
-        jsonrpc: "2.0",
-        id: message.id,
-        ...(result === undefined
-          ? { error: { code: -32601, message: "Method not found" } }
-          : { result }),
+            : message.method === "tools/list"
+              ? {
+                  tools: [
+                    {
+                      name: "whoami",
+                      description: "The signed-in user.",
+                      inputSchema: { type: "object", properties: {} },
+                      annotations: { readOnlyHint: true },
+                    },
+                  ],
+                }
+              : message.method === "tools/call"
+                ? { content: [{ type: "text", text: `synthetic-${client}-member` }] }
+                : undefined;
+        return yield* HttpServerResponse.json({
+          jsonrpc: "2.0",
+          id: message.id,
+          ...(result === undefined
+            ? { error: { code: -32601, message: "Method not found" } }
+            : { result }),
+        });
       });
-    });
+    const mcpGet = (client: "slack" | "github") =>
+      Effect.gen(function* () {
+        const authorization = yield* recordCall;
+        return authorization === `Bearer ${renewed(client)}`
+          ? HttpServerResponse.empty({ status: 405 })
+          : yield* challenge(client);
+      });
     const routes = Layer.mergeAll(
       HttpRouter.add("POST", "/google/token", token("google")),
       HttpRouter.add("POST", "/github/token", token("github")),
@@ -1702,15 +1720,36 @@ const firstPartyService = (port: number) =>
         api("google", { email: "google-member@example.test" }),
       ),
       HttpRouter.add("GET", "/github/api/user", api("github", { login: "synthetic-member" })),
-      HttpRouter.add("POST", "/slack/mcp", mcp),
+      HttpRouter.add("POST", "/slack/mcp", mcp("slack")),
+      HttpRouter.add("GET", "/slack/mcp", mcpGet("slack")),
+      HttpRouter.add("POST", "/github/mcp", mcp("github")),
+      HttpRouter.add("GET", "/github/mcp", mcpGet("github")),
+      // As GitHub's MCP server: its authorization server is the GitHub client's, under an issuer
+      // path (GitHub's is `https://github.com/login/oauth`), and it advertises scopes a GitHub App,
+      // which has none, never asks for.
       HttpRouter.add(
         "GET",
-        "/slack/mcp",
-        Effect.gen(function* () {
-          const authorization = yield* recordCall;
-          return authorization === `Bearer ${renewed("slack")}`
-            ? HttpServerResponse.empty({ status: 405 })
-            : challenge;
+        "/.well-known/oauth-protected-resource/github/mcp",
+        Effect.map(requested, (at) =>
+          HttpServerResponse.jsonUnsafe({
+            resource: `${at}/github/mcp`,
+            authorization_servers: [`${origin}/github/login/oauth`],
+            scopes_supported: ["repo", "read:org", "gist"],
+            bearer_methods_supported: ["header"],
+          }),
+        ),
+      ),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-authorization-server/github/login/oauth",
+        HttpServerResponse.json({
+          issuer: `${origin}/github/login/oauth`,
+          authorization_endpoint: `${origin}/github/authorize`,
+          token_endpoint: `${origin}/github/token`,
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          code_challenge_methods_supported: ["S256"],
+          scopes_supported: ["offline_access"],
         }),
       ),
       HttpRouter.add(
@@ -1746,11 +1785,13 @@ const firstPartyService = (port: number) =>
 /**
  * A workspace whose connections signed in through Executor's own apps, as v1 stored them: no
  * `oauth_client` row, `first-party:<name>` in their `oauth_client`. Google's and GitHub's are
- * OpenAPI integrations whose methods declare endpoints and scopes the apps never used; Slack's is
- * an MCP server. `google`, `github` and `slack` have expired, so their first calls renew them;
- * the rest have not.
- * `beyond` was granted a scope the Google client does not allow, `elsewhere` calls a host the
- * GitHub client's tokens never reach, and `notion` signed in through an app v2 does not offer.
+ * OpenAPI integrations whose methods declare endpoints and scopes the apps never used; Slack's and
+ * `github-mcp`'s are MCP servers, the latter shaped as GitHub's, which v1 signed in with its GitHub
+ * App. `google`, `github`, `slack` and `github-mcp` have expired, so they renew by their first
+ * calls; the rest have not.
+ * `beyond` was granted a scope the Google client does not allow, `elsewhere` and `mcp-elsewhere`
+ * call a host the GitHub client's tokens never reach, and `notion` signed in through an app v2
+ * does not offer.
  * `both` and `apionly` use APIs on two hosts of one service, like GitHub's API and upload hosts:
  * `both`'s client sends its tokens to both, and `apionly`'s to the API host only.
  */
@@ -1765,6 +1806,8 @@ const seedFirstParty = (organization: string, user: string, slug: string, origin
       slack: `slack_${suffix}`,
       both: `both_${suffix}`,
       apiOnly: `apionly_${suffix}`,
+      githubMcp: `github_mcp_${suffix}`,
+      mcpElsewhere: `mcp_elsewhere_${suffix}`,
     };
     const githubHosts = v1GitHubHosts(origin);
     const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
@@ -1801,6 +1844,8 @@ const seedFirstParty = (organization: string, user: string, slug: string, origin
         client: "v1-slack",
         scope: v1SlackScopes.join(" "),
       },
+      { name: "github-mcp", integration: slugs.githubMcp, client: "v1-github", scope: "" },
+      { name: "mcp-elsewhere", integration: slugs.mcpElsewhere, client: "v1-github", scope: "" },
     ];
     for (const connection of connections) {
       const item = access(connection.integration, connection.name);
@@ -1958,6 +2003,43 @@ const seedFirstParty = (organization: string, user: string, slug: string, origin
         slugs.slack,
         JSON.stringify({ mcp: { toolName: "whoami" } }),
       ),
+      // GitHub's MCP server, and the same server under another host name, which the GitHub
+      // client does not pin.
+      ...[
+        {
+          slug: slugs.githubMcp,
+          name: "Synthetic GitHub MCP",
+          connection: "github-mcp",
+          endpoint: `${origin}/github/mcp`,
+        },
+        {
+          slug: slugs.mcpElsewhere,
+          name: "GitHub MCP elsewhere",
+          connection: "mcp-elsewhere",
+          endpoint: `${origin.replace("127.0.0.1", "localhost")}/github/mcp`,
+        },
+      ].flatMap((server) => [
+        row(
+          "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', $3, $4::json)",
+          organization,
+          server.slug,
+          server.name,
+          JSON.stringify({
+            transport: "remote",
+            endpoint: server.endpoint,
+            remoteTransport: "auto",
+            authenticationTemplate: [{ slug: "oauth2", kind: "oauth2" }],
+          }),
+        ),
+        row(
+          "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'user', $2, $3, $4, 'mcp', 'whoami', $5::json)",
+          organization,
+          user,
+          server.slug,
+          server.connection,
+          JSON.stringify({ mcp: { toolName: "whoami" } }),
+        ),
+      ]),
       ...connections.map((connection) => {
         const item = access(connection.integration, connection.name);
         return row(
@@ -3056,7 +3138,16 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         ).pipe(Effect.flatMap((response) => decode(Preview, response)));
         const planOf = (label: string) =>
           started.items.find((item) => item.kind === "connection" && item.label === label)?.plan;
-        for (const label of ["google", "github", "elsewhere", "slack", "both", "apionly"])
+        for (const label of [
+          "google",
+          "github",
+          "elsewhere",
+          "slack",
+          "both",
+          "apionly",
+          "github-mcp",
+          "mcp-elsewhere",
+        ])
           expect(planOf(label), label).toEqual({ status: "will_import" });
         // v2 does not offer Notion's app, and the Google client allows no scope beyond its menu.
         expect(planOf("notion")).toEqual({
@@ -3088,17 +3179,22 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "Synthetic Slack",
           "GitHub two hosts",
           "GitHub one host",
+          "Synthetic GitHub MCP",
+          "GitHub MCP elsewhere",
           "google",
           "github",
           "slack",
           "both",
+          "github-mcp",
         ])
           expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
-        // The GitHub client's tokens go only to its pinned host, which this API is not on.
-        expect(results.get("elsewhere")).toMatchObject({
-          status: "failed",
-          reason: `Executor v2's own V1-github app sends its tokens only to ${new URL(origin).host}, and its integration calls none of them. Reconnect it in v2.`,
-        });
+        // The GitHub client's tokens go only to its pinned host, which neither this API nor this
+        // MCP server is on.
+        for (const label of ["elsewhere", "mcp-elsewhere"])
+          expect(results.get(label), label).toMatchObject({
+            status: "failed",
+            reason: `Executor v2's own V1-github app sends its tokens only to ${new URL(origin).host}, and its integration calls none of them. Reconnect it in v2.`,
+          });
         // A client whose tokens reach only one of an API's two hosts would leave the other's calls
         // refused, so the account is not imported, and the reason names the host it cannot reach.
         const githubHosts = v1GitHubHosts(origin);
@@ -3134,9 +3230,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             expect(written).toContain(JSON.stringify(url).slice(1, -1));
           expect(written).not.toContain(".example.com");
         }
+        // GitHub's MCP server names the GitHub client's endpoints itself, and its app asks for no
+        // scopes, as v1 asked the GitHub App for none, so a reconnect offers that client too.
         for (const [label, client] of [
           ["google", "Executor for Synthetic Google"],
           ["github", "Executor for Synthetic GitHub"],
+          ["github-mcp", "Executor for Synthetic GitHub"],
         ] as const) {
           const account = accountOf(label);
           if (account === undefined) return yield* Effect.die(`No ${label} account`);
@@ -3152,7 +3251,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         // Each account's expired token renews with the operator's client, asking again for the
         // scopes v1 recorded, and its call carries the renewed token. The renewal happens on the
         // first call, or before it when Cloud's minute schedule reconciles the account's profile,
-        // so each client's renewal is found by its path rather than its position.
+        // so each account's renewal is found by the refresh token v1 held rather than its position
+        // or its client's path, which the GitHub and GitHub MCP accounts share. Renewals of one
+        // grant are serialized and the renewed token outlives the test, so each renews once.
         const callAs = (label: string, app: string, tool: string) =>
           Effect.gen(function* () {
             const account = accountOf(label)?.id;
@@ -3184,18 +3285,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         const renewals = Effect.map(service.tokens, (all) =>
           all.map((request) => ({ path: request.path, form: Object.fromEntries(request.form) })),
         );
-        const renewalsAt = (path: string) =>
-          Effect.map(renewals, (all) => all.filter((request) => request.path === path));
         const lastCall = Effect.map(service.calls, (all) => {
           const last = all.at(-1);
           if (last === undefined) return undefined;
           const { host: _host, ...call } = last;
           return call;
         });
-
-        yield* callAs("google", "Synthetic Google", "google.me");
-        expect(yield* renewalsAt("/google/token")).toEqual([
-          {
+        // The one renewal each expired account makes, by the refresh token v1 held.
+        const expected: Record<string, { path: string; form: Record<string, string> }> = {
+          "synthetic-google-refresh": {
             path: "/google/token",
             form: {
               grant_type: "refresh_token",
@@ -3204,16 +3302,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
               ...credentials("v1-google"),
             },
           },
-        ]);
-        expect(yield* lastCall).toEqual({
-          path: "/google/api/me",
-          authorization: `Bearer ${service.renewed("google")}`,
-        });
-
-        // v1 recorded no scopes for the GitHub App, so its renewal asks for none.
-        yield* callAs("github", "Synthetic GitHub", "github.user");
-        expect(yield* renewalsAt("/github/token")).toEqual([
-          {
+          // v1 recorded no scopes for the GitHub App, so its renewal asks for none.
+          "synthetic-github-refresh": {
             path: "/github/token",
             form: {
               grant_type: "refresh_token",
@@ -3221,17 +3311,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
               ...credentials("v1-github"),
             },
           },
-        ]);
-        expect(yield* lastCall).toEqual({
-          path: "/github/api/user",
-          authorization: `Bearer ${service.renewed("github")}`,
-        });
-
-        // The unlisted Slack client renews the grant it holds: with its own resource, and the
-        // account reads the user's token from `authed_user`. Slack's MCP server answers only it.
-        yield* callAs("slack", "Synthetic Slack", "whoami");
-        expect(yield* renewalsAt("/slack/token")).toEqual([
-          {
+          // The unlisted Slack client renews the grant it holds, with its own resource.
+          "synthetic-slack-refresh": {
             path: "/slack/token",
             form: {
               grant_type: "refresh_token",
@@ -3241,13 +3322,56 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
               ...credentials("v1-slack"),
             },
           },
-        ]);
-        // One renewal each, and none for the accounts that have not expired.
-        expect(yield* renewals).toHaveLength(3);
+          // The GitHub MCP account renews with the GitHub client at its own token endpoint,
+          // asking for no scopes and sending no resource.
+          "synthetic-github-mcp-refresh": {
+            path: "/github/token",
+            form: {
+              grant_type: "refresh_token",
+              refresh_token: "synthetic-github-mcp-refresh",
+              ...credentials("v1-github"),
+            },
+          },
+        };
+        const renewedWith = (refresh: string) =>
+          Effect.gen(function* () {
+            const own = (yield* renewals).filter((entry) => entry.form.refresh_token === refresh);
+            expect(own, refresh).toEqual([expected[refresh]]);
+          });
+
+        yield* callAs("google", "Synthetic Google", "google.me");
+        yield* renewedWith("synthetic-google-refresh");
+        expect(yield* lastCall).toEqual({
+          path: "/google/api/me",
+          authorization: `Bearer ${service.renewed("google")}`,
+        });
+
+        yield* callAs("github", "Synthetic GitHub", "github.user");
+        yield* renewedWith("synthetic-github-refresh");
+        expect(yield* lastCall).toEqual({
+          path: "/github/api/user",
+          authorization: `Bearer ${service.renewed("github")}`,
+        });
+
+        // The Slack account reads the user's token from `authed_user`. Slack's MCP server
+        // answers only it.
+        yield* callAs("slack", "Synthetic Slack", "whoami");
+        yield* renewedWith("synthetic-slack-refresh");
         expect(yield* lastCall).toEqual({
           path: "/slack/mcp",
           authorization: `Bearer ${service.renewed("slack")}`,
         });
+
+        // The GitHub MCP account's tool call carries the GitHub client's renewed token to the
+        // MCP server.
+        yield* callAs("github-mcp", "Synthetic GitHub MCP", "whoami");
+        yield* renewedWith("synthetic-github-mcp-refresh");
+        expect(yield* lastCall).toEqual({
+          path: "/github/mcp",
+          authorization: `Bearer ${service.renewed("github")}`,
+        });
+        // One renewal each, and none for the accounts that have not expired.
+        expect(yield* renewals).toHaveLength(Object.keys(expected).length);
 
         // A client whose tokens go to both of an API's hosts places its managed token on the
         // calls to each host.

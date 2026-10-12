@@ -102,10 +102,10 @@ const slackMcpUserScopes = [
  *
  * - `github` is v1's Executor.sh GitHub App. A GitHub App has no scopes, so it is offered only to
  *   providers that declare none; its registered permissions decide what a token can do. GitHub
- *   reports granted scopes comma-separated. Its tokens go only to GitHub's REST hosts:
- *   `api.github.com`, and `uploads.github.com`, where GitHub takes release asset uploads. That is
- *   the same service, which accepts GitHub App user tokens, and v1 sent this client's tokens to
- *   every GitHub REST operation, uploads included.
+ *   reports granted scopes comma-separated. Its tokens go only to GitHub's hosts: `api.github.com`;
+ *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
+ *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
+ *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
  * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
  *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
@@ -129,8 +129,15 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: [],
-    // `uploads.github.com` is GitHub's release asset upload host; v1 sent the token there too.
-    placement: { hosts: ["api.github.com", "uploads.github.com"] },
+    placement: {
+      hosts: [
+        "api.github.com",
+        // GitHub's release asset upload host; v1 sent the token there too.
+        "uploads.github.com",
+        // GitHub's MCP server accepts GitHub App user tokens; v1 sent this client's tokens there.
+        "api.githubcopilot.com",
+      ],
+    },
   },
   {
     id: "google",
