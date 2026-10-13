@@ -455,8 +455,14 @@ export const linkUserAccount = (
 
 /**
  * A webhook source's actor can no longer use its account, such as after leaving the organization
- * or a group, without unlinking it. Hand the source over, unless it already moved on. Run it in a
- * transaction: it takes the links' lock first. Wake reconciliation once it commits.
+ * or a group, without unlinking it. Hand the source over, unless it already moved on or its actor
+ * may use it again. Run it in a transaction: it takes the links' lock first. Wake reconciliation
+ * once it commits.
+ *
+ * The caller saw the actor without a usable link outside this lock. The actor may have linked the
+ * account again since, as when one member unlinks and relinks while another links and unlinks: that
+ * relink saved new intent, so the reconciliation that saw the old links discards its result. Handing
+ * the source over or removing it then would drop the source of an account its actor links.
  */
 export const sourceActorLost = (
   sql: SqlClient.SqlClient,
@@ -470,6 +476,8 @@ export const sourceActorLost = (
     );
     if (source === undefined || source.actor !== input.actor || source.status === "removing")
       return;
+    const own = yield* linkedAccounts(sql, { subject: input.actor, apps: [input.app] });
+    if (own.some((account) => account.id === input.account)) return;
     const subjects = (yield* Schema.decodeUnknownEffect(Schema.Array(SubjectRow))(
       yield* sql`select subject from hosted_app_account_links
         where app = ${input.app} and account = ${input.account} and subject is not null
