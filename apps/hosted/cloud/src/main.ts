@@ -63,6 +63,7 @@ import { cloudOnboarding, cloudV1Import } from "./infrastructure/onboarding.ts";
 import { Onboarding } from "./contracts/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
+import { cachedFeedClient } from "./implementation/catalog-feed-cache.ts";
 import { billingLive } from "./implementation/billing.ts";
 import {
   cloudSchedules,
@@ -415,7 +416,15 @@ export default Api.make(
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
       HttpRouter.provideRequest(
-        catalogLive(document.document, egress, clientMetadata, apiOrigin, catalogFeedUrl),
+        catalogLive(
+          document.document,
+          catalogFeedUrl === undefined
+            ? egress
+            : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
+          clientMetadata,
+          apiOrigin,
+          catalogFeedUrl,
+        ),
       ),
       Layer.provide(schedules.layer),
       Layer.provide(billing),

@@ -34,22 +34,30 @@ const resolveIcons = (icons: readonly CatalogIcon[], base: string) =>
 
 /**
  * Read the feed at `feedUrl`, its `index.json`. Redirects are not followed. Listing reads only the
- * index; preparing reads it again and then the chosen app's source document.
+ * index. Preparing reads only the chosen app's source document, `apps/<id>.json` beside the index:
+ * the publisher writes every listed app there and deletes the documents of apps it delists, so the
+ * document exists exactly when the entry is listed. Reading the whole index to find one entry cost
+ * seconds on every install.
  */
 export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): CatalogSource => {
+  /** A missing document reads as `None`; any other failure is `CatalogUnavailable`. */
   const read = <A>(url: string, schema: Schema.Decoder<A>) =>
     Effect.gen(function* () {
       const response = yield* client.get(url);
+      if (response.status === 404) return Option.none<A>();
       if (response.status !== 200) return yield* new CatalogUnavailable();
-      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(yield* response.text);
+      return Option.some(
+        yield* Schema.decodeUnknownEffect(Schema.fromJsonString(schema))(yield* response.text),
+      );
     }).pipe(
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new CatalogUnavailable()),
     );
-  const index = read(feedUrl, CatalogFeed);
   return {
-    list: index.pipe(
+    list: read(feedUrl, CatalogFeed).pipe(
+      Effect.flatMap(Effect.fromOption),
+      Effect.mapError(() => new CatalogUnavailable()),
       Effect.map((feed) =>
         feed.apps.map(({ source: _source, ...entry }) =>
           CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
@@ -58,33 +66,30 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
     ),
     prepare: (id) =>
       Effect.gen(function* () {
-        const entry = (yield* index).apps.find((entry) => entry.id === id);
-        if (entry === undefined)
+        const reference = new URL(`apps/${encodeURIComponent(id)}.json`, feedUrl).href;
+        const found = yield* read(reference, CatalogFeedSource);
+        if (Option.isNone(found))
           return yield* new CatalogImportFailed({
             code: "entry_missing",
             reason: "This entry is no longer in the catalog. Refresh and choose another app.",
           });
-        // Only a matched catalog identifier is recorded, never an arbitrary lookup input.
-        yield* Effect.annotateCurrentSpan({ "catalog.entry.id": entry.id });
-        const reference = new URL(entry.source, feedUrl).href;
-        const source = yield* read(reference, CatalogFeedSource);
+        // Only a listed catalog identifier is recorded, never an arbitrary lookup input.
+        yield* Effect.annotateCurrentSpan({ "catalog.entry.id": id });
+        const source = found.value;
         const manifest = Option.fromNullishOr(
           source.files.find((file) => file.path === "package.json"),
         ).pipe(
           Option.filter(isTextFile),
           Option.flatMap((file) => decodeManifest(file.content)),
         );
-        if (
-          source.package !== entry.package ||
-          !Option.exists(manifest, ({ name }) => name === entry.package)
-        )
+        if (!Option.exists(manifest, ({ name }) => name === source.package))
           return yield* new CatalogImportFailed({
             code: "invalid_source",
             reason: "This app's published source does not match its catalog entry.",
           });
         return PreparedApp.make({
           files: source.files,
-          origin: { reference, name: entry.package, commit: null },
+          origin: { reference, name: source.package, commit: null },
         });
       }),
   };

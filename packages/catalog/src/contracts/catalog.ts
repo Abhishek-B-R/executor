@@ -52,7 +52,8 @@ export const PreparedApp = Schema.Struct({
 export type PreparedApp = typeof PreparedApp.Type;
 /**
  * The feed's index, as `scripts/feed.ts` in the integrations repository writes it. Icon `src` and
- * `source` are relative to the index's own URL.
+ * `source` are relative to the index's own URL; `source` is always `apps/<id>.json`, which installs
+ * read directly.
  */
 export const CatalogFeed = Schema.Struct({
   version: Schema.Literal(1),
