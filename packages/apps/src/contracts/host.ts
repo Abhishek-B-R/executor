@@ -66,6 +66,8 @@ export {
   OAuthSecretClientAuth,
   OAuthTokenRequestFormat,
   OAuthTokenResponse,
+  reservedAuthorizationParams,
+  type ReservedAuthorizationParam,
 } from "./provider.ts";
 
 /**

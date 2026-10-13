@@ -11,8 +11,8 @@ import {
   SecretsMethod,
 } from "../contracts/provider.ts";
 import type { Placement } from "../contracts/placement.ts";
-import type { ValidationError } from "../contracts/schema.ts";
-import { parse } from "./schema.ts";
+import type { DeclarationInvalid } from "../contracts/schema.ts";
+import { parseDeclaration } from "./schema.ts";
 
 /** Declare a secrets method with an Effect decoder. */
 export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
@@ -22,14 +22,27 @@ export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
   readonly request?: readonly Placement[];
 }): SecretsMethod<Fields> => new SecretsMethod(options);
 
+/**
+ * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then
+ * discovered or declared endpoints by `discover`. Only that form explains an invalid declaration.
+ */
+const clientCredentials = Schema.is(Schema.Struct({ grant: Schema.Literal("client_credentials") }));
+const oauth2Form = (config: unknown) => {
+  const [discovered, declared, discoveredMachine, declaredMachine] = OAuth2Config.members;
+  const discovers =
+    typeof config === "object" && config !== null && Object.hasOwn(config, "discover");
+  if (clientCredentials(config)) return discovers ? discoveredMachine : declaredMachine;
+  return discovers ? discovered : declared;
+};
+
 /** Validate OAuth endpoints while declaring their app-visible response projection. */
 export const oauth2 = <Response extends Schema.Decoder<unknown>>(
   config: OAuth2Config,
   response: Response,
   exposure?: Readonly<Record<string, FieldExposure>>,
   request?: readonly Placement[],
-): Effect.Effect<OAuth2Method<Response>, ValidationError> =>
-  parse(OAuth2Config, config).pipe(
+): Effect.Effect<OAuth2Method<Response>, DeclarationInvalid> =>
+  parseDeclaration(OAuth2Config, config, "oauth2()", oauth2Form).pipe(
     Effect.map(
       (config) =>
         new OAuth2Method({

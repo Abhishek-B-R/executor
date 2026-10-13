@@ -48,7 +48,13 @@ import {
 const isFields = (value: unknown): value is Fields =>
   typeof value === "object" && value !== null && Object.values(value).every(isSchema);
 
-export { type JsonObject, type JsonValue, ValidationError } from "./contracts/schema.ts";
+export {
+  DeclarationInvalid,
+  type DeclarationIssue,
+  type JsonObject,
+  type JsonValue,
+  ValidationError,
+} from "./contracts/schema.ts";
 export {
   type Fields,
   type Infer,

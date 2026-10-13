@@ -206,15 +206,15 @@ const plannedMethod = (plan: ConnectionPlan): PlannedMethod | undefined => {
       };
     }
     case "oauth": {
-      // v1 signed in at the connection's client's endpoints with the method's scopes, so a
-      // reconnect does too; connections whose clients differ get a method each. The account's
-      // grant renews as v1 did (`renewal`).
-      const { method, client, grant } = access;
+      // v1 signed in at the connection's client's endpoints with the method's scopes, or the ones
+      // its authorization URL set, so a reconnect does too; connections whose clients differ get a
+      // method each. The account's grant renews as v1 did (`renewal`).
+      const { method, client } = access;
       const scopes = [...method.scopes];
       const resource =
         client.resource === null || client.resource === "" ? {} : { resource: client.resource };
       const oauth =
-        grant === "client_credentials"
+        access.grant === "client_credentials"
           ? {
               grant: "client_credentials",
               tokenUrl: client.token_url,
@@ -222,15 +222,15 @@ const plannedMethod = (plan: ConnectionPlan): PlannedMethod | undefined => {
               tokenEndpointAuthMethod: access.authentication,
               ...resource,
             }
-          : plan.decoded.plugin === "mcp"
+          : access.authorization.kind === "discover"
             ? {
-                discover: plan.decoded.config.endpoint,
+                discover: access.authorization.url,
                 ...(scopes.length === 0 ? {} : { scopes }),
               }
             : {
-                authorizationUrl: client.authorization_url,
+                authorizationUrl: access.authorization.authorizationUrl,
                 tokenUrl: client.token_url,
-                scopes,
+                scopes: [...access.authorization.scopes],
                 ...resource,
               };
       // connectionPlan refuses an OAuth connection whose fixed credentials it would not replace.

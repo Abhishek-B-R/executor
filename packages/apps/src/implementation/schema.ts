@@ -14,7 +14,12 @@ import {
   validate,
   type Schema as ValidatorSchema,
 } from "@cfworker/json-schema";
-import { JsonObject, ValidationError, type JsonValue } from "../contracts/schema.ts";
+import {
+  DeclarationInvalid,
+  JsonObject,
+  ValidationError,
+  type JsonValue,
+} from "../contracts/schema.ts";
 
 import type { FieldExposure } from "../contracts/provider.ts";
 
@@ -84,6 +89,46 @@ export const parse = <T>(
 ): Effect.Effect<T, ValidationError> =>
   Effect.suspend(() => EffectSchema.decodeUnknownEffect(decoder)(input)).pipe(
     Effect.mapError(() => new ValidationError()),
+  );
+
+const declarationIssues = SchemaIssue.makeFormatterStandardSchemaV1({
+  leafHook: SchemaIssue.defaultLeafHook,
+});
+
+/**
+ * Decode an author's declaration, naming every failing path. A declaration with several forms,
+ * such as `oauth2()`'s discovered, declared and client credentials endpoints, is explained by the
+ * form its author chose (`intended`), so the problems are that form's, including the options it
+ * lacks, rather than every other form's objections. Messages never include the supplied values.
+ */
+export const parseDeclaration = <T>(
+  decoder: EffectSchema.Decoder<T>,
+  input: unknown,
+  declaration: string,
+  intended: (input: unknown) => EffectSchema.Decoder<unknown> = () => decoder,
+): Effect.Effect<T, DeclarationInvalid> =>
+  Effect.suspend(() => EffectSchema.decodeUnknownEffect(decoder)(input)).pipe(
+    Effect.catch((failed) =>
+      Effect.suspend(() =>
+        EffectSchema.decodeUnknownEffect(intended(input))(input, { errors: "all" }),
+      ).pipe(
+        Effect.flip,
+        Effect.orElseSucceed(() => failed),
+        Effect.flatMap((error) =>
+          Effect.fail(
+            new DeclarationInvalid({
+              declaration,
+              issues: declarationIssues(error.issue).issues.map((issue) => ({
+                path: (issue.path ?? []).map((segment) =>
+                  String(typeof segment === "object" ? segment.key : segment),
+                ),
+                message: issue.message,
+              })),
+            }),
+          ),
+        ),
+      ),
+    ),
   );
 
 /** Present a native decoder through the synchronous author API. */

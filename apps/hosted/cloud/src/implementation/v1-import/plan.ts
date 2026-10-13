@@ -3,6 +3,7 @@
  * preview shows it; each item request decides again from fresh rows before writing.
  */
 import type { FirstPartyOAuthClientDescription } from "@executor-js/sdk/core";
+import { reservedAuthorizationParams } from "apps/contracts";
 import { Option, Schema } from "effect";
 import type { V1ImportItem, V1ItemKey } from "../../contracts/v1-import.ts";
 import {
@@ -33,6 +34,10 @@ export type Supported<A> = { readonly ok: true; readonly value: A };
 export type Unsupported = { readonly ok: false; readonly reason: string };
 const supported = <A>(value: A): Supported<A> => ({ ok: true, value });
 const unsupported = (reason: string): Unsupported => ({ ok: false, reason });
+const mapSupported = <A, B>(
+  result: Supported<A> | Unsupported,
+  f: (value: A) => B,
+): Supported<B> | Unsupported => (result.ok ? supported(f(result.value)) : result);
 
 export type ImportableIntegration = Exclude<V1Integration, { readonly plugin: "unsupported" }>;
 
@@ -45,10 +50,9 @@ export type ConnectionAccess =
       /** Variable name to v1 Vault item id. */
       readonly items: ReadonlyArray<readonly [string, string]>;
     }
-  | {
+  | ({
       readonly kind: "oauth";
       readonly method: Extract<V1AuthMethod, { kind: "oauth2" }>;
-      readonly grant: "authorization_code" | "client_credentials";
       readonly client: OAuthClientRow;
       readonly authentication:
         | "none"
@@ -62,7 +66,19 @@ export type ConnectionAccess =
         readonly scopes: readonly string[];
         readonly resource?: string | undefined;
       };
-    }
+    } & (
+      | { readonly grant: "client_credentials" }
+      | {
+          readonly grant: "authorization_code";
+          /**
+           * Where v2 signs in: the request v1 sent at the client's endpoints (see
+           * {@link v1Authorization}), or, for an MCP server, the endpoints the server names.
+           */
+          readonly authorization:
+            | ({ readonly kind: "declared" } & V1AuthorizationRequest)
+            | { readonly kind: "discover"; readonly url: string };
+        }
+    ))
   | {
       /** Signed in through one of Executor's own OAuth apps, which v2 offers as the same client. */
       readonly kind: "first_party";
@@ -168,6 +184,74 @@ const v1Renewal = (row: ConnectionRow, client: OAuthClientRow, tokenEndpoint: st
   scopes: grantedScopes(row),
   ...(client.resource === null || client.resource === "" ? {} : { resource: client.resource }),
 });
+
+/** An authorization endpoint without host-owned parameters, and the scopes v1 asked for there. */
+export interface V1AuthorizationRequest {
+  readonly authorizationUrl: string;
+  readonly scopes: readonly string[];
+}
+
+/** The parameters v1 set on every authorization request, replacing the URL's own. */
+const v1SetAlways: ReadonlySet<string> = new Set([
+  "client_id",
+  "redirect_uri",
+  "response_type",
+  "state",
+  "code_challenge",
+  "code_challenge_method",
+]);
+
+const v1AuthorizationRefused = (problem: string) =>
+  unsupported(
+    `Its OAuth client's authorization URL ${problem}, which an Executor v2 sign-in method cannot send as v1 did. Reconnect it in v2.`,
+  );
+
+/**
+ * The authorization request v1 sent from a client's URL, as v2 declares it, or why v2 cannot send
+ * it. v1 kept the URL's query and set the protocol parameters over it (`buildAuthorizationUrl`):
+ * those it always set never reached the server, `scope` only when the method declared scopes and
+ * `resource` only when the client named one. A v2 declaration leaves every protocol parameter to
+ * the host, so the rest are removed from the URL and declared instead, only where the host sends
+ * exactly what v1 did:
+ *
+ * - A `scope` v1 sent from the URL becomes the method's scopes, split at each space, which the host
+ *   joins back with one. Any other character, such as Linear's comma or a tab, stays inside a scope,
+ *   and an empty `scope` or two spaces together leave an empty one, so the host sends the value v1
+ *   sent. A repeated `scope` has no such form.
+ * - A `resource` v1 sent from the URL went only to the authorization endpoint, while a declared
+ *   resource also goes to the token endpoint.
+ * - Any other protocol parameter, such as `nonce`, has no v2 equivalent.
+ */
+export const v1Authorization = (
+  client: Pick<OAuthClientRow, "authorization_url" | "resource">,
+  scopes: readonly string[],
+): Supported<V1AuthorizationRequest> | Unsupported => {
+  const url = new URL(client.authorization_url);
+  const reserved = new Set<string>(reservedAuthorizationParams);
+  const sent = [...new Set(url.searchParams.keys())].filter((key) => reserved.has(key));
+  const unrepresentable = sent.filter(
+    (key) => !v1SetAlways.has(key) && key !== "scope" && key !== "resource",
+  );
+  if (unrepresentable.length > 0)
+    return unsupported(
+      `Its OAuth client's authorization URL sets ${unrepresentable.join(", ")}, which an Executor v2 sign-in method cannot send. Reconnect it in v2.`,
+    );
+  const clientResource = client.resource !== null && client.resource !== "";
+  if (!clientResource && url.searchParams.has("resource"))
+    return unsupported(
+      "Its OAuth client's authorization URL sets resource, which v1 sent only when signing in and an Executor v2 sign-in method would also send when exchanging and refreshing tokens. Reconnect it in v2.",
+    );
+  const urlScopes = url.searchParams.getAll("scope");
+  const sentScopes = (): Supported<readonly string[]> | Unsupported => {
+    if (scopes.length > 0 || urlScopes.length === 0) return supported(scopes);
+    if (urlScopes.length > 1) return v1AuthorizationRefused("sets scope more than once");
+    return supported((urlScopes[0] ?? "").split(" "));
+  };
+  const requested = sentScopes();
+  if (!requested.ok) return requested;
+  for (const key of sent) url.searchParams.delete(key);
+  return supported({ authorizationUrl: url.href, scopes: requested.value });
+};
 
 /** A credential v1's configuration sent on every request, which becomes an account field. */
 export interface ConfigSecret {
@@ -357,6 +441,19 @@ export const connectionPlan = (
         return unsupported("Its OAuth client has no authorization endpoint.");
       if (client.resource !== null && client.resource !== "" && !httpUrl(client.resource))
         return unsupported("Its OAuth client's resource is not a URL.");
+      const signIn =
+        grant.value === "client_credentials"
+          ? supported({ grant: "client_credentials" as const })
+          : decoded.value.plugin === "mcp"
+            ? supported({
+                grant: "authorization_code" as const,
+                authorization: { kind: "discover" as const, url: decoded.value.config.endpoint },
+              })
+            : mapSupported(v1Authorization(client, method.scopes), (request) => ({
+                grant: "authorization_code" as const,
+                authorization: { kind: "declared" as const, ...request },
+              }));
+      if (!signIn.ok) return signIn;
       const tokenEndpoint = refreshTokenEndpoint(client.token_url, row.oauth_token_url);
       if (tokenEndpoint === undefined)
         return unsupported(
@@ -369,7 +466,7 @@ export const connectionPlan = (
       return plan({
         kind: "oauth",
         method,
-        grant: grant.value,
+        ...signIn.value,
         client,
         authentication: client.client_secret_item_id === null ? "none" : secret,
         accessItem,

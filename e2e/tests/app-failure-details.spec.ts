@@ -203,6 +203,52 @@ export const tools = router({
         expect(located.message).toContain("Call it, as in string().");
         expect(located.message).toContain("at lib/tools.ts:3:26");
 
+        // An OAuth declaration that does not match its schema names the failing option and why,
+        // leaving out the forms the author did not mean (here, discovery's missing `discover`).
+        const oauth = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, defineProvider, oauth2 } from "apps";
+const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
+  authorizationUrl: "https://auth.example.test/authorize?scope=everything",
+  tokenUrl: "https://auth.example.test/token",
+  scopes: [],
+}) } });
+export default defineApp({ accounts: { service } }, {});`,
+          },
+        ]);
+        yield* evidence.json("invalid-oauth-declaration-failure.json", oauth.body);
+        expect(oauth.status).toBe(422);
+        const oauthFailure = yield* body(BuildFailed, oauth);
+        expect(oauthFailure.stage).toBe("declaration");
+        expect(oauthFailure.message).toContain(
+          "DeclarationInvalid: The oauth2() declaration is invalid. authorizationUrl: authorizationUrl cannot set protocol parameters: scope.",
+        );
+        expect(oauthFailure.message).not.toContain("discover");
+
+        // A client credentials declaration is read as one, so the option it lacks is named rather
+        // than the authorization code forms' objections to its grant.
+        const machine = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp, defineProvider, oauth2 } from "apps";
+const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
+  grant: "client_credentials",
+  tokenUrl: "https://auth.example.test/token",
+  scopes: [],
+}) } });
+export default defineApp({ accounts: { service } }, {});`,
+          },
+        ]);
+        yield* evidence.json("incomplete-oauth-declaration-failure.json", machine.body);
+        expect(machine.status).toBe(422);
+        const machineFailure = yield* body(BuildFailed, machine);
+        expect(machineFailure.stage).toBe("declaration");
+        expect(machineFailure.message).toContain(
+          "DeclarationInvalid: The oauth2() declaration is invalid. tokenEndpointAuthMethod: Missing key",
+        );
+        expect(machineFailure.message).not.toContain("grant");
+
         // An app that throws while its module loads reports its own message at declaration.
         const declaration = yield* deploy([
           {
