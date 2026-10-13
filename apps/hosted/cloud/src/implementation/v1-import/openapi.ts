@@ -120,6 +120,19 @@ const firstServers = (...lists: readonly unknown[]) =>
     .find((list) => list.length > 0) ?? [];
 
 /**
+ * Why an operation has no host: v1 prefixed requests with the configured base URL, else the
+ * operation's server, and sent the bare path when neither named a host, which never reached an
+ * API. A finished import is not run again, so the person's agent recreates the integration from
+ * the fix prompt, which carries the item's name and kind. The reason names no URL: the
+ * specification's URL can carry a key in its user, host, port, path or query.
+ */
+const noHost = (why: string) =>
+  ({
+    ok: false,
+    reason: `${why} and the integration sets no base URL, so v1 had no host to send its requests to either. Use 'Copy fix prompt' to recreate this integration in v2 with an absolute API base URL.`,
+  }) as const;
+
+/**
  * Where v1 sent each operation of a document: the configured base URL, else the operation's own
  * first server, else its path's, else the document's, with variables at their defaults. Refused
  * when an operation has no absolute URL to send to, or its server uses a variable nothing defines.
@@ -131,7 +144,6 @@ export const operationBaseUrls = (
   | { readonly ok: true; readonly urls: readonly string[] }
   | { readonly ok: false; readonly reason: string } => {
   if (config.baseUrl !== undefined) return { ok: true, urls: [config.baseUrl] };
-  const noBase = { ok: false, reason: "Its API has no absolute base URL." } as const;
   const documentServer = Array.isArray(document.servers) ? document.servers[0] : undefined;
   const urls = new Set<string>();
   const paths = isObject(document.paths) ? document.paths : {};
@@ -147,11 +159,14 @@ export const operationBaseUrls = (
           ok: false,
           reason: `Its server URL uses ${resolved.unresolved.map((name) => `{${name}}`).join(", ")}, which no server defines.`,
         };
-      if (resolved.url === undefined) return noBase;
+      if (server === undefined) return noHost("Its specification names no server URL");
+      if (resolved.url === undefined) return noHost("Its server URL is not absolute");
       urls.add(resolved.url);
     }
   }
-  return urls.size === 0 ? noBase : { ok: true, urls: [...urls] };
+  return urls.size === 0
+    ? { ok: false, reason: "Its API has no absolute base URL." }
+    : { ok: true, urls: [...urls] };
 };
 
 /**

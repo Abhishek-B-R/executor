@@ -1259,6 +1259,20 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
       servers: [{ url: "https://{tenant}.unresolved.example.com/api" }],
       paths: { "/items": { get: { operationId: "list", tags: ["items"], responses: ok } } },
     });
+    // Like a vendor specification fetched from its schema URL: no server at any level, and the
+    // integration names no base URL, so v1 sent the bare path and reached no API.
+    const serverless = JSON.stringify({
+      openapi: "3.1.0",
+      info: { title: "Synthetic serverless", version: "1" },
+      paths: { "/api/items/": { get: { operationId: "list", tags: ["items"], responses: ok } } },
+    });
+    // A relative server names no host either.
+    const relative = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic relative", version: "1" },
+      servers: [{ url: "/" }],
+      paths: { "/api/items/": { get: { operationId: "list", tags: ["items"], responses: ok } } },
+    });
     const downgradedServer = {
       url: "{scheme}://uploads.downgraded.example.com/uploads",
       variables: { scheme: { default: "https" } },
@@ -1271,6 +1285,7 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
       readonly operations: Record<string, readonly [string, string]>;
       readonly servers?: Record<string, ReadonlyArray<unknown>>;
       readonly healthCheck?: unknown;
+      readonly specUrl?: string;
     }> = [
       {
         slug: `requests_${suffix}`,
@@ -1352,6 +1367,26 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
         template: [],
         operations: { "items.list": ["get", "/items"] },
       },
+      {
+        slug: `serverless_${suffix}`,
+        name: "Serverless",
+        text: serverless,
+        template: [
+          { slug: "", kind: "apikey", placements: [{ carrier: "header", name: "X-Api-Key" }] },
+        ],
+        operations: { "items.list": ["get", "/api/items/"] },
+        // A schema URL can carry a key in its host, path or query, so the reason never names it.
+        specUrl:
+          "https://synthetic-host-secret.app.serverless.example.com/api/synthetic-path-secret/schema/?token=synthetic-schema-token",
+      },
+      {
+        slug: `relative_${suffix}`,
+        name: "Relative",
+        text: relative,
+        template: [],
+        operations: { "items.list": ["get", "/api/items/"] },
+        specUrl: "https://app.relative.example.com/api/schema/",
+      },
     ];
     const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
     yield* writeRows("v1-database.json", [
@@ -1369,7 +1404,11 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
             organization,
             integration.slug,
             integration.name,
-            JSON.stringify({ specHash: hash, authenticationTemplate: integration.template }),
+            JSON.stringify({
+              specHash: hash,
+              ...(integration.specUrl === undefined ? {} : { specUrl: integration.specUrl }),
+              authenticationTemplate: integration.template,
+            }),
             integration.healthCheck === undefined ? "" : JSON.stringify(integration.healthCheck),
           ),
           row(
@@ -3337,6 +3376,30 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           status: "failed",
           reason: "Its server URL uses {tenant}, which no server defines.",
         });
+        // With no server URL, or only a relative one, and no base URL, v1 sent the bare path and
+        // reached no API, whatever URL it fetched the specification from. A finished import is
+        // not run again, so the reason sends the person to the fix prompt and never names any part
+        // of the specification's URL, whose host, path or query can carry a key.
+        const serverlessReason =
+          "Its specification names no server URL and the integration sets no base URL, so v1 had no host to send its requests to either. Use 'Copy fix prompt' to recreate this integration in v2 with an absolute API base URL.";
+        for (const part of [
+          "synthetic-host-secret",
+          "serverless.example.com",
+          "synthetic-path-secret",
+          "synthetic-schema-token",
+        ]) {
+          expect(JSON.stringify(results.get("Serverless"))).not.toContain(part);
+        }
+        expect(JSON.stringify(results.get("Relative"))).not.toContain("relative.example.com");
+        expect(results.get("Serverless")).toMatchObject({
+          status: "failed",
+          reason: serverlessReason,
+        });
+        expect(results.get("Relative")).toMatchObject({
+          status: "failed",
+          reason:
+            "Its server URL is not absolute and the integration sets no base URL, so v1 had no host to send its requests to either. Use 'Copy fix prompt' to recreate this integration in v2 with an absolute API base URL.",
+        });
         expect(results.get("main · Mixed")).toMatchObject({
           status: "failed",
           reason: "Its integration was not imported.",
@@ -3563,6 +3626,40 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             ),
         );
         expect(offered).toEqual([0, 1, 0]);
+        // The fix prompt carries the API with no host by name and kind, with its reason, for the
+        // person's agent to recreate it; never any part of the schema URL's host, path or token.
+        const copied = yield* browser.use("Copy the fix prompt", (page) =>
+          page
+            .context()
+            .grantPermissions(["clipboard-read", "clipboard-write"])
+            .then(() =>
+              workspace(own.name)(page)
+                .getByRole("button", { name: "Copy fix prompt", exact: true })
+                .click(),
+            )
+            .then(() =>
+              workspace(own.name)(page)
+                .getByText("Copied", { exact: true })
+                .waitFor({ state: "visible" }),
+            )
+            .then(() => page.evaluate(() => navigator.clipboard.readText())),
+        );
+        for (const part of [
+          "synthetic-host-secret",
+          "serverless.example.com",
+          "synthetic-path-secret",
+          "synthetic-schema-token",
+          "relative.example.com",
+        ]) {
+          expect(copied).not.toContain(part);
+        }
+        const block = /\n```jsonl\n([^`]*)\n```\n/u.exec(copied)?.[1];
+        expect(block, copied).toBeDefined();
+        expect((block ?? "").split("\n").map((line): unknown => JSON.parse(line))).toContainEqual({
+          kind: "App (v1 integration)",
+          name: "Serverless",
+          reason: serverlessReason,
+        });
       }).pipe(Effect.provide(services)),
     ),
   );

@@ -7368,7 +7368,7 @@ export const scenarios = plan({
   v1ImportRequests: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public, unnamed-method and one service's multi-host APIs and an operation server that uses the first document server's variable without declaring it, refuses an API whose operations call several services or send an account's credentials to several hosts over plain HTTP or use a server variable no server declares, drops an account check whose server variable turns it to plain HTTP, and offers a fix prompt only when an item failed",
+      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public, unnamed-method and one service's multi-host APIs and an operation server that uses the first document server's variable without declaring it, refuses an API whose operations call several services or send an account's credentials to several hosts over plain HTTP or use a server variable no server declares, points an API with no absolute server URL and no base URL to the fix prompt without naming its specification's URL, drops an account check whose server variable turns it to plain HTTP, and offers a fix prompt only when an item failed",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportOAuthRenewal: {
