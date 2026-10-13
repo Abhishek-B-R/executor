@@ -4,8 +4,8 @@
  * without webhooks, and without security requirements, because v1 sent each connection's
  * credentials on every request whatever the document declared.
  */
-import { Option, Schema } from "effect";
-import { JSON_SCHEMA, load as loadYaml } from "js-yaml";
+import { Option, Result, Schema } from "effect";
+import { JSON_SCHEMA, YAMLException, load as loadYaml } from "js-yaml";
 import { getDomain } from "tldts";
 import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import type { OpenApiConfig, OpenApiOperationRow } from "./formats.ts";
@@ -16,21 +16,67 @@ const isObject = (value: unknown): value is Json =>
 
 const methods = ["get", "put", "post", "delete", "patch", "head", "options", "trace"] as const;
 
+/** A stored specification as an object, or why it is not one, without any of its text. */
+export type ParsedSpec =
+  | { readonly ok: true; readonly document: Json }
+  | { readonly ok: false; readonly reason: string };
+
+const kindOf = (value: unknown) =>
+  value === null ? "null" : Array.isArray(value) ? "a list" : `a ${typeof value}`;
+
 /**
- * Parse the stored text: JSON, or YAML for specs v1 stored as fetched, read with v1's parser
- * (js-yaml, JSON schema). A repeated key keeps its last value, as JSON does.
+ * The parser's reason up to the first quoted name, tag or value it carries, so a failure names the
+ * kind of error and never the specification's text.
  */
-export const parseSpec = (text: string): Json | undefined => {
+const parserReason = (reason: string) => reason.split(/[:"'`!<]/)[0]?.trim() ?? "";
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const lossyUtf8 = new TextDecoder("utf-8");
+
+/** The stored bytes' size and anything unusual about their encoding. */
+const describeBytes = (bytes: Uint8Array, utf8Valid: boolean) => {
+  const notes = [`${bytes.length} bytes`];
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    notes.push("starts with a byte order mark");
+  if (!utf8Valid) notes.push("holds bytes that are not UTF-8");
+  if (bytes.includes(0)) notes.push("holds NUL bytes");
+  return notes.join(", ");
+};
+
+/**
+ * Parse the stored bytes as UTF-8 text (a leading byte order mark dropped, bytes that are not
+ * UTF-8 read as U+FFFD): JSON, or YAML for specs v1 stored as fetched, read with v1's parser
+ * (js-yaml, JSON schema). A repeated key keeps its last value, as JSON does. When neither reads
+ * as an object, the reason names the YAML error and its position, and the stored bytes' size and
+ * encoding.
+ */
+export const parseSpec = (bytes: Uint8Array): ParsedSpec => {
+  const strict = Result.try({ try: () => utf8.decode(bytes), catch: () => "not UTF-8" });
+  const text = Result.isSuccess(strict) ? strict.success : lossyUtf8.decode(bytes);
   const json = Option.getOrUndefined(
     Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(text),
   );
-  if (isObject(json)) return json;
+  if (isObject(json)) return { ok: true, document: json };
+  const unreadable = (why: string): ParsedSpec => ({
+    ok: false,
+    reason: `v1's stored specification could not be read: ${why} (${describeBytes(bytes, Result.isSuccess(strict))}).`,
+  });
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the YAML parser throws on input it cannot read
   try {
     const yaml = loadYaml(text, { schema: JSON_SCHEMA, json: true });
-    return isObject(yaml) ? yaml : undefined;
-  } catch {
-    return undefined;
+    return isObject(yaml)
+      ? { ok: true, document: yaml }
+      : unreadable(`it is ${kindOf(yaml)}, not an object`);
+  } catch (error) {
+    if (!(error instanceof YAMLException))
+      return unreadable(
+        `reading it as YAML failed with ${error instanceof Error ? error.name : "an unknown error"}`,
+      );
+    const at =
+      error.mark === undefined
+        ? ""
+        : ` at line ${error.mark.line + 1}, column ${error.mark.column + 1}`;
+    return unreadable(`it is not JSON, and as YAML, ${parserReason(error.reason)}${at}`);
   }
 };
 

@@ -6693,7 +6693,7 @@ export const scenarios = plan({
   v1ImportBuilds: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, and names the build stage and the app's own error when a generated app does not build",
+      "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, names the build stage and the app's own error when a generated app does not build, and says why and where a stored specification cannot be read",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   localSkills: {

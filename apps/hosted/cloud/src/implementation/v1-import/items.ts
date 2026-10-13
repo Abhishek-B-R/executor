@@ -563,11 +563,11 @@ export const generate = (
         } satisfies GeneratedApp;
       }
       case "openapi": {
-        const text = yield* context.source.blob(tenant, "openapi", `spec/${decoded.specHash}`);
-        if (Option.isNone(text)) return yield* fail(context.source.blobMissing);
-        const document = parseSpec(text.value);
-        if (document === undefined)
-          return yield* fail("v1's stored specification could not be read.");
+        const stored = yield* context.source.blob(tenant, "openapi", `spec/${decoded.specHash}`);
+        if (Option.isNone(stored)) return yield* fail(context.source.blobMissing);
+        const parsed = parseSpec(stored.value);
+        if (!parsed.ok) return yield* fail(parsed.reason);
+        const { document } = parsed;
         const operations = yield* context.source.openApiOperations(tenant, integration.slug);
         const tools = yield* context.source.tools(tenant, member, integration.slug);
         const prepared = importedDocument(

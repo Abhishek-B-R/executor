@@ -581,8 +581,9 @@ const spec = {
 };
 
 /**
- * The same document as YAML, as v1 stored specifications it fetched. A flow sequence across lines
- * is valid YAML that only some parsers read.
+ * The same document as YAML, as v1 stored specifications it fetched, with a description on
+ * `deleteWidget`. A flow sequence across lines, and a kept block scalar whose only line is spaces
+ * just before a shallower key, are valid YAML that only some parsers read.
  */
 const specYaml = `openapi: 3.0.3
 info:
@@ -626,6 +627,8 @@ paths:
       responses:
         "204":
           description: gone
+      description: |+
+${" ".repeat(8)}
   /internal:
     get:
       operationId: internal
@@ -2068,11 +2071,22 @@ const wideName = "Kanji 日本 API";
 const widePath = "/public/日本";
 
 /**
- * Three OpenAPI integrations. `Typography`'s document describes its one public operation in
+ * An 81-byte YAML specification whose `version` is indented deeper than its sibling `title`. Its
+ * title holds a literal U+FFFD, which is valid UTF-8.
+ */
+const unreadableYaml = `openapi: 3.0.3
+info:
+  title: Synthetic \uFFFD unreadable
+   version: "1"
+paths: {}
+`;
+
+/**
+ * Four OpenAPI integrations. `Typography`'s document describes its one public operation in
  * `wideText`. `Kanji 日本 API` has a document as large as the largest imported vendor API's, a
  * base URL whose path goes beyond Latin-1 and an API key the user saved in v1. `Scoped` signs in
  * through a v1 client whose authorization URL sets `scope` itself, which v2's OAuth declarations
- * keep to the host.
+ * keep to the host. `Unreadable`'s stored specification is YAML no parser reads.
  */
 const seedBuilds = (organization: string, user: string, slug: string, origin: string) =>
   Effect.gen(function* () {
@@ -2081,6 +2095,7 @@ const seedBuilds = (organization: string, user: string, slug: string, origin: st
     const typography = `typography_${suffix}`;
     const kanji = `kanji_${suffix}`;
     const scoped = `scoped_${suffix}`;
+    const unreadable = `unreadable_${suffix}`;
     const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
     const key = `connection:user:${kanji}:main:token`;
     yield* emulators.v1VaultObject(vaultName(userScope, key), "synthetic-kanji-key");
@@ -2160,6 +2175,14 @@ const seedBuilds = (organization: string, user: string, slug: string, origin: st
           },
         ],
         operations: [["scoped.health", "get", "/me"]],
+      },
+      {
+        slug: unreadable,
+        name: "Unreadable",
+        text: unreadableYaml,
+        config: {},
+        template: [],
+        operations: [["unreadable.health", "get", "/health"]],
       },
     ];
     const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
@@ -3701,6 +3724,13 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(results.get("connection:main · Scoped")).toMatchObject({
           status: "failed",
           reason: "Its integration was not imported.",
+        });
+
+        // A stored specification that cannot be read says why and where, without its contents.
+        expect(results.get("integration:Unreadable")).toMatchObject({
+          status: "failed",
+          reason:
+            "v1's stored specification could not be read: it is not JSON, and as YAML, bad indentation of a mapping entry at line 4, column 11 (81 bytes).",
         });
       }).pipe(Effect.provide(services)),
     ),
