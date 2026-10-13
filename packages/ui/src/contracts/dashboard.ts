@@ -15,7 +15,8 @@ import type {
   ToolRouter,
   ToolSummary,
 } from "@executor-js/sdk";
-import type { CatalogIcon, CatalogImport } from "@executor-js/catalog/contracts";
+import type { CatalogImport } from "@executor-js/catalog/contracts";
+import type { CatalogIcons } from "./icons.ts";
 import type {
   DeploymentDisplay,
   SourceDisplayFile,
@@ -152,8 +153,8 @@ export interface FailureProps<E> {
 }
 /** Only error-independent presentation belongs in context. Queries keep their own error types. */
 export interface DashboardBindings {
-  /** Catalog icons by lowercase app name; see `catalogIconsAtom`. */
-  readonly catalogIcons: Atom.Atom<ReadonlyMap<string, readonly CatalogIcon[] | null>>;
+  /** Catalog apps' icons by package and by name; see `catalogIconsAtom`. */
+  readonly catalogIcons: Atom.Atom<CatalogIcons>;
   readonly AppLink: ComponentType<AppLinkProps>;
   readonly AccountLink: ComponentType<AccountLinkProps>;
 }

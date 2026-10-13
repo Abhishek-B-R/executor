@@ -552,7 +552,7 @@ function ItemIcon({
     <ProviderIcon
       name={name}
       url={item.host}
-      icons={icons.get(name.trim().toLowerCase()) ?? undefined}
+      icons={icons.byName.get(name.trim().toLowerCase()) ?? undefined}
     />
   );
 }

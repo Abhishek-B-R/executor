@@ -8,13 +8,12 @@ import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import {
   accountNeedsSignIn,
   accountSelectionIssues,
-  providerDisplayUrl,
   type Query,
   type FailureProps,
   type AccountSummary,
 } from "../../contracts/dashboard.ts";
 import { useDashboard } from "./context.tsx";
-import { ProviderIcon } from "./common.tsx";
+import { AppProviderIcon } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 import { cn } from "../lib/utils.ts";
 
@@ -282,10 +281,7 @@ export function AppOverviewAccounts({
           );
           return (
             <div key={slot} className="flex items-center gap-3 py-2.5">
-              <ProviderIcon
-                name={requirement.definition.name}
-                url={providerDisplayUrl(requirement.definition)}
-              />
+              <AppProviderIcon app={app} provider={requirement.definition} />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] font-medium">
                   {requirement.definition.name}

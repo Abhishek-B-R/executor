@@ -9,6 +9,7 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { holdQuery } from "../support/query-transition.ts";
 
 const Icons = Schema.Array(
   Schema.Struct({
@@ -34,9 +35,24 @@ const svg = (fill: string) =>
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="7" fill="${fill}"/></svg>`,
   ).toString("base64")}`;
 
-/** An app declaring these icons beside its accounts. */
-const source = (icons: unknown) => `import { defineApp, object, query, router } from "apps";
-export default defineApp({ accounts: {}, icons: ${JSON.stringify(icons)} }, async () => ({
+/**
+ * An app declaring these icons beside its accounts. Its provider's OAuth host would give the
+ * dashboard a domain logo, which must not stand in for the declared icon.
+ */
+const source = (
+  icons: unknown,
+) => `import { defineApp, defineProvider, oauth2, object, query, router } from "apps";
+const service = defineProvider({
+  name: "Icon fixture",
+  auth: {
+    oauth: oauth2({
+      authorizationUrl: "https://icons.example.test/oauth/authorize",
+      tokenUrl: "https://icons.example.test/oauth/token",
+      scopes: ["read"],
+    }),
+  },
+});
+export default defineApp({ accounts: { service: service.many() }, icons: ${JSON.stringify(icons)} }, async () => ({
   tools: router({ status: query({ input: object({}) }, async () => "ready") }),
 }));`;
 
@@ -138,6 +154,35 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
           });
         expect(yield* shown("The app page heading shows its icon", heading, dark)).toBe(dark);
         yield* browser.checkpoint("App heading with its dark icon");
+
+        // The declared icon needs no catalog: while the catalog read is held, a fresh document shows
+        // it in the heading and on the provider row, and never requests a domain logo.
+        const catalog = yield* holdQuery(["/api/catalog"], "continue");
+        const logos: string[] = [];
+        yield* browser.use("Watch for domain logos", (page) => {
+          page.on("request", (request) => {
+            if (new URL(request.url()).hostname === "integrations.sh") logos.push(request.url());
+          });
+          return Promise.resolve();
+        });
+        yield* browser.use("Open the app's accounts in a new document", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
+        );
+        yield* catalog.requested;
+        const provider = (page: Page) => page.getByRole("region", { name: "Icon fixture" });
+        expect(yield* shown("The heading shows its icon before the catalog", heading, dark)).toBe(
+          dark,
+        );
+        expect(
+          yield* shown("The provider row shows the app's icon before the catalog", provider, dark),
+        ).toBe(dark);
+        yield* browser.checkpoint("App accounts with its icon before the catalog");
+        yield* catalog.release;
+        yield* browser.use("Use light theme", (page) =>
+          page.emulateMedia({ colorScheme: "light" }),
+        );
+        expect(yield* shown("The provider row keeps the app's icon", provider, light)).toBe(light);
+        expect(logos).toEqual([]);
       }),
     ),
   );

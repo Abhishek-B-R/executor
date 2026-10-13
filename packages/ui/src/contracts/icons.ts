@@ -12,21 +12,44 @@ export const faviconUrl = (url: string | null | undefined, size: number): string
   return domain === null ? null : `https://integrations.sh/logo/${domain}?sz=${size * 2}`;
 };
 
-/**
- * Catalog apps' own icons by exact name, so an installed copy shows its catalog logo. Names that two
- * entries share map to nothing rather than guess between them.
- */
+/** Catalog apps' icons, and whether the catalog has answered yet. */
+export interface CatalogIcons {
+  /**
+   * The catalog has loaded or failed. Before then an icon that may come from it is unknown, so
+   * the dashboard shows the loading skeleton instead of a guessed domain logo.
+   */
+  readonly settled: boolean;
+  /** By package name, which an installed copy records as `copiedFrom.name`. */
+  readonly byPackage: ReadonlyMap<string, readonly CatalogIcon[]>;
+  /**
+   * By lowercase name, for a provider shown without its app. Names that two entries share map to
+   * nothing rather than guess between them.
+   */
+  readonly byName: ReadonlyMap<string, readonly CatalogIcon[] | null>;
+}
+
+/** A dashboard without a catalog has nothing to wait for. */
+export const noCatalogIcons: CatalogIcons = {
+  settled: true,
+  byPackage: new Map(),
+  byName: new Map(),
+};
+
 export const catalogIconsAtom = <E>(catalogAtom: Query<readonly CatalogEntry[], E>) =>
-  Atom.make((get) => {
-    const icons = new Map<string, readonly CatalogIcon[] | null>();
-    const catalog = AsyncResult.value(get(catalogAtom));
-    if (Option.isNone(catalog)) return icons;
-    for (const entry of catalog.value) {
-      if (entry.icons.length === 0) continue;
-      const name = entry.name.trim().toLowerCase();
-      icons.set(name, icons.has(name) ? null : entry.icons);
-    }
-    return icons;
+  Atom.make((get): CatalogIcons => {
+    const result = get(catalogAtom);
+    const settled = AsyncResult.isSuccess(result) || AsyncResult.isFailure(result);
+    const byPackage = new Map<string, readonly CatalogIcon[]>();
+    const byName = new Map<string, readonly CatalogIcon[] | null>();
+    const catalog = AsyncResult.value(result);
+    if (Option.isSome(catalog))
+      for (const entry of catalog.value) {
+        if (entry.icons.length === 0) continue;
+        byPackage.set(entry.package, entry.icons);
+        const name = entry.name.trim().toLowerCase();
+        byName.set(name, byName.has(name) ? null : entry.icons);
+      }
+    return { settled, byPackage, byName };
   });
 
 /** An app's declared icon for each color scheme. Both are the same when it declares one. */

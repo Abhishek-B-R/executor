@@ -10,6 +10,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Inventory } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { officialApps } from "../support/public-catalogs.ts";
+import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Catalog = Schema.Array(
@@ -145,6 +146,51 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
 
         const row = (page: Page, name: string) => page.locator(".catalog-row", { hasText: name });
         yield* browser.login(actors.owner);
+
+        // The tracker's source declares no icons, so its page shows the catalog entry's icon, found
+        // by the package it was copied from. Until the catalog answers it shows a neutral icon,
+        // never its OAuth host's domain logo.
+        const catalog = yield* holdQuery(["/api/catalog"], "continue");
+        const logos: string[] = [];
+        yield* browser.use("Watch for domain logos", (page) => {
+          page.on("request", (request) => {
+            if (new URL(request.url()).hostname === "integrations.sh") logos.push(request.url());
+          });
+          return Promise.resolve();
+        });
+        yield* browser.use("Open the tracker's accounts", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${tracker.id}?view=accounts`),
+        );
+        yield* catalog.requested;
+        const heading = (page: Page) =>
+          page.locator("header", {
+            has: page.getByRole("heading", { level: 1, name: trackerName }),
+          });
+        const provider = (page: Page) =>
+          page.getByRole("region", { name: officialApps.tracker.name, exact: true });
+        const images = yield* browser.use("The icons wait for the catalog", (page) =>
+          heading(page)
+            .locator('.provider-icon [data-icon="loading"]')
+            .waitFor()
+            .then(() =>
+              Promise.all([
+                heading(page).locator(".provider-icon img").count(),
+                provider(page).locator(".provider-icon img").count(),
+              ]),
+            ),
+        );
+        expect(images).toEqual([0, 0]);
+        yield* browser.checkpoint("The tracker's icons wait for the catalog");
+        yield* catalog.release;
+        const trackerIcon = `img[data-icon="app"][src$="/catalog/icons/tracker.svg"]`;
+        yield* browser.use("The heading shows the catalog icon", (page) =>
+          heading(page).locator(trackerIcon).waitFor(),
+        );
+        yield* browser.use("The provider row shows the catalog icon", (page) =>
+          provider(page).locator(trackerIcon).waitFor(),
+        );
+        yield* browser.checkpoint("The tracker shows its catalog icon");
+        expect(logos).toEqual([]);
         yield* browser.use("Open Add app", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/add`),
         );
