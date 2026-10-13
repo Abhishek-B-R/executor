@@ -807,6 +807,16 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  liveOpenapiExampleIds: {
+    fixtures: "actors",
+    file: "live-openapi-example-ids.spec.ts",
+    title: "Live OpenAPI validates and calls tools whose schema examples repeat an id",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   liveOpenapiDiagnostics: {
     fixtures: "actors",
     file: "live-openapi-import.spec.ts",
