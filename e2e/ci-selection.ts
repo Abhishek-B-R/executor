@@ -141,6 +141,13 @@ const jobs = {
     runner: 2,
     pattern: "Cloud MCP tool calls send their checks and reads",
   },
+  // Autumn faults match every caller of a route on a Cloud's Autumn emulator, and other jobs'
+  // scenarios read billing and v1 plans, so this slows Autumn on its own local Cloud.
+  "cloud-autumn": {
+    target: "cloud",
+    runner: 1,
+    pattern: "Cloud sign-in's v1 check and the billing overview",
+  },
   // This counts every request in local Cloud's single session object isolate, so another
   // scenario's MCP request in flight would change its count.
   "cloud-isolate": { target: "cloud", runner: 1, pattern: "Cloud MCP session objects report" },

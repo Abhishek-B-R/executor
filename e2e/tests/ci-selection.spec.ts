@@ -21,6 +21,7 @@ const jobs = [
   "cloud-workers",
   "cloud-locks",
   "cloud-batch",
+  "cloud-autumn",
   "cloud-isolate",
   "cloud-rate-limit",
   "cloud-rollback",
@@ -353,7 +354,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
           const runners = cloudRunners(run.outputs);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-isolate",
+            "cloud, cloud-autumn, cloud-isolate",
             "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
             "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
           ]);
@@ -1015,6 +1016,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-workers",
         "cloud-locks",
         "cloud-batch",
+        "cloud-autumn",
         "cloud-isolate",
         "cloud-rate-limit",
         "cloud-rollback",

@@ -1,9 +1,11 @@
 /**
  * The v1 import (`notes/v1-import.md`): preview, start, one item per request, finish. Every
- * request checks that the caller is the v1 workspace's single active member, by verified email,
- * and that the workspace is on a free plan. The import copies: v1 keeps working, and the moved
- * flag (`moved-flag.ts`) is not used. Nothing is written to v1 except, when an import finishes,
- * where the workspace went on its WorkOS organization (`moved-notice.ts`).
+ * request checks that the caller is the v1 workspace's single active member, by verified email.
+ * Preview and start also check that the workspace is on a free plan; once an import has started,
+ * its items and its finish rely on that check instead of asking Autumn again. The import copies:
+ * v1 keeps working, and the moved flag (`moved-flag.ts`) is not used. Nothing is written to v1
+ * except, when an import finishes, where the workspace went on its WorkOS organization
+ * (`moved-notice.ts`).
  */
 import { organizationOwner } from "@executor-js/hosted-server";
 import { AppId, OAuthGrantImport } from "@executor-js/sdk/core";
@@ -72,8 +74,8 @@ export const makeV1Import = (settings: V1SourceSettings) =>
         return { source, store: makeImportStore(request.sql) };
       });
 
-    /** The caller's WorkOS user for this v1 workspace, or why they cannot import it. */
-    const eligible = (request: V1ImportRequest, organization: V1OrganizationId) =>
+    /** The caller's WorkOS user when they are the v1 workspace's single member, or why not. */
+    const member = (request: V1ImportRequest, organization: V1OrganizationId) =>
       Effect.gen(function* () {
         const { source, store } = yield* open(request);
         const user = yield* store.user(request.user);
@@ -90,9 +92,20 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           return yield* new V1ImportNotEligible({ reason: "multiple_members" });
         if (members[0] !== memberships.user)
           return yield* new V1ImportNotEligible({ reason: "not_member" });
-        if (yield* source.paid(organization))
-          return yield* new V1ImportNotEligible({ reason: "paid" });
         return { source, store, member: memberships.user };
+      });
+
+    /**
+     * The caller's WorkOS user for this v1 workspace, or why they cannot import it. Starting is
+     * the decision to import, so only preview and start ask Autumn for the plan. A started
+     * import's items and finish need only `member`.
+     */
+    const eligible = (request: V1ImportRequest, organization: V1OrganizationId) =>
+      Effect.gen(function* () {
+        const found = yield* member(request, organization);
+        if (yield* found.source.paid(organization))
+          return yield* new V1ImportNotEligible({ reason: "paid" });
+        return found;
       });
 
     const resultOf = (
@@ -240,7 +253,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
 
     const finish: typeof V1Import.Service.finish = (request, organization) =>
       Effect.gen(function* () {
-        const { source, store, member } = yield* eligible(request, organization);
+        const { source, store, member: user } = yield* member(request, organization);
         const started = yield* store.find("organization", organization);
         if (started?.status !== "imported" || started.v2_id === null)
           return yield* new V1ImportNotStarted();
@@ -262,20 +275,20 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           request,
           store,
           organization,
-          yield* source.snapshot(organization, member),
+          yield* source.snapshot(organization, user),
         );
       }).pipe(Effect.withSpan("v1Import.finish"));
 
     const item: typeof V1Import.Service.item = (request, organization, key) =>
       Effect.gen(function* () {
-        const { source, store, member } = yield* eligible(request, organization);
+        const { source, store, member: user } = yield* member(request, organization);
         const started = yield* store.find("organization", organization);
         const target =
           started?.status === "imported" && started.v2_id !== null
             ? yield* store.target(started.v2_id)
             : undefined;
         if (target === undefined) return yield* new V1ImportNotStarted();
-        const snapshot = yield* source.snapshot(organization, member);
+        const snapshot = yield* source.snapshot(organization, user);
         const firstParty = firstPartyClients(request);
         const planned = previewItems(snapshot, firstParty).find(
           (candidate) => candidate.kind === key.kind && candidate.id === key.id,

@@ -6706,6 +6706,19 @@ export const scenarios = plan({
       "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, builds OpenAPI and GraphQL apps whose v1 OAuth clients set scopes in their authorization URLs, which reconnect sending v1's authorization and token requests, refusing a client whose request v2 cannot send as v1 did, and says why and where a stored specification cannot be read",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportPlanOutage: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import retries v1 plan reads that time out or fail, imports a started workspace's items without reading its plan again, and says it is unavailable while plan reads keep failing",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  // Autumn faults match every caller of a route, so this runs on its own managed local Cloud.
+  slowAutumnDeadlines: {
+    file: "cloud-autumn-slow.spec.ts",
+    title:
+      "Cloud sign-in's v1 check and the billing overview each send one Autumn read while Autumn is slow, and say they are unavailable within their own deadlines",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   localSkills: {
     file: "local-skills.spec.ts",
     title: "local MCP skills follow configured copies and deployment versions",

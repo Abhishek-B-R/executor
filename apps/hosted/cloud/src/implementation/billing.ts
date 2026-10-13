@@ -10,7 +10,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cause, Effect, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
-import { autumnLive } from "./autumn-client.ts";
+import { autumnLive, autumnReads } from "./autumn-client.ts";
 import {
   recordSeatPlan,
   recordSeats,
@@ -65,7 +65,7 @@ export const billingLive = Effect.gen(function* () {
       const server = yield* settings.serverUrl;
       const catalog = yield* settings.catalog;
       const autumn = yield* AutumnClient.pipe(
-        Effect.provide(autumnLive({ secretKey: secret, serverUrl: server })),
+        Effect.provide(autumnLive({ secretKey: secret, serverUrl: server }, autumnReads.once)),
       );
       return { autumn, catalog };
     }).pipe(Effect.provide(FetchHttpClient.layer)),

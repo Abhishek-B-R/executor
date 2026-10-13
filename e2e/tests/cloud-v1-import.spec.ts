@@ -2542,6 +2542,23 @@ const seedBuilds = (
     ]);
   });
 
+/** A workspace with one rule for a removed integration and one toolkit that grants nothing. */
+const seedPlainWorkspace = (organization: string, slug: string) =>
+  writeRows("v1-database.json", [
+    {
+      sql: "insert into organizations (id, name, slug) values ($1, $2, $3)",
+      params: [organization, "Synthetic plain workspace", slug],
+    },
+    {
+      sql: "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', 'removed_service.*', 'block')",
+      params: [organization],
+    },
+    {
+      sql: "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'toolkits', 'toolkits', 'tk_1', $2::json)",
+      params: [organization, JSON.stringify({ id: "tk_1", name: "Support", slug: "support" })],
+    },
+  ]);
+
 const status = (preview: typeof Preview.Type, kind: string, label: string) =>
   preview.items
     .filter((item) => item.kind === kind && item.label === label)
@@ -4255,6 +4272,114 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           reason:
             "v1's stored specification could not be read: it is not JSON, and as YAML, bad indentation of a mapping entry at line 4, column 11 (81 bytes).",
         });
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportPlanOutage.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedPlainWorkspace(own.organization, `v1-${randomUUID().slice(0, 8)}`);
+        yield* googleSignIn(identity.email);
+
+        const armed: string[] = [];
+        /** Arm a plan-read fault, call, then check the call used it up and still succeeded. */
+        const through = (
+          fault: { status: number; delayMs?: number },
+          step: string,
+          method: "GET" | "POST",
+          path: string,
+          payload?: unknown,
+        ) =>
+          Effect.gen(function* () {
+            const id = yield* emulators.failAutumnReads("customers.get", { ...fault, times: 1 });
+            armed.push(id);
+            const response = yield* call(step, method, path, payload);
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            expect((yield* emulators.autumnFaults).has(id)).toBe(false);
+            return response;
+          });
+
+        yield* Effect.gen(function* () {
+          // A plan read that never answers in time, then one that answers.
+          const choices = yield* through(
+            { status: 200, delayMs: 12_000 },
+            "List workspaces through a plan read that times out",
+            "GET",
+            "/api/v1-import",
+          ).pipe(Effect.flatMap((response) => decode(Choices, response)));
+          expect(
+            choices.organizations.find((organization) => organization.id === own.organization),
+          ).toMatchObject({ eligible: true, reason: null });
+
+          yield* through(
+            { status: 502 },
+            "Preview through a plan read that fails",
+            "GET",
+            `/api/v1-import/${own.organization}`,
+          );
+          const started = yield* through(
+            { status: 429 },
+            "Start through a rate-limited plan read",
+            "POST",
+            `/api/v1-import/${own.organization}/start`,
+            { target: { kind: "new" } },
+          ).pipe(Effect.flatMap((response) => decode(Preview, response)));
+          expect(started.target).not.toBeNull();
+
+          // Once started, items do not read the plan: they import while every plan read fails.
+          const down = yield* emulators.failAutumnReads("customers.get", {
+            status: 503,
+            times: 50,
+          });
+          armed.push(down);
+          const results = new Map<string, typeof ItemResult.Type>();
+          for (const item of started.items) {
+            const response = yield* call(
+              `Import ${item.kind} ${item.label} while plan reads fail`,
+              "POST",
+              `/api/v1-import/${own.organization}/items/${item.kind}/${item.id}`,
+            );
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            results.set(item.label, yield* decode(ItemResult, response));
+          }
+          expect(results.get("removed_service.*")?.status).toBe("skipped");
+          expect(results.get("Support")).toMatchObject({
+            status: "imported",
+            note: grantsNoConnection,
+          });
+          const finished = yield* call(
+            "Finish while plan reads fail",
+            "POST",
+            `/api/v1-import/${own.organization}/finish`,
+          );
+          expect(finished.status, JSON.stringify(finished.body)).toBe(200);
+          expect((yield* emulators.autumnFaults).get(down)).toBe(50);
+
+          // Reads that keep failing make a plan check say so, after its retries.
+          for (const [step, path] of [
+            ["List workspaces while plan reads fail", "/api/v1-import"],
+            ["Preview while plan reads fail", `/api/v1-import/${own.organization}`],
+          ] as const) {
+            const refused = yield* call(step, "GET", path);
+            expect(refused.status).toBe(503);
+            expect(refused.body).toMatchObject({
+              _tag: "V1ImportUnavailable",
+              message: "Importing from Executor v1 is unavailable. Try again later.",
+            });
+          }
+          // Each refusal sent three plan reads: the first and two retries.
+          expect((yield* emulators.autumnFaults).get(down)).toBe(44);
+        }).pipe(
+          // The import's later scenarios read plans on this emulator too.
+          Effect.ensuring(
+            Effect.forEach(armed, emulators.clearAutumnFault, { discard: true }).pipe(Effect.orDie),
+          ),
+        );
       }).pipe(Effect.provide(services)),
     ),
   );

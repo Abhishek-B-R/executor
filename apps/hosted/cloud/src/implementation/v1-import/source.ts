@@ -9,7 +9,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { AutumnClient, type AutumnOptions } from "../../contracts/autumn.ts";
 import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
-import { autumnLive } from "../autumn-client.ts";
+import { autumnLive, autumnReads } from "../autumn-client.ts";
 import { freePlans } from "../v1-membership.ts";
 import {
   ArtifactRow,
@@ -270,7 +270,7 @@ export const makeV1Source = (settings: V1SourceSettings) =>
     };
     const blobs = settings.blobs === "postgres" ? postgresBlobs : settings.blobs;
     const autumn = AutumnClient.pipe(
-      Effect.provide(autumnLive(settings.billing)),
+      Effect.provide(autumnLive(settings.billing, autumnReads.patient)),
       Effect.provideService(HttpClient.HttpClient, http),
     );
     return {
