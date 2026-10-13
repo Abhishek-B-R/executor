@@ -323,7 +323,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               "Delete app",
               "Save access",
               "Reset changes",
-              "Share publicly",
+              "Publish",
             ])
               expect(
                 yield* browser.use(`Restricted ${label} remains visible`, (page) =>

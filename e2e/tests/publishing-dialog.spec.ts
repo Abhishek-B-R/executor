@@ -97,7 +97,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
                 `/org/${actors.organization.slug}/apps/${app.id}`,
               );
               yield* browser.use("Publish is available without loading source files", (page) =>
-                page.getByRole("button", { name: "Share publicly", exact: true }).waitFor(),
+                page.getByRole("button", { name: "Publish", exact: true }).waitFor(),
               );
               yield* browser.use("Source navigation is available", (page) =>
                 page
@@ -106,7 +106,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
                   .waitFor(),
               );
               yield* browser.use("Open Publish", (page) =>
-                page.getByRole("button", { name: "Share publicly", exact: true }).click(),
+                page.getByRole("button", { name: "Publish", exact: true }).click(),
               );
               yield* sourceHold.requested;
               yield* browser.use("The dialog owns the source wait", (page) =>
@@ -118,12 +118,18 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
               );
               expect(
                 yield* browser.use("No publish action for blocked source", (page) =>
-                  page.getByRole("button", { name: "List publicly", exact: true }).count(),
+                  page
+                    .getByRole("dialog")
+                    .getByRole("button", { name: "Publish", exact: true })
+                    .count(),
                 ),
               ).toBe(0);
               expect(
                 yield* browser.use("No other app's unpublish action", (page) =>
-                  page.getByRole("button", { name: "Stop sharing", exact: true }).count(),
+                  page
+                    .getByRole("dialog")
+                    .getByRole("button", { name: "Unpublish", exact: true })
+                    .count(),
                 ),
               ).toBe(0);
               if (fixture.reason === "unscoped-name") {
@@ -221,7 +227,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
               `/org/${actors.organization.slug}/apps/${app.id}`,
             );
             yield* browser.use("Open Publish for the saved package", (page) =>
-              page.getByRole("button", { name: "Share publicly", exact: true }).click(),
+              page.getByRole("button", { name: "Publish", exact: true }).click(),
             );
             const rename = browser.use("Rename from the dialog", (page) =>
               page
@@ -255,7 +261,10 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
             yield* browser.checkpoint("Failed rename read can be retried");
             yield* rename;
             yield* browser.use("The dialog reviews the renamed package", (page) =>
-              page.getByRole("button", { name: "List publicly", exact: true }).waitFor(),
+              page
+                .getByRole("dialog")
+                .getByRole("button", { name: "Publish", exact: true })
+                .waitFor(),
             );
             yield* browser.use("The listing shows the new name", (page) =>
               page.getByRole("dialog").getByText(suggestedName, { exact: true }).waitFor(),
@@ -287,10 +296,13 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
               `/org/${actors.organization.slug}/apps/${app.id}?view=source`,
             );
             yield* browser.use("Preview publication", (page) =>
-              page.getByRole("button", { name: "Share publicly", exact: true }).click(),
+              page.getByRole("button", { name: "Publish", exact: true }).click(),
             );
             yield* browser.use("The ready package can be published", (page) =>
-              page.getByRole("button", { name: "List publicly", exact: true }).waitFor(),
+              page
+                .getByRole("dialog")
+                .getByRole("button", { name: "Publish", exact: true })
+                .waitFor(),
             );
             yield* browser.checkpoint("Ready package shows its exact public name");
             yield* browser.use("Close without publishing", (page) =>
