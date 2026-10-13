@@ -11,7 +11,7 @@ import { appsManifest } from "../support/apps-release.ts";
 
 const privateMarker = "SYNTHETIC_PRIVATE_CACHE_VALUE";
 const source = `import { defineApp, query, object, boolean, string, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     // Eight days in all, a day past the retention.
     longLived: query({ input: object({}) }, async ({ cache }) =>

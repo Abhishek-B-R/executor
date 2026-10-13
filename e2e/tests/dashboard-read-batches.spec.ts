@@ -120,7 +120,7 @@ const deploy = (name: string, factory: string) =>
         {
           path: "index.ts",
           content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   ${factory}
   return { tools: router({ status: query({ description: "Status", input: object({}) }, async () => "ready") }) };
 });`,

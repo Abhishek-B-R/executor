@@ -11,6 +11,11 @@ export { buildFrameworkOnceStep } from "./implementation/build-framework-once.ts
 export type { BuildFrameworkHost } from "./implementation/build-framework-once.ts";
 export type { DataStepHost } from "./implementation/host-data-steps.ts";
 export {
+  profileAppCopiesStep,
+  profileAppCopiesStepName,
+} from "./implementation/profile-app-copies.ts";
+export type { ProfileAppCopiesHost } from "./implementation/profile-app-copies.ts";
+export {
   expireIdleAgentGrants,
   idleAgentGrantsStep,
   idleAgentGrantsStepName,

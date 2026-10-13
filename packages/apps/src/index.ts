@@ -7,7 +7,8 @@ export { CacheError } from "@executor-js/app-cache/contracts";
  * exposes ordinary declarations, schema helpers and Promise operations.
  */
 import { Effect, type Schema as EffectSchema } from "effect";
-import type { WebhookContext } from "./contracts/context.ts";
+import type { AppRequirements, WebhookContext } from "./contracts/context.ts";
+import type { AccountScope } from "./contracts/app.ts";
 import { type JsonResponse as NativeResponse, ResponseDecodeError } from "./contracts/http.ts";
 import {
   OAuth2AccessToken as NativeAccessToken,
@@ -27,11 +28,12 @@ import {
   type RequestPlacements,
 } from "./implementation/placement.ts";
 import type { Placement } from "./contracts/placement.ts";
-import type {
-  AppContext as NativeAppContext,
-  QueryContext as NativeQueryContext,
-} from "./contracts/context.ts";
-import { query as operationQuery, type OperationOptions } from "./implementation/operations.ts";
+import type { QueryContext as NativeQueryContext } from "./contracts/context.ts";
+import {
+  query as operationQuery,
+  type AnyContext,
+  type OperationOptions,
+} from "./implementation/operations.ts";
 import {
   decoderOf,
   fieldExposure,
@@ -246,8 +248,9 @@ export function oauth2(
   );
 }
 
-export type { AccountSlots } from "./contracts/app.ts";
+export type { AccountScope, AccountSlots, WebhookAccount } from "./contracts/app.ts";
 export type {
+  AnyScopeMutationContext,
   AppRequirements,
   AppContext,
   QueryContext,
@@ -266,8 +269,13 @@ type AuthorWebhook<Member, Config, State> = Member extends object
     }
   : never;
 /** Author lifecycle methods use async functions and share native decoded context/state types. */
+/**
+ * A webhook's context names its source account's scope: one with `user` serves a user requirement
+ * (`account: { user: "x" }`), one of the `"app"` scope an app requirement (`account: { app: "x" }`)
+ * and runs without a caller.
+ */
 export type Webhook<
-  Context extends WebhookContext,
+  Context extends WebhookContext<AppRequirements, AccountScope>,
   Config extends Schema<unknown, boolean>,
   State extends Schema<unknown, boolean>,
 > = AuthorWebhook<
@@ -320,7 +328,7 @@ export type {
  * `request` places a credential in a query parameter, such as `query("key", key)`.
  */
 export function query(name: string, value: PlacementInput): Placement;
-export function query<Input, Output, Context extends NativeAppContext = NativeQueryContext>(
+export function query<Input, Output, Context extends AnyContext = NativeQueryContext>(
   options: OperationOptions<Input, Output>,
   run: (context: Context, input: Input) => Promise<Output>,
 ): ReturnType<typeof operationQuery<Input, Output, Context>>;
@@ -334,6 +342,7 @@ export {
   mutation,
   withApproval,
   toolAnnotations,
+  type Approved,
   type Operation,
   type OperationOptions,
 } from "./implementation/operations.ts";
@@ -352,6 +361,12 @@ export {
   type WorkflowReads,
   type WorkflowControls,
 } from "./contracts/workflows.ts";
-export { interval, cron, type ScheduleDeclaration } from "./implementation/schedules.ts";
+export {
+  appCron,
+  appInterval,
+  userCron,
+  userInterval,
+  type ScheduleDeclaration,
+} from "./implementation/schedules.ts";
 
 export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";

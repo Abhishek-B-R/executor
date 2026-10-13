@@ -14,9 +14,11 @@ Read these files first:
 - `src/implementation/execute.ts`: discover the caller's catalog and run code against it.
 - `src/implementation/server.ts`: compose the tools with Effect's HTTP MCP transport.
 
-`McpBackend<E>` supplies `listApps`, `listSkills`, `readSkill`, `listTools`, `callTool`, `resumeInvocation`, and
-`authorizeElicitation`, and `listTargets`. The last operation rechecks access before a running tool
-receives an answer.
+`McpBackend<E>` supplies `listApps`, `listAccounts`, `listSkills`, `readSkill`, `listTools`, `callTool`,
+`resumeInvocation` and `authorizeElicitation`. `listAccounts` returns each user requirement of an app
+with the caller's linked accounts for it; app requirements, filled by the accounts the app's managers
+bind, are not listed. `authorizeElicitation` rechecks access before a running tool receives an
+answer.
 Approval-required calls carry the app framework's MCP form elicitation; resume
 passes the same accept/decline/cancel response to the SDK. Each operation keeps
 its native typed errors. The shared response boundary uses their static schema
@@ -50,8 +52,8 @@ host's `executor`, `code-mode` and `app-authoring` skills; start with
 to that app, including when the grant excludes the Executor app or the user deletes it.
 Hosts pass the same `executor` skill's body as `instructions`, which the server sends when a
 client connects.
-Agent namespaces use name-derived app slugs, such as `tools.executor.profiles["<management-profile-id>"].queries` and
-`tools.executor.profiles["<management-profile-id>"].mutations`; identity and permissions still use immutable IDs.
+Agent namespaces use name-derived app slugs, such as `tools.executor.queries` and
+`tools.executor.mutations`; identity and permissions still use immutable IDs.
 
 The workerd build condition of codemode accepts JavaScript without loading the
 TypeScript compiler. Its Node build can also transpile TypeScript; `execute`
@@ -77,6 +79,27 @@ through an MCP bearer grant. Browser mode returns `approvalUrl` and exposes a
 collector-only `resume({ requestId })` tool. It never accepts an agent-supplied
 decision. Browser answers are ephemeral and expire with their interaction.
 
-Personal profiles appear under `tools[appSlug].profiles[profileId]`.
-Tool descriptions include account labels. Skills remain one catalog per app and
-deployment. Discovery captures the profile revision used by the call.
+## Accounts
+
+Each app appears once, under `tools[appSlug]`. Calls never choose accounts: each runs with the
+caller's linked accounts for the app's user requirements, which `listAccounts` returns by
+requirement, and the accounts linked to the app for everyone for its app requirements. A plain
+requirement uses its linked account (the newest, if there are several) and fails with
+`AccountRequired` when there is none; a `.many()` requirement uses every one. The rules are the SDK's
+`resolveLinkedAccounts`, shared with the products. This package names only the user requirements'
+accounts (`{ app: {}, user }`); the backend fills the app requirements from the app links on every
+operation, so agents never see or name them.
+
+A tool input with its own `$accounts` key (any value) fails with the SDK's
+`AccountChoiceUnsupported` before the tool runs, and so does a `skills` read that passes
+`accounts`. Signatures never offer `$accounts`; search lists each app's linked account labels once
+per user requirement, as context. App accounts are never described.
+
+Discovery's caches live for one execution. Listings the SDK keeps across executions, such as search
+rows, are keyed by every account the backend resolved, in both scopes, so linking or unlinking an
+app account lists the app again rather than serving a listing read with the previous links.
+
+Discovery lists an app's catalog and skills with the same accounts a call uses. An app whose
+plain requirement has no linked account exposes no tools (calling into it reports
+`AppAccountRequired`) and lists no skills. Calls are pinned to the deployment discovery listed and
+resolve their accounts again; backends recheck them.

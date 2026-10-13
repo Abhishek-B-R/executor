@@ -1,12 +1,12 @@
-import { ProfileHost, type ProfileDispatcher } from "./profiles.ts";
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
+import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-import { type Effect, type Redacted, type Stream, Schema } from "effect";
+import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
 import { StorageHost, type Credentials } from "./storage.ts";
-import { PrefetchHost } from "./profiles.ts";
+import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
 import { OAuthGrantImport } from "./oauth.ts";
@@ -23,11 +23,16 @@ import type {
   ToolSearchPage,
   ToolSearchUnavailable,
 } from "./tools.ts";
-import type { App } from "./apps.ts";
+import type { AccountScope, App } from "./apps.ts";
 import type { Account } from "./account.ts";
+import type {
+  AccountConnectionRefused,
+  AccountConnectionTargetChanged,
+} from "./account-connection.ts";
 import type {
   AccountConnectionId,
   AccountId,
+  AppId,
   ApprovalRequestId,
   OwnerId,
   StorageError,
@@ -37,43 +42,150 @@ import { RepositoryHost, type RepositoryBackend } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
 
+/**
+ * The subject whose access an operation is checked against. Products provide it around the
+ * operations a signed-in caller starts; the SDK provides the saved actor around background work:
+ * schedules, webhook callbacks and workflow steps. Undefined when the product has no subjects.
+ * Never supplied by authored code.
+ */
+export const CurrentActor = Context.Reference<string | undefined>("executor/CurrentActor", {
+  defaultValue: () => undefined,
+});
+
+/**
+ * An account an app requirement uses: the product authorizes it by the app link of that account to
+ * that requirement. Requirement names are unique across scopes.
+ */
+export interface AppAccountUse {
+  readonly requirement: string;
+  readonly account: Pick<Account, "id" | "owner">;
+}
+
+/** One account linked to one requirement of an app, in either scope. */
+export interface AccountLinkRecord {
+  readonly requirement: string;
+  readonly account: AccountId;
+}
+
 /** The connection being completed, with what the product needs to recheck without reading SDK tables. */
 export interface AccountConnectionCompletion {
   readonly id: AccountConnectionId;
-  readonly owner: import("./shared.ts").OwnerId;
-  readonly reconnectAccount: import("./shared.ts").AccountId | null;
-  /** The profile the connection targets, as stored now. */
-  readonly target: {
-    readonly app: import("./shared.ts").AppId;
-    readonly profile: import("./profiles.ts").Profile;
-  };
+  readonly owner: OwnerId;
+  readonly reconnectAccount: AccountId | null;
+  /** The app requirement the connection links its account to. */
+  readonly target: { readonly app: AppId; readonly requirement: string };
 }
 /** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
 export interface ResourceLifecycle {
   /**
-   * Recheck the saved subject before any profile-backed execution, including background work,
-   * together with the selected accounts `accountsResolving` would check for that subject. Returns
-   * the IDs of the accounts the product still authorizes; the SDK refuses the others. It receives
+   * The user links a subject has to an app whose accounts they may still use, oldest link first,
+   * each naming its requirement, for background work: each run resolves its actor's accounts here,
+   * and a plain requirement uses the newest. Unknown or inaccessible accounts are omitted, never
+   * replaced. Called outside resource transactions.
+   */
+  readonly userLinks: (input: {
+    readonly app: AppId;
+    readonly subject: string;
+  }) => Effect.Effect<ReadonlyArray<AccountLinkRecord>, StorageError>;
+  /**
+   * The app links of an app, oldest link first per requirement, for background work: each run
+   * resolves the app's accounts here, and a plain app requirement uses the newest. Removed accounts
+   * are omitted, never replaced. Called outside resource transactions.
+   */
+  readonly appLinks: (input: {
+    readonly app: AppId;
+  }) => Effect.Effect<ReadonlyArray<AccountLinkRecord>, StorageError>;
+  /**
+   * Resolving a webhook source's accounts found that its actor no longer has the source account
+   * linked, or can no longer use it. The product links the source again with another subject who
+   * links the account and can use it, or unlinks it. Called outside resource transactions; the
+   * current resolution continues and fails on the account.
+   */
+  readonly sourceActorLost: (input: {
+    readonly app: AppId;
+    readonly account: AccountId;
+    readonly actor: string;
+  }) => Effect.Effect<void, StorageError>;
+  /**
+   * Recheck that the `CurrentActor` may still use the app, before its code is evaluated with or
+   * without accounts: for the operations a caller starts and for schedules, webhook callbacks and
+   * workflow steps, which run as their saved actor. Workflow steps keep their captured accounts.
+   * The actor's use of the user accounts the evaluation runs with (`accounts`), as
+   * `accountsResolving` checks it, is rechecked in the same call. Each app requirement's account
+   * (`appUses`) is authorized by app access instead: the product checks that the account is still
+   * linked to the app for that requirement, not that the actor may use it. An account used by both
+   * scopes appears in both and must pass both checks; an actor who can use an account does not
+   * keep an app link to it. App-scope work, such as an app schedule or an app-account webhook, has
+   * no actor and no user accounts. Returns the IDs of the accounts that passed every
+   * check asked of them; the SDK refuses the others. Fail to refuse the evaluation. It receives
    * each account's ID and owner only: a tool call may run it beside its account read, with the
    * owner it expects, and uses the result only when the accounts it read match.
    */
-  readonly profileResolving?: (
-    profile: import("./profiles.ts").Profile,
+  readonly appResolving: (
+    app: { readonly id: AppId; readonly owner: OwnerId },
     accounts: readonly Pick<Account, "id" | "owner">[],
+    appUses: readonly AppAccountUse[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
   /**
-   * Recheck product authority before acquiring account credentials, and again after any renewal.
-   * Returns the IDs of the accounts the product still authorizes; the SDK refuses the others.
+   * Recheck authority to remove what an app registered upstream, such as a webhook registration,
+   * with the accounts it registered with, before acquiring their credentials and again after any
+   * renewal. App access is not needed. The user accounts (`accounts`) are checked as
+   * `accountsResolving` checks them for the `CurrentActor`, the actor the registration ran as.
+   * Each app requirement's account (`appUses`) is authorized by the app having linked it, not by a
+   * current app link: unlinking an account is what removes the app's registrations with it, so the
+   * product permits an app account the app may have linked, such as one of the app owner's
+   * accounts, and refuses one it could not have, such as an account another owner now holds. An
+   * app-account registration has no actor and no user accounts. Returns the IDs of the accounts
+   * that passed every check asked of them; the SDK refuses the others, and a refused registration
+   * waits for a person to remove it at the provider.
+   */
+  readonly removalResolving: (
+    app: { readonly id: AppId; readonly owner: OwnerId },
+    accounts: readonly Pick<Account, "id" | "owner">[],
+    appUses: readonly AppAccountUse[],
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  /**
+   * Recheck product authority for the `CurrentActor` before acquiring account credentials without
+   * running the app's code or removing what it registered, such as checking an account, and again
+   * after any renewal. Returns the IDs of the accounts the product still authorizes; the SDK
+   * refuses the others.
    */
   readonly accountsResolving: (
     accounts: readonly [Account, ...Account[]],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
-  /** Recheck a saved connection after external authentication, before committing its result. */
+  /**
+   * Recheck a saved connection after external authentication, before committing its result. Fail
+   * with `AccountConnectionRefused` when the completing subject may no longer complete it, such as
+   * reconnecting an account they no longer manage; it rolls back the account save.
+   */
   readonly connectionCompleting: (
     connection: AccountConnectionCompletion,
-  ) => Effect.Effect<void, StorageError>;
+  ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
+  /** Called after active-work checks, before deleting the app in the same transaction. */
+  readonly appRemoving: (app: AppId) => Effect.Effect<void, StorageError>;
+  /**
+   * Called when a connection started for an app requirement saves its account, in the same
+   * transaction, so the product can link the account to the requirement in its `scope`: for the
+   * connecting subject for a user requirement, for the app for an app requirement. It runs under
+   * the app's lock, after the SDK checked that the active deployment still gives the requirement
+   * the `scope` the connection was started for: `connectionCompleting` ran before the lock, so a
+   * product that authorizes by scope checks its own record of the `connection` here. Fail with
+   * `AccountConnectionTargetChanged` when the connection was started for another scope, and with
+   * `AccountConnectionRefused` when the completing subject may not connect the account for the
+   * requirement; either rolls back the account save.
+   */
+  readonly appAccountConnected: (input: {
+    readonly connection: AccountConnectionId;
+    readonly app: AppId;
+    readonly requirement: string;
+    readonly scope: AccountScope;
+    readonly account: Account;
+  }) => Effect.Effect<
+    void,
+    StorageError | AccountConnectionTargetChanged | AccountConnectionRefused
+  >;
   /** Called once for a newly saved account, including secrets and OAuth completion. */
   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting credentials in the same transaction. */
@@ -240,10 +352,7 @@ type FlatExecutor = {
 };
 
 /** App-related namespaces remain beneath apps, including workflow execution management. */
-export type Executor = Omit<
-  FlatExecutor,
-  "apps" | "appWorkflows" | "appWorkflowRuns" | "appProfiles" | "tools"
-> & {
+export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflowRuns" | "tools"> & {
   readonly tools: FlatExecutor["tools"] & {
     /**
      * Host-only: read a pending request and its issuer, so the host that issued it can show the
@@ -274,15 +383,26 @@ export type Executor = Omit<
     readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
   };
   readonly apps: FlatExecutor["apps"] & {
-    readonly profiles: FlatExecutor["appProfiles"];
     readonly workflows: FlatExecutor["appWorkflows"];
     readonly workflowRuns: FlatExecutor["appWorkflowRuns"];
+    /**
+     * Host-only: `copy` under an app ID the host reserved, such as one a storage migration
+     * planned for a copy and parked state under. `save` saves the source without deploying it,
+     * for a copy whose deployment no longer builds. Fails like `copy`; an app that already has
+     * the ID fails with `StorageError`, so callers check for it first.
+     */
+    readonly copyAs: (
+      input: Parameters<FlatExecutor["apps"]["copy"]>[0] & {
+        readonly id: AppId;
+        readonly save?: boolean;
+      },
+    ) => ReturnType<FlatExecutor["apps"]["copy"]>;
   };
-  readonly [ProfileHost]: ProfileDispatcher;
+  readonly [WebhookSourceHost]: WebhookSourceDispatcher;
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
   readonly [RepositoryHost]: RepositoryHost;
   readonly [StorageHost]: StorageHost;
-  readonly [PrefetchHost]: import("./profiles.ts").PrefetchHost;
+  readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
   /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
@@ -306,7 +426,7 @@ export type PromiseExecutor = Promisify<
   Omit<
     Executor,
     | typeof WorkflowHost
-    | typeof ProfileHost
+    | typeof WebhookSourceHost
     | typeof RepositoryHost
     | typeof StorageHost
     | typeof PrefetchHost
@@ -317,5 +437,9 @@ export type PromiseExecutor = Promisify<
     | "events"
     | "managedAccounts"
     | "tools"
-  > & { readonly tools: Omit<Executor["tools"], "approval" | "searchable" | "search"> }
+    | "apps"
+  > & {
+    readonly tools: Omit<Executor["tools"], "approval" | "searchable" | "search">;
+    readonly apps: Omit<Executor["apps"], "copyAs">;
+  }
 >;

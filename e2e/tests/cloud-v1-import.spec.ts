@@ -19,6 +19,7 @@ import {
 } from "effect/http";
 import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
+import { AccountLink, connectionsPath } from "../support/app-accounts.ts";
 import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
 import { largeOpenapiDocument } from "../support/large-openapi.ts";
@@ -82,29 +83,15 @@ const ItemResult = Schema.Struct({
   note: Schema.optionalKey(Schema.String),
   needsRepair: Schema.optionalKey(Schema.Boolean),
 });
+/** The inventory with the accounts the importing user linked to each app. */
 const Inventory = Schema.Struct({
   apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
   accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
-  profiles: Schema.Array(Schema.Struct({ id: Schema.String, app: Schema.String })),
-});
-/** The inventory with each profile's accounts, to find the profile that selects an account. */
-const MailInventory = Schema.Struct({
-  apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
-  accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
-  profiles: Schema.Array(
-    Schema.Struct({
-      id: Schema.String,
-      app: Schema.String,
-      accounts: Schema.Record(
-        Schema.String,
-        Schema.Union([Schema.String, Schema.Array(Schema.String)]),
-      ),
-    }),
-  ),
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
 });
 /** The inventory with each account's provider and method, to read how it signs in again. */
 const FirstPartyInventory = Schema.Struct({
-  ...MailInventory.fields,
+  ...Inventory.fields,
   accounts: Schema.Array(
     Schema.Struct({
       id: Schema.String,
@@ -2858,23 +2845,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             .filter((label) => label !== "Your Executor access")
             .sort(),
         ).toEqual(["main", "main", "main (workspace)", "signin"]);
-        const profiles = inventory.profiles.filter((profile) => profile.app === widgets?.id);
-        expect(profiles).toHaveLength(3);
+        // Each of the three Widgets connections' accounts is linked to its app for the importer,
+        // to the app's many() `service` requirement.
+        const linked = inventory.links.filter((link) => link.app === widgets?.id);
+        expect(linked).toHaveLength(3);
+        expect(new Set(linked.map((link) => link.account)).size).toBe(3);
+        const userLinks = yield* call(
+          "List the importer's links of the imported app",
+          "GET",
+          `/api/organizations/${target.id}/apps/${widgets?.id}/accounts/user`,
+        );
+        expect(userLinks.status, JSON.stringify(userLinks.body)).toBe(200);
+        expect(
+          (yield* decode(Schema.Array(AccountLink), userLinks))
+            .map((link) => [link.requirement, link.account.id])
+            .toSorted(),
+        ).toEqual(linked.map((link) => ["service", link.account]).toSorted());
 
-        // Tools keep v1's names; the blocked one is left out.
-        for (const profile of profiles) {
-          const listed = yield* call(
-            "List the imported tools",
-            "GET",
-            `/api/organizations/${target.id}/apps/${widgets?.id}/tools?profile=${profile.id}`,
-          );
-          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
-          const tools = yield* decode(Tools, listed);
-          expect(tools.items.map((tool) => tool.name).sort()).toEqual([
-            "widgets.create",
-            "widgets.list",
-          ]);
-        }
+        // Tools keep v1's names, through every linked account; the blocked one is left out.
+        const widgetTools = yield* call(
+          "List the imported tools",
+          "GET",
+          `/api/organizations/${target.id}/apps/${widgets?.id}/tools`,
+        );
+        expect(widgetTools.status, JSON.stringify(widgetTools.body)).toBe(200);
+        const tools = yield* decode(Tools, widgetTools);
+        expect(tools.items.map((tool) => tool.name).sort()).toEqual([
+          "widgets.create",
+          "widgets.list",
+        ]);
 
         // Importing an item again returns what it created.
         const integration = preview.items.find(
@@ -3040,12 +3039,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
 
         // Without stored operations, the tools v1 listed keep the names v1 compiled for them.
         const compiledApp = appId("Compiled API");
-        const compiledProfile = inventory.profiles.find((profile) => profile.app === compiledApp);
-        expect(compiledProfile).toBeDefined();
+        expect(inventory.links.some((link) => link.app === compiledApp)).toBe(true);
         const compiledTools = yield* call(
           "List the compiled API's tools",
           "GET",
-          `/api/organizations/${target.id}/apps/${compiledApp}/tools?profile=${compiledProfile?.id}`,
+          `/api/organizations/${target.id}/apps/${compiledApp}/tools`,
         );
         expect(compiledTools.status, JSON.stringify(compiledTools.body)).toBe(200);
         expect((yield* decode(Tools, compiledTools)).items.map((tool) => tool.name).sort()).toEqual(
@@ -3168,7 +3166,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         for (const name of ["Hosted", "Open", "main", "first", "second"])
           expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
 
-        // The personal toolkit: its granted tools and profiles, without the tool it blocked; the
+        // The personal toolkit: its granted tools and accounts, without the tool it blocked; the
         // tool the workspace blocks is not in the app, so the toolkit cannot select it.
         const support = results.get("Support");
         expect(support).toMatchObject({
@@ -3197,7 +3195,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           [
             {
               app: appId("Hosted"),
-              runsAs: [{ kind: "profile", id: results.get("main")?.v2Id }],
+              // The connection's result is the account it linked, which the grant targets.
+              runsAs: [{ kind: "account", id: results.get("main")?.v2Id }],
               tools: { kind: "selected", names: ["create_item", "list_items"] },
             },
             {
@@ -3347,30 +3346,25 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "Read the new organization",
           "GET",
           `/api/organizations/${target.id}/inventory`,
-        ).pipe(Effect.flatMap((response) => decode(MailInventory, response)));
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
         const appId = (name: string) => inventory.apps.find((app) => app.name === name)?.id;
-        // Each app's profile selects the one account imported for it; account tools take its id.
-        const profileOf = (name: string) =>
-          inventory.profiles.find((entry) => entry.app === appId(name));
+        // Each app has the one account imported for it linked; account tools take its id.
         const accountOf = (name: string) =>
-          Object.values(profileOf(name)?.accounts ?? {}).flat()[0];
-        const profile = profileOf("Requests");
-        expect(profile).toBeDefined();
+          inventory.links.find((link) => link.app === appId(name))?.account;
         const account = accountOf("Requests");
         expect(account).toBeDefined();
-        const send = (step: string, app: string | undefined, tool: string, profile?: string) =>
+        const send = (step: string, app: string | undefined, tool: string, accountId?: string) =>
           call(step, "POST", `/api/organizations/${target.id}/apps/${app}/tools/call`, {
-            ...(profile === undefined ? {} : { profile }),
             tool,
             kind: "query",
-            input: profile === undefined ? {} : { accountId: account, input: {} },
+            input: accountId === undefined ? {} : { accountId, input: {} },
           });
         // Each operation goes to its own server, with the key from the method v1 left unnamed.
         for (const [tool, path] of [
           ["items.list", "/v2/items"],
           ["items.ping", "/root/ping"],
         ] as const) {
-          const sent = yield* send(`Call ${tool}`, appId("Requests"), tool, profile?.id);
+          const sent = yield* send(`Call ${tool}`, appId("Requests"), tool, account);
           expect(sent.status, JSON.stringify(sent.body)).toBe(200);
           const received = (yield* upstream.received).at(-1);
           expect(received?.url).toBe(path);
@@ -3398,14 +3392,13 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           `hosts: [${JSON.stringify(hosts.api)}, ${JSON.stringify(hosts.uploads)}]`,
         );
         expect(provider).not.toContain("synthetic-uploads-key");
-        const uploadsProfile = profileOf("Uploads");
         const uploadsAccount = accountOf("Uploads");
         expect(uploadsAccount).toBeDefined();
         expect(uploadsAccount).not.toBe(account);
         const listed = yield* call(
           "List the two-host app's tools",
           "GET",
-          `/api/organizations/${target.id}/apps/${appId("Uploads")}/tools?profile=${uploadsProfile?.id}`,
+          `/api/organizations/${target.id}/apps/${appId("Uploads")}/tools`,
         );
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
         expect((yield* decode(Tools, listed)).items.map((tool) => tool.name).sort()).toEqual([
@@ -3420,12 +3413,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             `Call ${tool} on ${host}`,
             "POST",
             `/api/organizations/${target.id}/apps/${appId("Uploads")}/tools/call`,
-            {
-              profile: uploadsProfile?.id,
-              tool,
-              kind: "query",
-              input: { accountId: uploadsAccount, input: {} },
-            },
+            { tool, kind: "query", input: { accountId: uploadsAccount, input: {} } },
           );
           expect(sent.status, JSON.stringify(sent.body)).toBe(200);
           const reached = (yield* upstream.received).at(-1);
@@ -3456,7 +3444,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             "POST",
             `/api/organizations/${target.id}/apps/${appId("Regional")}/tools/call`,
             {
-              profile: profileOf("Regional")?.id,
               tool,
               kind: "query",
               input: { accountId: accountOf("Regional"), input: {} },
@@ -3487,7 +3474,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "POST",
           `/api/organizations/${target.id}/apps/${appId("Layered")}/tools/call`,
           {
-            profile: profileOf("Layered")?.id,
             tool: "items.list",
             kind: "query",
             input: { accountId: accountOf("Layered"), input: {} },
@@ -3624,7 +3610,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "Read the new organization",
           "GET",
           `/api/organizations/${target.id}/inventory`,
-        ).pipe(Effect.flatMap((response) => decode(MailInventory, response)));
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
         const app = inventory.apps.find((entry) => entry.name === "Mail")?.id;
         expect(app).toBeDefined();
         // A reconnect signs in where v1 did: each connection's client, never the method's endpoints.
@@ -3646,20 +3632,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
 
         // The expired account renews on its first call, as v1 refreshed it.
         const account = inventory.accounts.find((entry) => entry.label === "renewed")?.id;
-        const profile = inventory.profiles.find(
-          (entry) =>
-            entry.app === app &&
-            Object.values(entry.accounts)
-              .flat()
-              .includes(account ?? ""),
+        expect(inventory.links.some((link) => link.app === app && link.account === account)).toBe(
+          true,
         );
-        expect(profile).toBeDefined();
         const sent = yield* call(
           "Call the mail API as the renewed account",
           "POST",
           `/api/organizations/${target.id}/apps/${app}/tools/call`,
           {
-            profile: profile?.id,
             tool: "mail.me",
             kind: "query",
             input: { accountId: account, input: {} },
@@ -3824,27 +3804,22 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
 
         // Each account's expired token renews with the operator's client, asking again for the
         // scopes v1 recorded, and its call carries the renewed token. The renewal happens on the
-        // first call, or before it when Cloud's minute schedule reconciles the account's profile,
+        // first call, or before it when Cloud's minute schedule reconciles the account's link,
         // so each account's renewal is found by the refresh token v1 held rather than its position
         // or its client's path, which the GitHub and GitHub MCP accounts share. Renewals of one
         // grant are serialized and the renewed token outlives the test, so each renews once.
         const callAs = (label: string, app: string, tool: string) =>
           Effect.gen(function* () {
             const account = accountOf(label)?.id;
-            const profile = inventory.profiles.find(
-              (entry) =>
-                entry.app === appOf(app) &&
-                Object.values(entry.accounts)
-                  .flat()
-                  .includes(account ?? ""),
-            );
-            expect(profile, label).toBeDefined();
+            expect(
+              inventory.links.some((link) => link.app === appOf(app) && link.account === account),
+              label,
+            ).toBe(true);
             const sent = yield* call(
               `Call ${tool} as the ${label} account`,
               "POST",
               `/api/organizations/${organization.id}/apps/${appOf(app)}/tools/call`,
               {
-                profile: profile?.id,
                 tool,
                 kind: "query",
                 input: { accountId: account, input: {} },
@@ -4100,16 +4075,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "Read the new organization",
           "GET",
           `/api/organizations/${target.id}/inventory`,
-        ).pipe(Effect.flatMap((response) => decode(MailInventory, response)));
-        const profile = inventory.profiles.find((entry) => entry.app === kanji?.v2Id);
-        const account = Object.values(profile?.accounts ?? {}).flat()[0];
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const account = inventory.links.find((link) => link.app === kanji?.v2Id)?.account;
         expect(account).toBeDefined();
         const kanjiHealth = yield* call(
           "Call the large API",
           "POST",
           `/api/organizations/${target.id}/apps/${kanji?.v2Id}/tools/call`,
           {
-            profile: profile?.id,
             tool: "service.health",
             kind: "query",
             input: { accountId: account, input: {} },
@@ -4163,30 +4136,24 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         ).pipe(Effect.flatMap((response) => decode(FirstPartyInventory, response)));
         const reconnect = (app: string | undefined, label: string) =>
           Effect.gen(function* () {
-            const [selected] = signInInventory.profiles.flatMap((profile) =>
-              profile.app !== app
-                ? []
-                : Object.entries(profile.accounts).flatMap(([requirement, ids]) =>
-                    [ids].flat().flatMap((id) => {
-                      const account = signInInventory.accounts.find(
-                        (entry) => entry.id === id && entry.label === label,
-                      );
-                      return account === undefined
-                        ? []
-                        : [{ profile: profile.id, requirement, account }];
-                    }),
-                  ),
-            );
+            const appPath = `/api/organizations/${target.id}/apps/${app}`;
+            const links = yield* call(
+              `List the importer's links of the ${label} account's app`,
+              "GET",
+              `${appPath}/accounts/user`,
+            ).pipe(Effect.flatMap((response) => decode(Schema.Array(AccountLink), response)));
+            const [selected] = links.flatMap((link) => {
+              const account = signInInventory.accounts.find(
+                (entry) => entry.id === link.account.id && entry.label === label,
+              );
+              return account === undefined ? [] : [{ requirement: link.requirement, account }];
+            });
             if (selected === undefined) return yield* Effect.die(`No ${label} account`);
             const connection = yield* call(
               `Reconnect the ${label} account`,
               "POST",
-              `/api/organizations/${target.id}/apps/${app}/connections`,
-              {
-                requirement: selected.requirement,
-                profile: selected.profile,
-                account: selected.account.id,
-              },
+              connectionsPath(appPath, "user", selected.requirement),
+              { account: selected.account.id },
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const { id } = yield* decode(Schema.Struct({ id: Schema.String }), connection);

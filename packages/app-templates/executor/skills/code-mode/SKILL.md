@@ -1,6 +1,6 @@
 ---
 name: code-mode
-description: Call Executor app tools from execute. Search and signatures, slugs and profiles, unavailable apps, account connections, approvals and resume, limits and errors.
+description: Call Executor app tools from execute. Search and signatures, slugs and accounts, unavailable apps, account connections, approvals and resume, limits and errors.
 ---
 
 # Code mode
@@ -28,10 +28,9 @@ return await tools.search({ query: "send email", namespace: "gmail", limit: 5 })
 `tools.search({ query?, namespace?, limit?, offset? })` returns one page of
 ranked matches. Each item in `items` has the exact callable `path`, the first
 line of its `description` and its `input` type on one line. A longer input type
-is cut and marked `inputTruncated: true`. A tool that several profiles expose
-with the same signature is one item, and `alsoAt` lists its other paths.
-`namespaces` lists each app, profile and titled router on the page once, with
-the profile's account labels, instead of repeating them in every item.
+is cut and marked `inputTruncated: true`. `namespaces` lists each app and titled
+router on the page once, with the app's linked account labels, instead of
+repeating them in every item.
 
 `namespace` is an app slug, such as `gmail`, or a namespace inside it. Without
 it, search loads and searches every app, which is slower. A page holds at most
@@ -59,15 +58,16 @@ tool takes one object. Tools generated from an API put route parameters under
 Prefer a narrow namespace and a small limit over broad searches, and return
 only the fields you need. Call paths exactly as returned.
 
-## Slugs and profiles
+## Slugs and accounts
 
-Every app has a slug, which is its namespace: `tools.<slug>`. An app without
-accounts exposes `tools.<slug>.<tool>`. An app with accounts exposes one
-namespace per account profile, `tools.<slug>.profiles["<profile-id>"].<tool>`;
-the profile selects which saved accounts its tools use. Search results list
-each profile and its accounts in `namespaces`. Use the one the user means and
-ask when it is unclear. The `skills` tool takes the same slug as `app`, and
-needs `profile` when an app has several.
+Every app has a slug, which is its namespace: `tools.<slug>.<tool>`. Calls run
+with the accounts the user linked to the app: one for each plain requirement,
+and every linked account for a `.many()` requirement. Search results list each
+app and its linked accounts in `namespaces`. Calls never choose accounts; an
+input with `$accounts` fails with `AccountChoiceUnsupported`. A plain
+requirement with no linked account fails with `AccountRequired`. To use a
+different account, the user links it in the app's Accounts tab, which replaces
+the one before. The `skills` tool takes the same slug as `app`.
 
 Each execution discovers apps when the program or a search first reaches
 them. After deploying or reconfiguring an app, or connecting an account, start
@@ -75,15 +75,15 @@ a new `execute` to see the change.
 
 ## Unavailable apps
 
-Every completed result lists `unavailableApps`: apps, profiles or routers that
+Every completed result lists `unavailableApps`: apps or routers that
 could not expose tools in this execution, each with a `reason`. Other apps keep
 working. Search leaves out an unavailable app's tools, `describe` reports their
 paths in `missing`, and calling one fails with that reason. An app that needs
-an account and has no profile is listed only once a search or `describe` names
-it; a call into it fails with that reason.
+an account and has none linked for you is listed only once a search or
+`describe` names it; a call into it fails with that reason.
 
-- `AppProfileRequired`: the app needs an account and you have no enabled
-  profile. Connect an account (below), then start a new execution.
+- `AppAccountRequired`: the app needs an account and none is linked to it for
+  you. Connect an account (below), then start a new execution.
 - `AppDiscoveryTimedOut`: the app did not list its tools in time. Discovery
   waits about 10 seconds, then stops once listings make no progress for 5
   seconds. A listing that was still running continues in the background, so
@@ -98,8 +98,12 @@ Never ask the user to paste secrets into chat, never put credentials in tool
 arguments or source, and never search their files for tokens. The Executor app
 (slug `executor`) issues a secure browser link instead:
 
-- Local: `accountConnect.issue`, then `accountConnections.get` to check it.
-- Hosted: `accounts.connect`, then `accounts.connection` to check it. Hosted
+- Local: `appAccounts.userConnect` (or `appAccounts.appConnect` for the
+  app's own requirement), naming the app and requirement in `path`, then
+  `accountConnections.get` to check it.
+- Hosted: `appAccounts.userConnect` (or `appAccounts.appConnect` for the
+  app's own requirement, if you can edit the app), naming the requirement in
+  `path`, then `accounts.connection` to check it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
   `accounts.oauthSetup` lists the scopes it will request; tell the user.
@@ -147,7 +151,7 @@ When a resume does not give the result you expected:
   such as an account that no longer resolves, fail before the tool runs.
 - `response.code` `ApprovalUnavailable` means Executor did not resume the saved
   call for this answer; its message says why. If another answer already claimed
-  it, that call may have run or still be running. The app, profile or accounts
+  it, that call may have run or still be running. The app or its accounts
   changing is one reason; Executor's storage failing while it checked them is
   another, and does not mean anything changed.
 

@@ -49,9 +49,11 @@ const roots: ReadonlyArray<Root> = [
   // Workflow fixture apps (support/workflow-app.ts).
   dependency("brotli-wasm", "3.0.1"),
   dependency("is-number", "7.0.0"),
+  // cloud-compiler.spec.ts installs an exact zod release.
+  dependency("zod", "3.25.76"),
   // The compiler installs Tailwind at the version the host bundles for `@import "tailwindcss"`.
   alone("tailwindcss", tailwind.version),
-  ...[0, 1, 2, 4, 5, 9, 10, 14, 22, 33, 59].map((beta) => alone("apps", `0.0.1-beta.${beta}`)),
+  ...[0, 1, 2, 4, 5, 9, 10, 14, 22, 33, 59, 84].map((beta) => alone("apps", `0.0.1-beta.${beta}`)),
 ];
 
 const lockFile = path.resolve("e2e/npm-packages.json");

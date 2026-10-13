@@ -12,7 +12,6 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { clientMetadataIssuer } from "../support/client-metadata-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -21,6 +20,7 @@ import {
   oauthRelayCallback,
   scenarios,
 } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /** The address the scenario's operator setting publishes; the issuer maps it to the product. */
 const publicOrigin = "https://executor.example";
@@ -76,13 +76,14 @@ const startSignIn = (app: App) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
-    const profile = yield* createProfile(actors.owner, `${app.prefix}/apps/${app.id}`);
     const connection = yield* body(
       Resource,
-      yield* api.request(actors.owner, "POST", `${app.prefix}/apps/${app.id}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      }),
+      yield* api.request(
+        actors.owner,
+        "POST",
+        connectionsPath(`${app.prefix}/apps/${app.id}`, "user", "service"),
+        {},
+      ),
     );
     const started = yield* api.request(
       actors.owner,

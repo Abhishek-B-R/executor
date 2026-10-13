@@ -158,7 +158,7 @@ const source = (marker: string, status: number, rewritesTelemetry: boolean) => [
     content: `import { defineApp, query, object, string, jsonSchema, router, workflow, NonRetryableError } from "apps";
 ${failing(marker, status)}
 ${rewritesTelemetry ? hostile : ""}
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     thrown: query({ input: object({}) }, thrown),
     rejected: query({ input: object({}), output: string() }, async () => "reply-" + "rejected"),

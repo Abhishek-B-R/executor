@@ -12,9 +12,9 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -47,7 +47,7 @@ const service=defineProvider({name:"Firewalled OAuth",auth:{oauth:oauth2(${JSON.
                 scopes: ["read"],
                 resource: null,
               })})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user:{accounts:{service}}},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -68,13 +68,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* body(Setup, setup)).mode).toBe("automatic");
 
         // Sign-in registers a client, and the callback exchanges its code for tokens.
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const started = yield* api.request(
           actors.owner,

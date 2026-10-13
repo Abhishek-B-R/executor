@@ -1,10 +1,9 @@
-import { authorizeTarget, authorizeTool } from "./authorization.ts";
+import { authorizeApp, authorizeSavedTool, authorizeTool } from "./authorization.ts";
 import {
   discoverableTools,
+  discoversTool,
   permitsApp,
   permitsRouter,
-  permitsTarget,
-  permitsTool,
   requiresToolMetadata,
 } from "@executor-js/authorization";
 import {
@@ -33,34 +32,32 @@ import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   browserOnly,
+  checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
   selectedActiveDeployment,
-  selectedApp,
+  usableApp,
 } from "./access.ts";
 
-/** Discover the current account-dependent catalog after checking its saved selection. */
+/** Discover the current account-dependent catalog with the caller's resolved accounts. */
 export const listTools = (
   input: Parameters<Executor["tools"]["list"]>[0],
   options?: ToolListOptions,
 ) =>
   Effect.gen(function* () {
-    const policy = yield* authorizeTarget(input.app, input.profile);
+    const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const deployment = yield* selectedActiveDeployment(executor, owner, input);
-    const page = yield* executor.tools.list({ ...input, deployment, limit: 2000 }, options);
+    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
+    const page = yield* executor.tools.list(
+      { ...input, deployment, accounts, limit: 2000 },
+      options,
+    );
     return {
       ...page,
-      items: page.items.filter((tool) =>
-        permitsTool(policy, { app: input.app, profile: input.profile, tool }, "discover"),
-      ),
+      items: page.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
       routers: page.routers.filter((router) =>
-        permitsRouter(
-          policy,
-          { app: input.app, profile: input.profile, path: router.path },
-          page.items,
-        ),
+        permitsRouter(policy, { app: input.app, path: router.path }, page.items),
       ),
     };
   });
@@ -70,16 +67,19 @@ export const searchableTools = (
   options?: ToolListOptions,
 ) =>
   Effect.gen(function* () {
-    const policy = yield* authorizeTarget(input.app, input.profile);
+    const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const deployment = yield* selectedActiveDeployment(executor, owner, input);
-    const searchable = yield* executor.tools.searchable({ ...input, deployment }, options);
+    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
+    const searchable = yield* executor.tools.searchable(
+      { ...input, deployment, accounts },
+      options,
+    );
     // Failed routers list no tools, so the policy decides them without the catalog.
     return {
       ...searchable,
       routers: searchable.routers.filter((router) =>
-        permitsRouter(policy, { app: input.app, profile: input.profile, path: router.path }, []),
+        permitsRouter(policy, { app: input.app, path: router.path }, []),
       ),
     };
   });
@@ -94,10 +94,9 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
     const page = yield* executor.tools.search({
       ...input,
       targets: input.targets.map((target) => {
-        const scope =
-          permitsApp(policy, target.app) && permitsTarget(policy, target.app, target.profile)
-            ? discoverableTools(policy, target.app, target.profile)
-            : { readOnly: false, names: [] };
+        const scope = permitsApp(policy, target.app)
+          ? discoverableTools(policy, target.app)
+          : { readOnly: false, names: [] };
         return scope === undefined ? target : { ...target, scopes: [...target.scopes, scope] };
       }),
     });
@@ -107,9 +106,7 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
         const target = input.targets[item.target];
         return router !== undefined &&
           target !== undefined &&
-          permitsRouter(policy, { app: target.app, profile: target.profile, path: router.path }, [
-            item.tool,
-          ])
+          permitsRouter(policy, { app: target.app, path: router.path }, [item.tool])
           ? { ...item, router }
           : item;
       }),
@@ -118,45 +115,35 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
 /** Names and descriptions for browsing; schemas are read per tool. */
 export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
   Effect.gen(function* () {
-    const policy = yield* authorizeTarget(input.app, input.profile);
+    const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const deployment = yield* selectedActiveDeployment(executor, owner, input);
-    const index = yield* executor.tools.index({ ...input, deployment });
+    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
+    const index = yield* executor.tools.index({ ...input, deployment, accounts });
     return {
       ...index,
-      items: index.items.filter((tool) =>
-        permitsTool(policy, { app: input.app, profile: input.profile, tool }, "discover"),
-      ),
+      items: index.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
       routers: index.routers.filter((router) =>
-        permitsRouter(
-          policy,
-          { app: input.app, profile: input.profile, path: router.path },
-          index.items,
-        ),
+        permitsRouter(policy, { app: input.app, path: router.path }, index.items),
       ),
     };
   });
 /** One tool's schemas, hidden exactly like the tools discovery omits. */
 export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
   Effect.gen(function* () {
-    const policy = yield* authorizeTarget(input.app, input.profile);
+    const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const deployment = yield* selectedActiveDeployment(executor, owner, input);
+    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
     // When names decide, check before evaluating, so a hidden tool's source failure is not
     // reported either. A read-only rule needs the catalog's flag, so it is checked after.
     if (
       !requiresToolMetadata(policy.tools, input.app) &&
-      !permitsTool(
-        policy,
-        { app: input.app, profile: input.profile, tool: { name: input.tool } },
-        "discover",
-      )
+      !discoversTool(policy, { app: input.app, tool: { name: input.tool } })
     )
       return yield* new ToolNotFound({ app: input.app, deployment, tool: input.tool });
-    const tool = yield* executor.tools.get({ ...input, deployment });
-    if (!permitsTool(policy, { app: input.app, profile: input.profile, tool }, "discover"))
+    const tool = yield* executor.tools.get({ ...input, deployment, accounts });
+    if (!discoversTool(policy, { app: input.app, tool }))
       return yield* new ToolNotFound({
         app: tool.app,
         deployment: tool.deployment,
@@ -164,7 +151,7 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
       });
     return tool;
   });
-/** Execute only after this organization has passed the same account checks as discovery. */
+/** Execute with the caller's resolved accounts after the same checks as discovery. */
 const startTool = (
   input: Parameters<Executor["tools"]["call"]>[0],
   options?: ToolInvocationOptions,
@@ -172,9 +159,13 @@ const startTool = (
   Effect.flatMap(currentOwner, (owner) =>
     Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
-      const deployment = yield* selectedActiveDeployment(executor, owner, input);
-      yield* authorizeTool({ ...input, deployment });
-      return yield* executor.tools.call({ ...input, deployment }, options);
+      const { deployment, accounts, kind } = yield* checkedToolCall(
+        executor,
+        owner,
+        input,
+        (selected, described) => authorizeTool({ ...input, ...selected }, described),
+      );
+      return yield* executor.tools.call({ ...input, deployment, accounts, kind }, options);
     }),
   );
 /** API credentials cannot present an approval, so a call that needs one fails without running. */
@@ -220,8 +211,9 @@ const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
       });
     const { invocation } = pending;
     if (invocation.app !== app) return yield* new ToolApprovalNotFound({ requestId });
-    const found = yield* selectedApp(executor, owner, app, invocation.profile);
-    yield* authorizeTool({ ...invocation, expectedProfileRevision: invocation.profileRevision });
+    // The saved call keeps its accounts; the caller must still be able to use the app and each.
+    const found = yield* usableApp(executor, owner, app);
+    yield* authorizeSavedTool(invocation);
     yield* checkInvocationAccounts(executor, owner, invocation);
     return { ...pending, issuer, appName: found.name };
   });

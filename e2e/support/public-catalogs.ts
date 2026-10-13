@@ -83,7 +83,7 @@ const mail = defineProvider({
   auth: { apiKey: secrets({ label: "API key", fields: object({ token: string({ minLength: 1 }) }) }) },
 });
 
-export default defineApp({ accounts: { mail: mail.many() } }, async () => ({
+export default defineApp({ user: { accounts: { mail: mail.many() } } }, async () => ({
   tools: router({
     inbox: query({ input: object({}), description: "List synthetic messages" }, async () => []),
   }),
@@ -104,7 +104,7 @@ const tracker = defineProvider({
   },
 });
 
-export default defineApp({ accounts: { tracker: tracker.many() } }, async () => ({
+export default defineApp({ user: { accounts: { tracker: tracker.many() } } }, async () => ({
   tools: router({
     issues: query({ input: object({}), description: "List synthetic issues" }, async () => []),
   }),

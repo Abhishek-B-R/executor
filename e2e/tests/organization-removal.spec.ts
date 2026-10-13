@@ -1,4 +1,4 @@
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 /** Cloud-only removal: a throwaway organization with real state is deleted by its owner alone. */
 import { expect, layer } from "@effect/vitest";
@@ -40,7 +40,7 @@ import { mutation, defineApp, defineProvider, secrets, object, string, router } 
 const service = defineProvider({ name: "Removal service", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
    tools: router({
      echo: mutation({ description: "Echo with the connected account", input: object({ message: string() })},
       async (_, input) => ({ message: input.message, connected: accounts.service.fields.token === "synthetic-removal-token" })),
@@ -149,12 +149,11 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             });
             expect(deployed.status).toBe(200);
             const application = yield* body(App, deployed);
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${application.id}`);
             const connection = yield* api.request(
               actors.owner,
               "POST",
-              `${prefix}/apps/${application.id}/connections`,
-              { requirement: "service", profile: profile.id },
+              connectionsPath(`${prefix}/apps/${application.id}`, "user", "service"),
+              {},
             );
             expect(connection.status).toBe(200);
             const requirement = yield* body(Resource, connection);
@@ -166,18 +165,9 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal", (it) =>
             );
             expect(saved.status).toBe(200);
             const account = yield* body(Resource, saved);
-            const selected = yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/apps/${application.id}/profiles/${profile.id}`,
-            );
-            expect(selected.status).toBe(200);
             expect(
-              (yield* body(
-                Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) }),
-                selected,
-              )).accounts.service,
-            ).toBe(account.id);
+              yield* linkedAccountIds(actors.owner, `${prefix}/apps/${application.id}`),
+            ).toEqual([account.id]);
             return { app: application.id, account: account.id };
           }),
         );
@@ -419,7 +409,7 @@ export const slow = workflow({ input: object({}) }, async (ctx) => {
   await ctx.step.sleep("hold", "1 minute");
   return null;
 });
-export default defineApp({ accounts: {} }, { tools: router({}), workflows: { slow } });`,
+export default defineApp({}, { tools: router({}), workflows: { slow } });`,
             },
             appsManifest,
           ],
@@ -427,9 +417,7 @@ export default defineApp({ accounts: {} }, { tools: router({}), workflows: { slo
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = yield* body(App, deployed);
         const path = `${prefix}/apps/${app.id}`;
-        const profile = yield* createProfile(actors.owner, path);
         const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
-          profile: profile.id,
           workflow: "slow",
           input: {},
           key: randomUUID(),

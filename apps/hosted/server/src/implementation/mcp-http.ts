@@ -27,9 +27,10 @@ import {
   ElicitationFailed,
   InvocationPrefetch,
   PrefetchHost,
-  Profile as ProfileSchema,
+  invocationEntries,
+  sameAccounts,
+  type AppAccounts,
   type AppId,
-  type ProfileId,
 } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
@@ -47,8 +48,9 @@ import {
   statementGroup,
   type CallState,
 } from "../contracts/executor.ts";
-import { FoldReadAhead, readSelection, SelectionReadAhead, selectedAccounts } from "./access.ts";
-import { resourceAuthorityForSelection } from "./resource-policy.ts";
+import { FoldReadAhead, readSelection, SelectionReadAhead } from "./access.ts";
+import { callerAccounts } from "./app-accounts.ts";
+import { resourceAuthorityForLinks } from "./resource-policy.ts";
 import { BearerHashes } from "./bearer-access.ts";
 import { hostedMcpBackend } from "./mcp.ts";
 
@@ -60,9 +62,19 @@ type RequestError =
   | Effect.Error<ReturnType<HostedBackend[keyof HostedBackend]>>
   | Effect.Error<ReturnType<McpAuthentication["Service"]["authenticate"]>>;
 const unavailable = () => Effect.fail(new McpUnauthorized());
-const sameProfile = Schema.toEquivalence(ProfileSchema);
-/** Selections one session object remembers a profile for (CallStateCache); the oldest goes first. */
+/** Calls one session object remembers the accounts of (CallStateCache); the oldest goes first. */
 const callStateLimit = 256;
+/**
+ * Each requirement's accounts, without requirements that name none, in a stable order, and whether
+ * the call has a caller. Requirement names are unique across scopes.
+ */
+const accountsKey = (accounts: AppAccounts | undefined) => [
+  accounts?.user === undefined,
+  (accounts === undefined ? [] : invocationEntries(accounts))
+    .filter(([, ids]) => ids.length > 0)
+    .map(([slot, ids]) => [slot, [...new Set(ids)].sort()] as const)
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+];
 const RequestCaller = Context.Reference<string | undefined>("hosted/McpRequestCaller", {
   defaultValue: () => undefined,
 });
@@ -77,7 +89,7 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     listSkills: unavailable,
     readSkill: unavailable,
     listApps: unavailable,
-    listTargets: unavailable,
+    listAccounts: unavailable,
     listTools: unavailable,
     searchableTools: unavailable,
     searchTools: unavailable,
@@ -100,7 +112,7 @@ const requestBackend: McpBackend<RequestError> = {
   authorizeElicitation: (input) =>
     Effect.flatMap(RequestBackend, (backend) => backend.authorizeElicitation(input)),
   listApps: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listApps(input)),
-  listTargets: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTargets(input)),
+  listAccounts: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listAccounts(input)),
   listTools: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.listTools(input, options)),
   searchableTools: (input, options) =>
@@ -211,9 +223,9 @@ export const dispatchHostedMcp = <E, R>(
     );
     // Made for this request's organization, whose ID the recheck keeps. If they cannot be made,
     // the call makes them itself; they never decide the call's outcome or the recheck's.
-    const readAhead = (app: AppId, profile: ProfileId | undefined) =>
+    const readAhead = (app: AppId) =>
       Effect.flatten(HostedExecutor).pipe(
-        Effect.flatMap((executor) => readSelection(executor, access.access.owner, app, profile)),
+        Effect.flatMap((executor) => readSelection(executor, access.access.owner, app)),
         Effect.provideContext(services),
         Effect.exit,
         Effect.map((read) => (Exit.isSuccess(read) ? read.value : undefined)),
@@ -221,22 +233,24 @@ export const dispatchHostedMcp = <E, R>(
     /**
      * One round trip for a warm tool call (F-034). The recheck, then every read the call's checks
      * and the SDK make, leave in one write: the recheck first, in its own implicit transaction as
-     * on main, then the reads in one read-only snapshot taken after it commits (StatementBatch).
-     * The access fold and the SDK's account reads need the profile's accounts before the profile
-     * is read, so they name those of the profile this session's last call read (CallStateCache);
-     * the same batch reads the profile live. The cache holds no authorization and decides
-     * nothing: the call uses the fold and the SDK's reads only where they were made for the live
-     * profile, and otherwise sends the reads once more, after the recheck passed, with the live
-     * profile: two round trips. Results are evaluated in main's order: the recheck's outcome
-     * first, whatever the reads returned, then the call's own checks over the batch's reads
-     * (checkedSelection, then the SDK's). A read that failed in storage discards the batch's reads
-     * and the call reads on its own, in main's order.
+     * on main, then the reads in one read-only snapshot taken after it commits (StatementBatch):
+     * the app, the access fold with the caller's links to it and its app links, and the SDK's reads
+     * of the accounts, its app recheck for them and their grants. The SDK's reads need the call's
+     * accounts, which the links decide only once the fold is read, so they name the accounts this
+     * session's last call naming the same accounts ran with (CallStateCache). The cache holds no
+     * authorization and decides nothing: the accounts are resolved again from the live links, the
+     * SDK uses its reads only where they were made for those accounts, and otherwise the SDK's
+     * reads are sent once more, after the recheck passed, with the live accounts: two round trips.
+     * A call whose named accounts are no longer linked resolves none and sends no second round.
+     * Results are evaluated in main's order: the recheck's outcome first, whatever the reads
+     * returned, then the call's own checks over the batch's reads (`checkedToolCall`, then the
+     * SDK's). A read that failed in storage discards the batch's reads and the call reads on its
+     * own, in main's order; the cache keeps what it held.
      */
     const batchedCall = (
       batch: NonNullable<Effect.Success<typeof StatementBatch>>,
       cache: NonNullable<Effect.Success<typeof CallStateCache>>,
       input: Parameters<McpBackend<RequestError>["callTool"]>[0],
-      profile: ProfileId,
       options: Parameters<McpBackend<RequestError>["callTool"]>[1],
     ) =>
       Effect.gen(function* () {
@@ -245,22 +259,18 @@ export const dispatchHostedMcp = <E, R>(
         );
         const owner = access.access.owner;
         const organization = access.access.organization;
-        const key = JSON.stringify([mcpSessionKey(access), input.app, profile]);
+        const key = JSON.stringify([mcpSessionKey(access), input.app, accountsKey(input.accounts)]);
         let recheck: Exit.Exit<
           Effect.Success<typeof current>,
           Effect.Error<typeof current>
         > = Exit.die("unreachable");
-        const round = (known: CallState | undefined, rechecking: boolean) =>
+        // The links do not depend on the accounts, so only the first round reads them.
+        let fold: Effect.Success<typeof FoldReadAhead>;
+        const round = (known: CallState | undefined, first: boolean) =>
           Effect.gen(function* () {
-            const sdk = executor[PrefetchHost].invocation({
-              app: input.app,
-              owner,
-              profile,
-              known,
-            });
-            let fold: Effect.Success<typeof FoldReadAhead>;
+            const sdk = executor[PrefetchHost].invocation({ app: input.app, owner, known });
             const leaves: Array<Effect.Effect<unknown>> = [
-              ...(rechecking
+              ...(first
                 ? [
                     Effect.exit(current).pipe(
                       Effect.map((exit) => {
@@ -269,47 +279,55 @@ export const dispatchHostedMcp = <E, R>(
                     ),
                   ]
                 : []),
-              ...sdk.leaves,
+              // The SDK's app recheck runs as the caller, as the call does (`CurrentActor`).
+              ...sdk.leaves.map((leaf) =>
+                Effect.provideService(leaf, CurrentUserId, access.userId),
+              ),
             ];
-            if (known !== undefined) {
-              const accounts = [...new Set(selectedAccounts(known.profile.accounts))];
+            if (first)
               leaves.push(
-                Effect.exit(
-                  resourceAuthorityForSelection(organization, access.userId, input.app, accounts),
-                ).pipe(
+                Effect.exit(resourceAuthorityForLinks(organization, access.userId, input.app)).pipe(
                   Effect.map((result) => {
-                    fold = { organization, user: access.userId, app: input.app, accounts, result };
+                    fold = { organization, user: access.userId, app: input.app, result };
                   }),
                   Effect.provideContext(services),
                 ),
               );
-            }
-            yield* batch(leaves, { outside: rechecking ? 1 : 0 });
-            return { read: yield* sdk.take, fold };
+            yield* batch(leaves, { outside: first ? 1 : 0 });
+            return yield* sdk.take;
           });
+        /**
+         * The accounts the call will run with, resolved from the app and links this batch read as
+         * the call resolves them; undefined when they cannot be, which the call then reports. It
+         * only names the rows a second round reads.
+         */
+        const resolvedAccounts = (read: Effect.Success<ReturnType<typeof round>>) =>
+          read.app === undefined ||
+          Result.isFailure(read.app) ||
+          fold === undefined ||
+          Exit.isFailure(fold.result) ||
+          !fold.result.value.access.canUse
+            ? Effect.succeed(undefined)
+            : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
+                Effect.provideService(
+                  CurrentAuthorization,
+                  grantAuthorization(access.grant.policy),
+                ),
+                Effect.provideService(CurrentUserId, access.userId),
+                Effect.provideContext(services),
+                Effect.option,
+                Effect.map(Option.getOrUndefined),
+              );
         const known = cache.get(key);
-        let sent = yield* round(known, true);
+        let read = yield* round(known, true);
         let rounds = 1;
         // The recheck decides first, as on main: its refusal or failure is the call's outcome,
         // whatever the reads returned.
         const authorized = yield* recheck;
-        const live =
-          sent.read.profile !== undefined && Result.isSuccess(sent.read.profile)
-            ? sent.read.profile.success
-            : undefined;
-        if (live !== undefined && (known === undefined || !sameProfile(known.profile, live))) {
-          sent = yield* round({ profile: live, hint: sent.read.hint }, false);
+        const live = yield* resolvedAccounts(read);
+        if (live !== undefined && (known === undefined || !sameAccounts(known.accounts, live))) {
+          read = yield* round({ accounts: live, hint: read.hint }, false);
           rounds = 2;
-        }
-        const { read, fold } = sent;
-        const latest =
-          read.profile !== undefined && Result.isSuccess(read.profile)
-            ? read.profile.success
-            : undefined;
-        cache.delete(key);
-        if (latest !== undefined) {
-          cache.set(key, { profile: latest, hint: read.hint });
-          if (cache.size > callStateLimit) cache.delete(cache.keys().next().value!);
         }
         const failed =
           read.failed ||
@@ -318,6 +336,15 @@ export const dispatchHostedMcp = <E, R>(
             Cause.findErrorOption(fold.result.cause).pipe(
               Option.exists((error) => error._tag === "StorageError"),
             ));
+        // A discarded batch says nothing about the accounts, so it leaves the session's state as
+        // it was; otherwise the state is what this call resolved, or none when it resolved none.
+        if (!failed) {
+          cache.delete(key);
+          if (live !== undefined) {
+            cache.set(key, { accounts: live, hint: read.hint });
+            if (cache.size > callStateLimit) cache.delete(cache.keys().next().value!);
+          }
+        }
         yield* Effect.annotateCurrentSpan({
           "executor.mcp.call.batches": rounds,
           "executor.mcp.call.batch_discarded": failed,
@@ -327,9 +354,7 @@ export const dispatchHostedMcp = <E, R>(
           Effect.provideService(SelectionReadAhead, {
             owner,
             app: input.app,
-            profile,
             current: read.app,
-            selected: read.profile,
           }),
           Effect.provideService(FoldReadAhead, fold),
           Effect.provideService(InvocationPrefetch, read.invocation),
@@ -354,10 +379,10 @@ export const dispatchHostedMcp = <E, R>(
         ),
       callTool: (input, options) =>
         Effect.gen(function* () {
-          // Under a read-only rule the grant check evaluates the app before the selection check,
-          // which then reads the app and profile again (`hostedMcpBackend`): reading ahead would
-          // only add two statements. A grant that changed since this request authenticated is
-          // decided there again.
+          // Under a read-only rule the grant check evaluates the app before the call resolves its
+          // accounts again from the caller's links (`checkedToolCall`): reading ahead would only
+          // add statements. A grant that changed since this request authenticated is decided
+          // there again.
           if (
             (yield* ConcurrentStatements) === undefined ||
             requiresToolMetadata(grantAuthorization(access.grant.policy).tools, input.app)
@@ -365,11 +390,11 @@ export const dispatchHostedMcp = <E, R>(
             return yield* current.pipe(Effect.flatMap((fresh) => fresh.callTool(input, options)));
           const batch = yield* StatementBatch;
           const cache = yield* CallStateCache;
-          if (batch !== undefined && cache !== undefined && input.profile !== undefined)
-            return yield* batchedCall(batch, cache, input, input.profile, options);
-          // The selection check's app and profile reads go out with the recheck. Nothing they
-          // return is used unless the recheck passes, and the check itself runs after it.
-          const [fresh, read] = yield* Effect.all([current, readAhead(input.app, input.profile)], {
+          if (batch !== undefined && cache !== undefined)
+            return yield* batchedCall(batch, cache, input, options);
+          // The call check's app read goes out with the recheck. Nothing it returns is used
+          // unless the recheck passes, and the check itself runs after it.
+          const [fresh, read] = yield* Effect.all([current, readAhead(input.app)], {
             concurrency: "unbounded",
           });
           return yield* fresh

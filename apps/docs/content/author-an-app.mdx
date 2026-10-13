@@ -32,8 +32,8 @@ publishing under the organization `team`. The name
 you choose when creating or renaming an installed app is its editable display label.
 
 Write ordinary async TypeScript. You do not import Effect and you do not import
-the Executor SDK. The framework validates input and supplies the selected
-accounts.
+the Executor SDK. The framework validates input and supplies the accounts each
+call runs with.
 
 ## A first app
 
@@ -43,7 +43,7 @@ import { defineApp, object, query, router, string } from "apps";
 const Greet = object({ name: string().default("world") });
 
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: router({
       greet: query(
@@ -69,7 +69,8 @@ declare. `Infer<typeof Input>` gives you the parsed input type.
 
 ## Using an account
 
-Declare a provider, require it, and read it off the context.
+Declare a provider, require it, and read it off the context. A requirement
+under `user` is filled by each caller's own linked account.
 
 ```ts
 import {
@@ -95,16 +96,16 @@ const vercel = defineProvider({
   },
 });
 
-const requirements = { accounts: { vercel } };
+const requirements = { user: { accounts: { vercel } } };
 type Context = QueryContext<typeof requirements>;
 
 const Projects = object({ projects: array(object({ id: string(), name: string() })) });
 
 const listProjects = query(
-  { description: "List projects for the selected Vercel account", input: object({}) },
-  async ({ accounts, fetch }: Context) => {
-    const response = await fetch("https://api.vercel.com/v9/projects?limit=10", {
-      headers: { Authorization: `Bearer ${accounts.vercel.fields.token}` },
+  { description: "List projects for the caller's Vercel account", input: object({}) },
+  async (ctx: Context) => {
+    const response = await ctx.fetch("https://api.vercel.com/v9/projects?limit=10", {
+      headers: { Authorization: `Bearer ${ctx.user.accounts.vercel.fields.token}` },
     });
     return decodeJson(response, Projects);
   },
@@ -113,17 +114,55 @@ const listProjects = query(
 export default defineApp(requirements, { tools: router({ listProjects }) });
 ```
 
-`accounts.vercel.fields` holds exactly the fields the method declared. The token
-arrives per call, from the account the calling
-[profile](/concepts/apps-and-deployments#profile) selected. Nothing in the source
-names an account, so the same code serves a work profile and a personal one.
+`ctx.user.accounts.vercel.fields` holds exactly the fields the method declared.
+The token arrives per call, from the account the caller linked to the app.
+Nothing in the source names an account, so the same code serves each member's
+own account.
 
 `decodeJson(response, schema)` checks the HTTP status and parses the body. Use
 `oauth2({ discover: "..." })` instead of `secrets` for a browser sign-in; the
-access token then arrives as `accounts.<slot>.fields.access_token`.
+access token then arrives as `ctx.user.accounts.<name>.fields.access_token`.
 
-For a slot that takes several accounts, use `provider.many()`. The context gives
-you a list.
+For a requirement that takes several accounts, use `provider.many()`. The
+context gives you a list.
+
+### App accounts
+
+Some accounts belong to the app rather than to whoever calls it: a team's
+Datadog key, or one service account for an integration. Declare them under
+`app`:
+
+```ts
+const requirements = {
+  app: { accounts: { datadog } },
+  user: { accounts: { github } },
+};
+
+async (ctx: MutationContext<typeof requirements>) => {
+  ctx.app.accounts.datadog; // linked for everyone by people who can edit the app
+  ctx.user.accounts.github; // the caller's own linked account
+};
+```
+
+People who can edit an app link its app accounts, for everyone, on the app's
+**Accounts** tab. Every caller, and the app's background work, uses the linked
+account through the app, without access to the account itself. Callers never choose or replace it. A
+requirement name is used once across `app` and `user`, and `.many()` works in
+both.
+
+A factory, `defineApp(requirements, async (ctx) => ...)`, is also evaluated
+without a caller for the app's background work, so `ctx.user` may be undefined
+there.
+
+Apps written before `apps@0.0.1-beta.90` declared `{ accounts }` and read
+`ctx.accounts`, which now fail. Every such requirement was a caller's account,
+so it moves to `user`: `{ user: { accounts } }` and `ctx.user.accounts`. The
+Executor app's `app-authoring` skill has the steps in
+`upgrades/0.0.1-beta.90.md`. Nothing stored is converted: deployments already
+running keep their members' schedules. Deploying a schedule as `appCron` or
+`appInterval` deletes the members' copies of it, with their settings, run
+history and pending approvals, and the app schedule starts paused until an app
+manager enables it.
 
 ## Queries and mutations
 
@@ -165,6 +204,75 @@ There is no app-level approval setting, and nothing is inferred from an
 operation looking read-only. See
 [Tools and approvals](/concepts/tools-and-approvals).
 
+## Schedules and webhooks
+
+A schedule runs a mutation on a timer, in one of two scopes:
+
+```ts
+import {
+  appInterval,
+  defineApp,
+  mutation,
+  type MutationContext,
+  object,
+  router,
+  userCron,
+} from "apps";
+
+const requirements = {
+  app: { accounts: { datadog } },
+  user: { accounts: { github } },
+};
+
+// Runs as the app, without a caller, with the app's accounts only.
+const sync = mutation(
+  { input: object({}) },
+  async (ctx: MutationContext<typeof requirements, "app">) => {
+    await ctx.fetch("https://api.datadoghq.com/api/v1/validate", {
+      headers: { "DD-API-KEY": ctx.app.accounts.datadog.fields.key },
+    });
+    return null;
+  },
+);
+
+// Runs as each member who enables it, with their linked accounts.
+const digest = mutation(
+  { input: object({}) },
+  async (ctx: MutationContext<typeof requirements>) => {
+    await ctx.fetch("https://api.github.com/notifications", {
+      headers: { Authorization: `Bearer ${ctx.user.accounts.github.fields.token}` },
+    });
+    return null;
+  },
+);
+
+export default defineApp(requirements, {
+  tools: router({ sync, digest }),
+  schedules: {
+    sync: appInterval({ minutes: 15 }, sync, {}),
+    digest: userCron({ expression: "0 9 * * MON-FRI", timezone: "America/Los_Angeles" }, digest, {}),
+  },
+});
+```
+
+`appInterval` and `appCron` declare one schedule, which an app manager enables
+and which runs with the app's accounts. `userInterval` and `userCron` give each
+member their own copy, which they enable and which runs as them. Schedules start
+paused. A context of the `"app"` scope, `MutationContext<typeof requirements, "app">`,
+has no `user`; app schedules take only such mutations, or ones whose handler
+declares no parameters, and only ones without an `approval`, because no person
+is there to ask. A handler that declares its context without a type gets the
+caller's, with `ctx.user`, so a tool can read the caller's accounts; give it the
+`"app"` scope's type to schedule it as the app. With explicit type arguments,
+`mutation<Input, Output>(…)` gets the caller's context even when its handler
+declares no parameters; pass the `"app"` scope's context as the third.
+
+A webhook names the requirement whose account is its source:
+`account: { user: "github" }` registers it for each linked GitHub account, and
+`account: { app: "datadog" }` for the account linked for everyone, without a caller.
+A webhook written inline in `defineApp` states its context, so its handlers are
+typed: `satisfies Webhook<WebhookContext<typeof requirements, "app">, Config, State>`.
+
 ## Asking for input mid-tool
 
 ```ts
@@ -199,7 +307,7 @@ You do not have to write handlers to wrap an API.
 import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: await mcpRouter({
     url: "https://mcp.deepwiki.com/mcp",
     ...(signal === undefined ? {} : { signal }),
@@ -249,7 +357,7 @@ import {
   string,
 } from "apps";
 
-const requirements = { accounts: {} };
+const requirements = {};
 type Message = { id: string; subject: string };
 
 const list = query(
@@ -321,7 +429,7 @@ MCP endpoint. Read the version with `framework.release`, create the app from
 <CodeGroup>
 
 ```js Hosted
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>" };
 const { version } = await executor.framework.release({ path });
 const files = [
@@ -341,7 +449,7 @@ return await executor.appManagement.deploy({ path: { ...path, app: app.id }, bod
 ```
 
 ```js Local
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const { version } = await executor.framework.release({});
 const files = [
   { path: "index.ts", content: "<contents of index.ts>" },
@@ -379,8 +487,10 @@ connect an account for each requirement and, in a new `execute`, call the path
 return await tools.hello.greet({ name: "Ada" });
 ```
 
-An app with accounts is called through a profile, such as
-`tools.vercel.profiles["<profile-id>"].listProjects({})`.
+An app with accounts is called the same way. Each call uses the accounts you
+linked to the app; there is no account input. To use another account, link it
+on the app's **Accounts** tab, which replaces the one before for a
+single-account requirement.
 
 ### Updating an existing app
 
@@ -390,7 +500,7 @@ signatures first. Hosted paths include `organization`; Local paths contain only
 `app`.
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>", app: "<app-id>" };
 const source = await executor.appManagement.source({ path });
 const files = source.files.map((file) =>
@@ -486,7 +596,7 @@ or `@plugin` files are not supported.
 For hosted apps, discover `appUi.location` through `tools.search` and call it:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].appUi.location({
+return await tools.executor.appUi.location({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
 });
 ```

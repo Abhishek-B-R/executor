@@ -3,7 +3,7 @@ import { Effect, Schema, type Context } from "effect";
 import { makeCache, CacheError } from "@executor-js/app-cache";
 import { captureTelemetry, owned, ownedBy } from "@executor-js/telemetry";
 import type { AppCache, CacheGetOptions, HostCache } from "../contracts/cache.ts";
-import type { ResolvedAccounts } from "../contracts/host.ts";
+import { scopedSlots, type ResolvedAccounts } from "../contracts/host.ts";
 import type { JsonValue } from "../contracts/schema.ts";
 import { decoderOf, type Schema as AppSchema } from "./schema.ts";
 import { fromPromise, method, toPromise } from "./authoring.ts";
@@ -142,8 +142,8 @@ export const authorCache = (
       write: service("write", cache.write),
       invalidate: service("invalidate", cache.invalidate),
       forAccount: (account) => {
-        const bound = Object.values(accounts)
-          .flatMap((value) => (Array.isArray(value) ? value : [value]))
+        const bound = scopedSlots(accounts)
+          .flatMap(([, value]) => (Array.isArray(value) ? value : [value]))
           .find((value) => value.id === account.id);
         if (bound === undefined) throw new CacheError({ reason: "invalid" });
         // Credentials never enter the scope, so a token renewal keeps the account's entries.

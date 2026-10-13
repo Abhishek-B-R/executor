@@ -13,7 +13,8 @@ import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
 
 /**
  * Map kinds: the posted item kinds, plus `organization` (the v2 organization `start` chose) and
- * `profile` (a connection's profile, beside its account).
+ * `profile`, which records a connection's link to its app beside its account. It keeps the name
+ * from when connections became profiles, so earlier rows still read; see `mapLookup`.
  */
 export type MapKind =
   | "organization"

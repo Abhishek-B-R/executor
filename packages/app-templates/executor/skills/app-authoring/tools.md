@@ -8,7 +8,7 @@ import { query, defineApp, object, router, string } from "apps";
 const Greet = object({ name: string().default("world") });
 
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: router({
       greet: query(
@@ -37,7 +37,7 @@ checks HTTP status and parses a JSON response.
 
 ## Give the app an icon
 
-Declare `icons` beside `accounts`. The dashboard shows them on the app's card
+Declare `icons` beside the account requirements. The dashboard shows them on the app's card
 and page, choosing the `light` or `dark` variant for the color scheme; an icon
 without `theme` suits both. The build records them, so they show without
 evaluating the app or listing its tools:
@@ -45,7 +45,6 @@ evaluating the app or listing its tools:
 ```ts
 export default defineApp(
   {
-    accounts: {},
     icons: [
       { src: "data:image/svg+xml;base64,PHN2Zy...", mimeType: "image/svg+xml", theme: "light" },
       { src: "https://example.com/logo-dark.png", mimeType: "image/png", theme: "dark" },
@@ -121,7 +120,7 @@ skills are read:
 import { defineApp, dynamicSkills } from "apps";
 import { githubSkills } from "apps/skills";
 
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   dynamicSkills: dynamicSkills({
     list: () =>
       githubSkills({
@@ -165,14 +164,15 @@ const github = defineProvider({
   auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) },
 });
 
-export default defineApp({ accounts: { github } }, async (ctx) => ({
+// One token is linked for everyone, so every member reads the same skills.
+export default defineApp({ app: { accounts: { github } } }, async (ctx) => ({
   dynamicSkills: dynamicSkills({
     list: () =>
       githubSkills({
         repo: "example-org/private-skills",
         path: "skills",
-        account: ctx.accounts.github,
-        token: ctx.accounts.github.fields.token,
+        account: ctx.app.accounts.github,
+        token: ctx.app.accounts.github.fields.token,
         fetch: ctx.fetch,
         signal: ctx.signal,
         cache: ctx.cache,
@@ -209,15 +209,13 @@ runtime; it never reads host files. All sources use one parser. Only selected fo
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
-Read with `{app, profile, name: "triage"}`. Reuse the returned `deployment`,
-`profile`, `profileRevision` (as `expectedProfileRevision`) and `revision` when
-reading a reference with `file`. Deployment pins code; revision detects remote
+Read with `{app, name: "triage"}`. Reuse the returned `deployment` and
+`revision` when reading a reference with `file`. Deployment pins code; revision detects remote
 content changes. A changed revision requires a fresh read. The dashboard bundle
 keeps its documents and references together in one response.
 
-Skill reads evaluate the factory, call `dynamicSkills.list` and require the
-selected accounts. Current app,
-profile and account access is checked. Use an account-free app for instructions
+Skill reads evaluate the factory, call `dynamicSkills.list` and require a
+linked account for each requirement. Current app and account access is checked. Use an account-free app for instructions
 that must be readable before setup. The Executor app loads this guide through the
 same public helper; discover its slug with `skills({})`.
 
@@ -326,7 +324,7 @@ router's title, description and instructions.
 
 ```ts
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: dynamicRouter({
       list: async () => [

@@ -112,7 +112,8 @@ export const cloudExecutor = Effect.fn(function* (
         Effect.suspend(() =>
           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
         );
-      return yield* createExecutor({
+      const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
+      const executor = yield* createExecutor({
         database: storage,
         secret: key,
         origin,
@@ -126,7 +127,7 @@ export const cloudExecutor = Effect.fn(function* (
             Effect.provideContext(services),
           ),
         },
-        hooks: yield* hostedResourceLifecycle.pipe(Effect.provideContext(services)),
+        hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
@@ -169,6 +170,8 @@ export const cloudExecutor = Effect.fn(function* (
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide(BrowserCrypto.layer));
+      yield* lifecycle.attach(executor);
+      return executor;
     }).pipe(
       Effect.mapError(() => new StorageError()),
       Effect.withSpan("runtime.cloud.executor.initialize"),

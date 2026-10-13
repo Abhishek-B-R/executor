@@ -132,7 +132,7 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
 const service = defineProvider({ name: "Holder fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
             },
             appsManifest,

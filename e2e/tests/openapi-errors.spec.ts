@@ -614,7 +614,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               {
                 path: "index.ts",
                 content: `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new Error("Synthetic factory failure");
 });`,
               },

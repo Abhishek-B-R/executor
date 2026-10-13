@@ -17,7 +17,7 @@ import {
   router,
 } from "apps";
 
-const requirements = { accounts: {} };
+const requirements = {};
 type Message = { id: string; subject: string };
 
 const list = query(

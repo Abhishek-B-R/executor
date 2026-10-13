@@ -10,9 +10,9 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { Evidence } from "../support/evidence.ts";
 import { mcpSdkVersion, withApps } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const JsonRpcRequest = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
@@ -96,9 +96,9 @@ const appFiles = (url: string) => [
     content: `import { accountRouter, defineApp, defineProvider, object, router, secrets, string } from "apps";
 import { mcpRouter } from "apps/mcp";
 const provider = defineProvider({ name: "User-Agent fixture", hosts: ${JSON.stringify([new URL(url).host])}, auth: { key: secrets({ label: "Token", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service: provider.many() } }, async (ctx) => ({ tools: router({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async (ctx) => ({ tools: router({
   standard: await mcpRouter({ url: ${JSON.stringify(url)}, signal: ctx.signal }),
-  custom: await accountRouter(ctx.accounts.service, (account) => mcpRouter({
+  custom: await accountRouter(ctx.user.accounts.service, (account) => mcpRouter({
     url: ${JSON.stringify(url)},
     account,
     headers: { "User-Agent": "Custom MCP client", Authorization: "Bearer " + account.fields.token },
@@ -133,14 +133,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP User-Agent", (it) => {
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, path);
-        yield* selectProfileAccounts(actors.owner, path, profile.id, { service: [] });
+        // Connecting from the app links the account to it; `.many()` calls use every linked one.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         account = (yield* body(
           Resource,
@@ -160,7 +156,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP User-Agent", (it) => {
           ["custom.agent", { accountId: account, input: {} }, "Custom MCP client"],
         ] as const) {
           const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool,
             kind: "query",
             input,

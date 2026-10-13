@@ -129,6 +129,7 @@ import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
 import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
+import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
 export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
@@ -242,7 +243,7 @@ export default Api.make(
     // here, so a failure is only logged.
     const installTeam = (job: string) =>
       provisionTeamNow(job).pipe(
-        // The installation saves default profiles; their setup starts at once, not on a later wake.
+        // The installation links managed keys; their webhook sources start at once, not on a later wake.
         // It already runs after its request's response.
         Effect.provide(schedules.immediateLayer),
         Effect.timeoutOption("15 seconds"),
@@ -296,7 +297,7 @@ export default Api.make(
         );
       });
     const dataSteps = (yield* cloudDataSteps(auth.agentGrants)).pipe(
-      // A step's redeploys wake profile setup once, after the job's request answers.
+      // A step's redeploys wake webhook source reconciliation once, after the job's request answers.
       Effect.provide(schedules.layer),
       Effect.provide(executor),
       reportErrors,
@@ -407,9 +408,7 @@ export default Api.make(
     const apiOrigin = auth.resourceOrigins.api[0];
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(apiOrigin));
     // Only framework lookups and the published skills read the large authoring reference.
-    const authoring = Effect.promise(() => import("./implementation/executor-authoring.ts")).pipe(
-      Effect.map(({ executorAuthoringSkills }) => executorAuthoringSkills),
-    );
+    const authoring = yield* cloudAuthoringReference;
     const api = cloudApi(document).pipe(
       Layer.provide(frameworkDocumentation(authoring)),
       HttpRouter.provideRequest(yield* cloudSourceFormatter),
@@ -488,7 +487,11 @@ export default Api.make(
       "*",
       "/api/webhooks/:appId/:subscriptionId",
       hostedWebhookCallback,
-    ).pipe(HttpRouter.provideRequest(executor));
+    ).pipe(
+      HttpRouter.provideRequest(executor),
+      // A delivery can hand a webhook source to another actor; that change wakes reconciliation.
+      HttpRouter.provideRequest(schedules.layer),
+    );
     const withGitAccess = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
       layer.pipe(
         HttpRouter.provideRequest(hostedAppGitAccess),

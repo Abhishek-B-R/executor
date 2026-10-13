@@ -52,7 +52,7 @@ const service = defineProvider({
     }),
   },
 });
-export default defineApp({ accounts: { service: service.many() }, icons: ${JSON.stringify(icons)} }, async () => ({
+export default defineApp({ user: { accounts: { service: service.many() } }, icons: ${JSON.stringify(icons)} }, async () => ({
   tools: router({ status: query({ input: object({}) }, async () => "ready") }),
 }));`;
 

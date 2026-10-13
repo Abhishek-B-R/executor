@@ -6,17 +6,20 @@ import type {
   AccountId,
   App,
   AppId,
-  ProfileId,
-  Profile,
   DeploymentId,
   Provider,
   ProviderDefinition,
-  SelectedAccounts,
   ToolRouter,
   ToolSummary,
 } from "@executor-js/sdk";
 import type { CatalogImport } from "@executor-js/catalog/contracts";
 import type { CatalogIcons } from "./icons.ts";
+import {
+  missingRequirements,
+  usedAccounts,
+  type AppAccountLink,
+  type RequirementAccounts,
+} from "./app-accounts.ts";
 import type {
   DeploymentDisplay,
   SourceDisplayFile,
@@ -38,7 +41,7 @@ export type AccountSummary = Account & {
   readonly signIn?:
     | { readonly state: "saved"; readonly reconnectAt: Date | null }
     | { readonly state: "reconnect" | "unavailable" };
-  /** Checks by the apps that select the account, when the host exposes them. */
+  /** Checks by the apps that use the account, when the host exposes them. */
   readonly health?: AccountHealth;
 };
 /** Safe account detail shared by hosts; management authority remains product-owned. */
@@ -55,7 +58,8 @@ export interface AccountDetail {
 /** The common inventory contains no product permission or organization fields. */
 export interface Inventory {
   readonly apps: readonly App[];
-  readonly profiles: readonly Profile[];
+  /** The caller's linked accounts for each listed app. */
+  readonly links: readonly AppAccountLink[];
   readonly accounts: readonly AccountSummary[];
 }
 /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
@@ -89,13 +93,6 @@ export interface InstallApp extends CatalogImport {
 export interface MutationProps<Input, A, E> {
   readonly mutation: Atom.AtomResultFn<Input, A, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
-}
-/** Saved account selection supplied to a product resolver. */
-/** Name is used only when creating an additional setup. */
-export interface SelectAccounts {
-  readonly name?: string;
-  readonly app: AppId;
-  readonly accounts: SelectedAccounts;
 }
 /** App sections use one URL vocabulary across local and hosted dashboards. */
 export const AppView = Schema.Literals([
@@ -131,7 +128,6 @@ export interface AppLinkProps {
   readonly app: AppId;
   readonly view?: AppView;
   readonly tool?: string;
-  readonly profile?: ProfileId | undefined;
   readonly className?: string;
   readonly children: ReactNode;
   readonly "aria-label"?: string;
@@ -159,68 +155,12 @@ export interface DashboardBindings {
   readonly AccountLink: ComponentType<AccountLinkProps>;
 }
 
-/** Resolve selected identities without inferring account ownership or permission. */
-export const selectedIds = (selection: SelectedAccounts): readonly AccountId[] => [
-  ...new Set(
-    Object.values(selection).flatMap((value) => (typeof value === "string" ? [value] : value)),
-  ),
-];
-/** Display saved account identities without mistaking an empty label for unavailable account metadata. */
-export const selectedAccountLabels = (
-  selection: SelectedAccounts,
-  accounts: readonly AccountSummary[],
-) =>
-  selectedIds(selection).map((id) => {
-    const account = accounts.find((item) => item.id === id);
-    return {
-      id,
-      label: account === undefined ? "Account unavailable" : account.label || "Unnamed account",
-    };
-  });
 /** Token expiry needs user action only when the host cannot refresh it. */
 export const accountNeedsSignIn = (account: AccountSummary, now = Date.now()) =>
   account.signIn?.state === "reconnect" ||
   (account.signIn?.state === "saved" &&
     account.signIn.reconnectAt !== null &&
     account.signIn.reconnectAt.getTime() <= now);
-/** A selection problem that prevents this app from running. */
-export interface AccountSelectionIssue {
-  readonly slot: string;
-  readonly reason: "missing" | "disconnected" | "incompatible";
-}
-/** Check saved selections against available metadata, without asserting upstream access. */
-export function accountSelectionIssues(
-  app: App,
-  selection: SelectedAccounts,
-  accounts: readonly AccountSummary[],
-): readonly AccountSelectionIssue[] {
-  return Object.entries(app.requirements.accounts).flatMap(
-    ([slot, requirement]): AccountSelectionIssue[] => {
-      const selected = selection[slot];
-      if (selected === undefined) return [{ slot, reason: "missing" }];
-      const ids = typeof selected === "string" ? [selected] : selected;
-      if (ids.some((id) => !accounts.some((account) => account.id === id)))
-        return [{ slot, reason: "disconnected" }];
-      if (
-        (requirement.cardinality === "one") !== (typeof selected === "string") ||
-        ids.some(
-          (id) =>
-            !accounts.some(
-              (account) => account.id === id && account.provider === requirement.provider,
-            ),
-        )
-      )
-        return [{ slot, reason: "incompatible" }];
-      return [];
-    },
-  );
-}
-/** Slots that accept many accounts and have none selected. Their tools list empty, not missing. */
-export const unfilledAccountSlots = (app: App, selection: SelectedAccounts): readonly string[] =>
-  Object.keys(app.requirements.accounts).filter((slot) => {
-    const selected = selection[slot];
-    return typeof selected !== "string" && selected?.length === 0;
-  });
 /** An app's latest check of an account. Outdated or missing checks make no claim. */
 export const currentAccountCheck = (account: AccountSummary, app: AppId) => {
   const check = account.health?.apps.find((entry) => entry.app === app)?.check;
@@ -237,20 +177,21 @@ export interface AccountCheckWarning<A extends AccountSummary> {
  */
 export function appToolReadiness<A extends AccountSummary>(
   app: App,
-  selection: SelectedAccounts,
-  accounts: readonly A[],
+  requirements: readonly RequirementAccounts<A>[],
 ):
   | { readonly state: "not-deployed" }
-  | { readonly state: "selection"; readonly issues: readonly AccountSelectionIssue[] }
+  | { readonly state: "missing"; readonly slots: readonly string[] }
   | { readonly state: "reconnect"; readonly accounts: readonly A[] }
   | { readonly state: "unavailable"; readonly accounts: readonly A[] }
   | { readonly state: "rejected"; readonly accounts: readonly A[] }
   | { readonly state: "ready"; readonly warnings: readonly AccountCheckWarning<A>[] } {
   if (app.activeDeployment === null) return { state: "not-deployed" };
-  const issues = accountSelectionIssues(app, selection, accounts);
-  if (issues.length > 0) return { state: "selection", issues };
-  const ids = selectedIds(selection);
-  const selected = accounts.filter((account) => ids.includes(account.id));
+  const selected = usedAccounts(requirements);
+  if (selected === undefined)
+    return {
+      state: "missing",
+      slots: missingRequirements(requirements).map((entry) => entry.slot),
+    };
   const unavailable = selected.filter((account) => account.signIn?.state === "unavailable");
   if (unavailable.length > 0) return { state: "unavailable", accounts: unavailable };
   const reconnect = selected.filter((account) => accountNeedsSignIn(account));
@@ -267,6 +208,13 @@ export function appToolReadiness<A extends AccountSummary>(
   });
   return { state: "ready", warnings };
 }
+/** many() requirements known to have no account: their tools list empty rather than failing. */
+export const emptyManyRequirements = <A extends AccountSummary>(
+  requirements: readonly RequirementAccounts<A>[],
+) =>
+  requirements.filter(
+    (entry) => entry.known && entry.requirement.cardinality === "many" && entry.linked.length === 0,
+  );
 /** Public OAuth endpoints can supply a favicon domain; credentials are never inspected. */
 export function providerDisplayUrl(definition: ProviderDefinition | undefined): string | null {
   if (definition)

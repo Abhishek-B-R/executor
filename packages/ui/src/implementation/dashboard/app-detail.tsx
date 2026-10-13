@@ -85,7 +85,6 @@ export function AppDetailLayout({
   sourceDisabledReason,
   back,
   actions,
-  setupPicker,
   children,
 }: {
   readonly app: App | undefined;
@@ -94,7 +93,6 @@ export function AppDetailLayout({
   readonly sourceDisabledReason?: string | undefined;
   readonly back: ReactNode;
   readonly actions?: ReactNode;
-  readonly setupPicker?: ReactNode;
   readonly children: ReactNode;
 }) {
   useDocumentTitle(productTitle(app?.name ?? "App"));
@@ -127,7 +125,7 @@ export function AppDetailLayout({
               )}
             </h1>
           </div>
-          {(actions || setupPicker || (app === undefined && canInspectSource)) && (
+          {(actions || (app === undefined && canInspectSource)) && (
             <div
               className={cn(
                 "ml-auto flex min-h-9 flex-wrap items-center justify-end gap-1 empty:hidden max-[740px]:min-h-11 max-[640px]:ml-0 max-[640px]:w-full max-[640px]:justify-start max-[640px]:gap-2",
@@ -139,10 +137,7 @@ export function AppDetailLayout({
               {app === undefined && canInspectSource && !actions ? (
                 <Skeleton className="h-9 w-28 max-[740px]:h-11" />
               ) : (
-                <>
-                  {actions}
-                  {setupPicker}
-                </>
+                actions
               )}
             </div>
           )}

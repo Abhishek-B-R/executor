@@ -124,10 +124,10 @@ type Connection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["co
  * result, and dropping files with escaped names lists fewer to keep the JSON small. On hosted
  * products the tool-only app's location says it has no UI.
  */
-const authorApp = (client: Connection, profile: string, organization?: string) =>
+const authorApp = (client: Connection, organization?: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
-    const executor = `const executor = tools.executor.profiles[${JSON.stringify(profile)}];`;
+    const executor = "const executor = tools.executor;";
     // Local routes have no organization, and their tools accept no empty path.
     const tenant = organization === undefined ? {} : { organization };
     const scope = organization === undefined ? {} : { path: tenant };
@@ -370,7 +370,7 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
   });
 
 /** deploy.md's local example deploys through `apps.deploy`; local `apps.commit` saves the same way. */
-const deployThroughApps = (client: Connection, profile: string, app: string) =>
+const deployThroughApps = (client: Connection, app: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
     const deployed = yield* client.use("Deploy a large source through apps", (client, signal) =>
@@ -378,7 +378,7 @@ const deployThroughApps = (client: Connection, profile: string, app: string) =>
         {
           name: "execute",
           arguments: {
-            code: `const executor = tools.executor.profiles[${JSON.stringify(profile)}];
+            code: `const executor = tools.executor;
 const path = { app: ${JSON.stringify(app)} };
 const { owner } = await executor.apps.get({ path });
 const source = await executor.apps.workspace({ path, query: { owner } });
@@ -418,9 +418,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app management contract
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
             .pipe(Effect.orDie),
         );
-        const { profile } = yield* managementApp(actors.owner);
+        yield* managementApp(actors.owner);
         const client = yield* mcp.connect(token.key, "app-management-contracts", { organization });
-        const app = yield* authorApp(client, profile.id, organization);
+        const app = yield* authorApp(client, organization);
         yield* api.request(
           actors.owner,
           "DELETE",
@@ -441,23 +441,9 @@ layer(TestLive, { excludeTestServices: true })("Local app management contracts",
           mcp = yield* McpClient;
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        const apps = yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
-          yield* session.send("GET", "/v1/apps", undefined, headers),
-        );
-        const executorApp = apps.find((app) => app.slug === "executor");
-        if (executorApp === undefined)
-          return yield* Effect.die("The local Executor app is missing");
-        const profiles = yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String })),
-          yield* session.send("GET", `/v1/apps/${executorApp.id}/profiles`, undefined, headers),
-        );
-        const profile = profiles[0];
-        if (profiles.length !== 1 || profile === undefined)
-          return yield* Effect.die("The local Executor profile is missing");
         const client = yield* mcp.connect(target.apiKey, "app-management-contracts");
-        const app = yield* authorApp(client, profile.id);
-        yield* deployThroughApps(client, profile.id, app);
+        const app = yield* authorApp(client);
+        yield* deployThroughApps(client, app);
         yield* session.send("DELETE", `/v1/apps/${app}`, undefined, headers);
       }).pipe(Effect.provide(McpClient.layer)),
     ),

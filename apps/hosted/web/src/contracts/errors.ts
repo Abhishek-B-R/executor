@@ -14,16 +14,6 @@ export type HostedError =
   | Schema.SchemaError;
 const errorMessage = Match.type<HostedError>().pipe(
   Match.tagsExhaustive({
-    ProfileNotFound: () => "This profile is no longer available for this app.",
-    ProfileConflict: ({ reason }) =>
-      ({
-        revision: "Your account selection changed. Reload it before trying again.",
-        idempotency:
-          "This request already created a different profile. Close the form and try again.",
-        inactive: "This profile is disabled or has been removed. Check the profile menu.",
-        "active-resources":
-          "Background work is still stopping. Check profile status before trying again.",
-      })[reason],
     AccessConflict: ({ reason }) =>
       ({
         changed:
@@ -42,7 +32,6 @@ const errorMessage = Match.type<HostedError>().pipe(
     ConnectionAccessInvalid: ({ reason }) =>
       ({
         app: "An included app is no longer available to you. Remove it and try again.",
-        profile: "A selected profile is no longer available. Choose how the app runs again.",
         account: "A selected account is no longer available for this app. Choose another one.",
         target: "Choose how each included app runs.",
       })[reason],
@@ -88,8 +77,19 @@ const errorMessage = Match.type<HostedError>().pipe(
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,
-    AccountRequired: () => "Connect an account to load this app’s tools.",
-    AccountSelectionInvalid: () => "Select accounts that match this app’s requirements.",
+    AccountRequired: ({ scope }) =>
+      scope === "app"
+        ? "Someone who can edit this app needs to link its account before its tools load."
+        : "Link an account to load this app’s tools.",
+    AccountChoiceUnsupported: () =>
+      "Accounts are no longer chosen per call. Change the accounts this app uses in its Accounts tab.",
+    RequirementMismatch: ({ reason }) =>
+      reason === "provider"
+        ? "This requirement uses another kind of account. Link an account of the kind it names."
+        : "This app no longer has that account requirement here. Reload the app’s accounts.",
+    AccountLinkedToApp: () =>
+      "An app uses this account for everyone. Unlink it under App accounts on the app’s Accounts tab before deleting it.",
+    AccountSelectionInvalid: () => "Choose accounts that match this app’s requirements.",
     AccountFieldsInvalid: () => "Check the account details and try again.",
     AuthMethodInvalid: () =>
       "This sign-in method is no longer available. Start account setup again.",
@@ -98,8 +98,14 @@ const errorMessage = Match.type<HostedError>().pipe(
     AccountConnectionClosed: () => "This connection has ended. Start account setup again.",
     AccountConnectionTargetChanged: () =>
       "The app’s account setup changed. Close this form and try again.",
+    AccountConnectionRefused: () =>
+      "Your access doesn’t allow connecting this account for the app. Check your access to the app and the account’s destination, then start account setup again.",
     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
-    OAuthReconnectRequired: () => "This account needs to sign in again.",
+    // An app's own account is reconnected by people who can edit the app; a caller cannot replace it.
+    OAuthReconnectRequired: ({ appRequirement }) =>
+      appRequirement === undefined
+        ? "This account needs to sign in again."
+        : `The app’s “${appRequirement}” account needs to sign in again. The app uses it for everyone, so someone who can edit this app must reconnect it from the app’s Accounts tab.`,
     OAuthRenewalFailed: (error) => `${error.description} ${error.recovery.action}`,
     OAuthClientUnavailable: () =>
       "This provider needs an OAuth client. Enter its client details below.",

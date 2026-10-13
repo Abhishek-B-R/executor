@@ -8,7 +8,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, Profile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
@@ -171,13 +171,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           );
           const started = yield* api.request(
             actors.owner,
@@ -262,11 +263,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
               reason: scenario.completionFailure,
             });
           expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges + 1);
-          const selected = yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-          );
+          // Completing links the new account to the app; a failed completion links nothing.
+          const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
           if (scenario.completionFailure === undefined) {
             const account = yield* body(Resource, completed);
             yield* Effect.addFinalizer(() =>
@@ -274,13 +272,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
                 .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
                 .pipe(Effect.orDie),
             );
-            expect(selected.body).toMatchObject({ accounts: { service: [account.id] } });
+            expect(linked).toEqual([account.id]);
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/connections/${connection.id}`))
                 .body,
             ).toMatchObject({ state: { status: "completed", account: { id: account.id } } });
           } else {
-            expect((yield* body(Profile, selected)).accounts).toEqual(profile.accounts);
+            expect(linked).toEqual([]);
             expect(
               (yield* api.request(actors.owner, "GET", `${prefix}/connections/${connection.id}`))
                 .body,

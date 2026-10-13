@@ -8,7 +8,6 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
-import { createProfile } from "./profiles.ts";
 import { appsManifest } from "./apps-release.ts";
 
 /** Omit staleFor to use the framework default stale-while-revalidate window. */
@@ -111,7 +110,7 @@ export const liveOpenapiFixture = (freshFor: number, options: { staleFor?: numbe
       {
         path: "index.ts",
         content: `import { defineApp } from 'apps'; import { liveOpenapiRouter } from 'apps/openapi';
-export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
+export default defineApp({}, async ctx => ({ tools: liveOpenapiRouter({cache:ctx.cache, fetch:ctx.fetch, signal:ctx.signal,
  source:{url:${JSON.stringify(origin + "/openapi.json")}}, allowedOrigin:${JSON.stringify(origin)}, freshFor:${freshFor},${options.staleFor === undefined ? "" : ` staleFor:${options.staleFor},`}
  securitySchemes:{token:{type:'apiKey',in:'header',name:'x-token'}}, methods:{apiKey:[{scheme:'token',field:'token',part:'value',prefix:''}]}, oauth:[],
  account:{method:'apiKey',fields:{token:'synthetic-live-key'}}
@@ -130,10 +129,8 @@ export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter
     const app = (yield* body(App, deployed)).id;
     const path = `${prefix}/${app}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    const profile = yield* createProfile(actors.owner, path);
     const callTool = (tool: string, value: string) =>
       api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile: profile.id,
         tool,
         // Every operation in this document is a GET.
         kind: "query",
@@ -145,7 +142,6 @@ export default defineApp({accounts:{}}, async ctx => ({ tools: liveOpenapiRouter
       api,
       actors,
       path,
-      profile,
       call,
       callTool,
       downloads: Effect.sync(() => downloads),

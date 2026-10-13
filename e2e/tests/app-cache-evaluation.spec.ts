@@ -38,7 +38,7 @@ layer(HostedLive, { excludeTestServices: true })("App caching", (it) => {
               path: "index.ts",
               // The key alone exceeds the cache's key limit, as a large credential once did.
               content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   await ctx.cache.write([{ key: ${JSON.stringify(privateMarker)} + "x".repeat(9000), value: true }], "1 minute");
   return { tools: router({ never: query({ input: object({}) }, async () => true) }) };
 });`,

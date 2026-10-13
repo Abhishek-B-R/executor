@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { publishedRelease } from "../support/app-package.ts";
-import { appsManifest } from "../support/apps-release.ts";
+import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
@@ -25,7 +25,7 @@ import {
   type TokenShape,
 } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -138,16 +138,16 @@ const insecureService = defineProvider({ name: ${JSON.stringify(`${name} insecur
 } });
 ${sendSource}
 const basicOf = (user, password) => "Basic " + btoa(user + ":" + password);
-export default defineApp({ accounts: { bearerService, basicService, pairs: pairService.many(), keyService, encodedService, insecureService } }, {
+export default defineApp({ user: { accounts: { bearerService, basicService, pairs: pairService.many(), keyService, encodedService, insecureService } } }, {
   tools: router({
-    fields: query({ input: object({}) }, async ({ accounts }) => ({
+    fields: query({ input: object({}) }, async ({ user: { accounts } }) => ({
       encoded: accounts.encodedService.fields,
       bearer: accounts.bearerService.fields,
       basic: accounts.basicService.fields,
       pairs: accounts.pairs.map((account) => account.fields),
       key: accounts.keyService.fields,
     })),
-    probe: query({ input: object({ origin: string() }) }, async ({ accounts }, { origin }) => {
+    probe: query({ input: object({ origin: string() }) }, async ({ user: { accounts } }, { origin }) => {
       const token = accounts.bearerService.fields.token;
       const basicAccount = accounts.basicService;
       const [first, second] = accounts.pairs;
@@ -209,7 +209,7 @@ const service = defineProvider({
     }),
   },
 });
-export default defineApp({ accounts: { service } }, { tools: router({}) });`;
+export default defineApp({ user: { accounts: { service } } }, { tools: router({}) });`;
 
 /**
  * A token placed as a bearer and one substituted anywhere, both on `host`. `fail` sends each where
@@ -235,13 +235,13 @@ const ended = async (url, init) => {
     return { status: 0, message: String(error) + " " + String(error?.stack) };
   }
 };
-export default defineApp({ accounts: { placed, anywhere } }, {
+export default defineApp({ user: { accounts: { placed, anywhere } } }, {
   tools: router({
-    fail: query({ input: object({ origin: string() }) }, async ({ accounts }, { origin }) => ({
+    fail: query({ input: object({ origin: string() }) }, async ({ user: { accounts } }, { origin }) => ({
       placed: await ended(origin + "/placed", { headers: accounts.placed.headers() }),
       anywhere: await ended(origin + "/anywhere", { headers: { "x-key": accounts.anywhere.fields.token } }),
     })),
-    trace: query({ input: object({ origin: string() }) }, async ({ accounts }, { origin }) => ({
+    trace: query({ input: object({ origin: string() }) }, async ({ user: { accounts } }, { origin }) => ({
       placed: await send(origin + "/trace", { method: "TRACE", headers: accounts.placed.headers() })
         .catch((error) => ({ status: 0, refusal: { reason: "fetch rejected: " + error.message } })),
       anywhere: await send(origin + "/trace", { method: "TRACE", headers: { "x-key": accounts.anywhere.fields.token } })
@@ -260,8 +260,8 @@ const endpointsApp = (
 const mail = defineProvider({ name: ${JSON.stringify(name)}, hosts: ${JSON.stringify(hosts)}, auth: {
   oauth: oauth2({ ...${JSON.stringify(endpoints)}, scopes: ${JSON.stringify(scopes)} }),
 } });
-export default defineApp({ accounts: { mail } }, {
-  tools: router({ fields: query({ input: object({}) }, async ({ accounts }) => accounts.mail.fields) }),
+export default defineApp({ user: { accounts: { mail } } }, {
+  tools: router({ fields: query({ input: object({}) }, async ({ user: { accounts } }) => accounts.mail.fields) }),
 });`;
 
 /** The token the issuer gives every first sign-in. */
@@ -344,7 +344,9 @@ const noOperatorClients = {
  * server and what it asks for; `request` adds the provider's own placements, which the operator's
  * header replaces for a managed account.
  */
-const mailApp = (options: {
+const mailApp = (options: Parameters<typeof mailSource>[0]) =>
+  options.legacy === true ? unscopedAccounts(mailSource(options)) : mailSource(options);
+const mailSource = (options: {
   readonly name: string;
   readonly discover: string;
   /** Undefined declares no hosts. */
@@ -393,16 +395,16 @@ const mail = defineProvider({
 });
 ${sendSource}
 const tampered = (value) => value.slice(0, 10) + (value[10] === "0" ? "1" : "0") + value.slice(11);
-export default defineApp({ accounts: { mail } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { mail } } }, async ({ user: { accounts } }) => ({
   workflows: { fields: workflow({ input: object({}) }, async (ctx) =>
-    ctx.step.do("fields", async (step) => step.accounts.mail.fields)) },
+    ctx.step.do("fields", async (step) => step.user.accounts.mail.fields)) },
   tools: router({
     // Discovery evaluates the app with the account too; the tool's name says what it read.
     [/^exsec2_[0-9a-f]+_$/.test(accounts.mail.fields.access_token) ? "sealedDiscovery" : "realDiscovery"]:
       query({ input: object({}) }, async () => null),
-    fields: query({ input: object({}) }, async ({ accounts }) => accounts.mail.fields),
+    fields: query({ input: object({}) }, async ({ user: { accounts } }) => accounts.mail.fields),
     // Send the account's headers, with the app's own authorization beside them.
-    headers: query({ input: object({ url: string() }) }, async ({ accounts }, { url }) =>
+    headers: query({ input: object({ url: string() }) }, async ({ user: { accounts } }, { url }) =>
       send(url, { headers: { ...accounts.mail.headers(), authorization: "Bearer app-chosen" } })),
     // Send a bearer value written by hand, such as a handle kept from an earlier invocation.
     send: query({ input: object({ url: string(), token: string() }) }, async (_, { url, token }) =>
@@ -418,14 +420,14 @@ export default defineApp({ accounts: { mail } }, async ({ accounts }) => ({
     }),
     // Read the resource with this invocation's token; a refusal by the service is the account's.
     // The global fetch returns Executor's refusal as a 421 rather than throwing it.
-    resource: query({ input: object({}) }, async ({ accounts }) => {
+    resource: query({ input: object({}) }, async ({ user: { accounts } }) => {
       const account = accounts.mail;
       const token = account.fields.access_token;
       const response = await fetch(${JSON.stringify(options.resource)}, { headers: { authorization: "Bearer " + token } });
       if (response.status === 401) throw new ProviderError({ reason: "unauthorized", status: 401, accountId: account.id });
       return { token, status: response.status };
     }),
-    probe: query({ input: object({}) }, async ({ accounts }) => {
+    probe: query({ input: object({}) }, async ({ user: { accounts } }) => {
       const account = accounts.mail;
       const token = account.fields.access_token;
       const resource = await fetch(${JSON.stringify(options.resource)}, { headers: headersOf(account) });
@@ -496,19 +498,19 @@ const harness = Effect.gen(function* () {
       );
       return { path: `${prefix}/apps/${app.id}`, app };
     });
-  /** Open a connection for `requirement` in `profile`. */
-  const connection = (path: string, requirement: string, profile: string) =>
-    api.request(actors.owner, "POST", `${path}/connections`, { requirement, profile }).pipe(
+  /** Open a connection for `requirement`; the account it saves is linked to the app. */
+  const connection = (path: string, requirement: string) =>
+    api.request(actors.owner, "POST", connectionsPath(path, "user", requirement), {}).pipe(
       Effect.tap((response) =>
         Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
       ),
       Effect.flatMap((response) => body(Resource, response)),
       Effect.map((resource) => resource.id),
     );
-  /** Connect a secrets account for `requirement` in `profile`. */
-  const submit = (path: string, requirement: string, profile: string, fields: object) =>
+  /** Connect a secrets account for `requirement`, which links it to the app. */
+  const submit = (path: string, requirement: string, fields: object) =>
     Effect.gen(function* () {
-      const id = yield* connection(path, requirement, profile);
+      const id = yield* connection(path, requirement);
       const saved = yield* api.request(actors.owner, "POST", `${prefix}/connections/${id}/submit`, {
         method: "key",
         label: requirement,
@@ -521,11 +523,11 @@ const harness = Effect.gen(function* () {
       );
       return account;
     });
-  const call = <A>(path: string, output: Schema.Decoder<A>, tool: string, profile: string) =>
+  /** Call `tool` with the accounts linked to the app: for a plain requirement, the newest. */
+  const call = <A>(path: string, output: Schema.Decoder<A>, tool: string) =>
     Effect.gen(function* () {
       // Every tool here only reads; naming the kind lets a refused call renew and repeat.
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile,
         tool,
         kind: "query",
         input: tool === "probe" ? { origin: "" } : {},
@@ -533,16 +535,9 @@ const harness = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
-  const callWith = <A>(
-    path: string,
-    output: Schema.Decoder<A>,
-    tool: string,
-    profile: string,
-    input: object,
-  ) =>
+  const callWith = <A>(path: string, output: Schema.Decoder<A>, tool: string, input: object) =>
     Effect.gen(function* () {
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-        profile,
         tool,
         input,
       });
@@ -585,16 +580,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           encoded: `synthetic-encoded-${randomUUID()}`,
           insecure: `synthetic-insecure-${randomUUID()}`,
         };
-        const { id: profile } = yield* createProfile(
-          yield* Actors.pipe(Effect.map((actors) => actors.owner)),
-          path,
-        );
-        yield* submit(path, "bearerService", profile, { token: values.token });
-        yield* submit(path, "basicService", profile, { email: values.email, token: values.basic });
-        for (const pair of values.pairs) yield* submit(path, "pairs", profile, pair);
-        yield* submit(path, "keyService", profile, { key: values.key });
-        yield* submit(path, "encodedService", profile, { key: values.encoded });
-        yield* submit(path, "insecureService", profile, { token: values.insecure });
+        // Each requirement links the accounts connected for it, so calls need no choice.
+        yield* submit(path, "bearerService", { token: values.token });
+        yield* submit(path, "basicService", { email: values.email, token: values.basic });
+        for (const pair of values.pairs) yield* submit(path, "pairs", pair);
+        yield* submit(path, "keyService", { key: values.key });
+        yield* submit(path, "encodedService", { key: values.encoded });
+        yield* submit(path, "insecureService", { token: values.insecure });
         // The service serves only requests that carry what it issued, exactly where it expects it.
         const basicOf = (user: string, password: string) =>
           `Basic ${Buffer.from(`${user}:${password}`).toString("base64")}`;
@@ -638,7 +630,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             encoded: Schema.Struct({ key: Schema.String }),
           }),
           "fields",
-          profile,
           {},
         );
         // Secret fields are handles; a plain field keeps its value.
@@ -652,7 +643,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(fields.key.key).toMatch(handle);
         expect(fields.encoded.key).toMatch(handle);
 
-        const probe = yield* callWith(path, Schema.Record(Schema.String, Sent), "probe", profile, {
+        const probe = yield* callWith(path, Schema.Record(Schema.String, Sent), "probe", {
           origin: upstream.origin,
         });
         const sent = (key: string) => probe[key]?.status;
@@ -797,21 +788,16 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const upstream = yield* credentialUpstream;
         const name = `Credential outbound ${randomUUID().slice(0, 8)}`;
         const { path } = yield* deploy(name, outboundApp(name, `127.0.0.1:${upstream.port}`));
-        const { id: profile } = yield* createProfile(
-          yield* Actors.pipe(Effect.map((actors) => actors.owner)),
-          path,
-        );
         // Secrets the network cannot send as header values. App code holds handles, which it can.
         const secret = (label: string) => `synthetic-${label}-${randomUUID()}\r\nx-injected: 1`;
         const values = { placed: secret("placed"), anywhere: secret("anywhere") };
-        yield* submit(path, "placed", profile, { token: values.placed });
-        yield* submit(path, "anywhere", profile, { token: values.anywhere });
+        yield* submit(path, "placed", { token: values.placed });
+        yield* submit(path, "anywhere", { token: values.anywhere });
         const Ended = Schema.Struct({ status: Schema.Number, message: Schema.String });
         const failed = yield* callWith(
           path,
           Schema.Struct({ placed: Ended, anywhere: Ended }),
           "fail",
-          profile,
           { origin: upstream.origin },
         );
         // Neither request was sent, and nothing app code read or the server logged quotes the
@@ -829,7 +815,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           path,
           Schema.Struct({ placed: Sent, anywhere: Sent }),
           "trace",
-          profile,
           { origin: upstream.origin },
         );
         expect(traced.placed.refusal).toEqual({ reason: "credential_method" });
@@ -902,8 +887,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         /** How setup answers for the app's provider, given a connection to it. */
         const setup = (deployed: { readonly path: string; readonly app: typeof App.Type }) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, deployed.path);
-            const id = yield* connection(deployed.path, "mail", profile.id);
+            const id = yield* connection(deployed.path, "mail");
             const provider = deployed.app.requirements.accounts.mail!.provider;
             const started = yield* api.request(
               actors.owner,
@@ -1038,8 +1022,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
               name,
               endpointsApp(name, ["www.googleapis.com"], google, scopes),
             );
-            const profile = yield* createProfile(actors.owner, path);
-            const id = yield* connection(path, "mail", profile.id);
+            const id = yield* connection(path, "mail");
             const started = yield* api.request(
               actors.owner,
               "POST",
@@ -1119,8 +1102,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         rawToken,
       };
       const { path, app } = yield* deploy(name, mailApp(options));
-      const profile = (yield* createProfile(actors.owner, path)).id;
-      const id = yield* connection(path, "mail", profile);
+      const id = yield* connection(path, "mail");
       const started = yield* body(
         Redirect,
         yield* api.request(actors.owner, "POST", `${prefix}/connections/${id}/oauth/start`, {
@@ -1146,7 +1128,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       );
       // The operator's secret authenticated the exchange; the app never saw it.
       expect((yield* issuer.metrics).tokenChecks).toMatchObject({ authSecret: true });
-      return { name, options, path, app, profile, account, store, issuer, issuerHost, storeHost };
+      return { name, options, path, app, account, store, issuer, issuerHost, storeHost };
     });
 
   it.effect(scenarios.credentialManagedPlaced.title, (context) =>
@@ -1155,21 +1137,20 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       Effect.gen(function* () {
         const { api, actors, prefix, call, callWith } = yield* harness;
         // The provider marks the token raw(); a managed account is sealed anyway.
-        const { path, app, profile, account, store, issuer, issuerHost, storeHost } =
+        const { path, app, account, store, issuer, issuerHost, storeHost } =
           yield* managedAccount(true);
 
         // Tool calls, discovery, workflow steps and account checks all read handles.
         const [fields, listed, stepped, health] = yield* Effect.all(
           [
-            call(path, Schema.Struct({ access_token: Schema.String }), "fields", profile),
+            call(path, Schema.Struct({ access_token: Schema.String }), "fields"),
             api
-              .request(actors.owner, "GET", `${path}/tools?profile=${profile}`)
+              .request(actors.owner, "GET", `${path}/tools`)
               .pipe(Effect.flatMap((response) => body(Tools, response))),
             Effect.gen(function* () {
               const run = yield* body(
                 Run,
                 yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
-                  profile,
                   workflow: "fields",
                   input: {},
                   key: randomUUID(),
@@ -1202,7 +1183,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           status: "healthy",
         });
 
-        const probe = yield* call(path, Probe, "probe", profile);
+        const probe = yield* call(path, Probe, "probe");
         // The operator's header reaches the service with the real token. The service echoed it;
         // app code read the handle instead.
         expect(probe.resource.status).toBe(200);
@@ -1259,7 +1240,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           }),
         );
         yield* store.issue([{ in: "header", name: "x-mail-token", value: token }]);
-        const moved = yield* callWith(path, Sent, "headers", profile, {
+        const moved = yield* callWith(path, Sent, "headers", {
           url: `${store.origin}/moved`,
         });
         expect(moved).toEqual({ status: 200, refusal: null });
@@ -1267,14 +1248,10 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(movedTo?.headers["x-mail-token"]).toBe(token);
         expect(movedTo?.authorization).toBeNull();
         // The handle in `authorization` is now outside the operator's header.
-        const elsewhere = yield* callWith(path, Sent, "send", profile, {
+        const elsewhere = yield* callWith(path, Sent, "send", {
           url: `${store.origin}/refused`,
-          token: (yield* call(
-            path,
-            Schema.Struct({ access_token: Schema.String }),
-            "fields",
-            profile,
-          )).access_token,
+          token: (yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields"))
+            .access_token,
         });
         expect(elsewhere.refusal).toEqual({
           reason: "credential_placement",
@@ -1289,8 +1266,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
       context,
       Effect.gen(function* () {
         const { api, actors, deploy, call } = yield* harness;
-        const { name, options, path, app, profile, account, store, issuer } =
-          yield* managedAccount(false);
+        const { name, options, path, app, account, store, issuer } = yield* managedAccount(false);
         const release = yield* publishedRelease("0.0.1-beta.59");
         const Read = Schema.Struct({ token: Schema.String, status: Schema.Number });
         const [widened, placed, pinned] = yield* Effect.all(
@@ -1328,7 +1304,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
 
         // Widening the app's hosts does not widen where the managed token goes.
         expect(widened.status, JSON.stringify(widened.body)).toBe(200);
-        const again = yield* call(path, Probe, "probe", profile);
+        const again = yield* call(path, Probe, "probe");
         expect(again.undeclared.refusal).toMatchObject({ reason: "credential_host" });
         expect(again.resource.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
@@ -1342,7 +1318,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           ],
         });
         expect(unhosted.status, JSON.stringify(unhosted.body)).toBe(200);
-        const nowhere = yield* call(path, Read, "resource", profile);
+        const nowhere = yield* call(path, Read, "resource");
         expect(nowhere.token).toMatch(handle);
         expect(nowhere.status).toBe(421);
 
@@ -1350,7 +1326,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         // only the operator's header carries the token, and the provider's other header is refused.
         const signedIn = yield* startSignIn(placed.path);
         yield* completeSignIn(issuer, signedIn.connection, yield* body(Redirect, signedIn.started));
-        const placedProbe = yield* call(placed.path, Probe, "probe", signedIn.profile);
+        const placedProbe = yield* call(placed.path, Probe, "probe");
         expect(placedProbe.resource.status).toBe(200);
         expect(placedProbe.leak.refusal).toEqual({
           reason: "credential_placement",
@@ -1363,16 +1339,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const provider = (deployed: { readonly app: typeof App.Type }) =>
           deployed.app.requirements.accounts.mail!.provider;
         expect(provider(pinned)).toBe(provider({ app }));
-        const oldProfile = yield* createProfile(actors.owner, pinned.path);
-        const selected = yield* selectProfileAccounts(actors.owner, pinned.path, oldProfile.id, {
-          mail: account,
-        });
-        expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-        const old = yield* call(pinned.path, Read, "resource", oldProfile.id);
+        yield* linkAccount(actors.owner, pinned.path, "mail", account);
+        const old = yield* call(pinned.path, Read, "resource");
         expect(old.token).toMatch(handle);
         expect(old.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
-        const oldProbe = yield* call(pinned.path, Probe, "probe", oldProfile.id);
+        const oldProbe = yield* call(pinned.path, Probe, "probe");
         expect(oldProbe.leak.refusal).toEqual({
           reason: "credential_placement",
           location: "x-leak header",
@@ -1386,7 +1358,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         // next invocation on.
         yield* restartWith(noOperatorClients);
         const reads = (yield* issuer.metrics).resourceRequests.GET;
-        const removed = yield* call(pinned.path, Read, "resource", oldProfile.id);
+        const removed = yield* call(pinned.path, Read, "resource");
         expect(removed.status).toBe(421);
         expect((yield* issuer.metrics).resourceRequests.GET).toBe(reads);
         expect(JSON.stringify(yield* store.received)).not.toContain(`/leak`);
@@ -1394,19 +1366,21 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
-  /** Start signing in to `requirement` of a fresh profile of the app at `path`. */
+  /**
+   * Start signing in to `requirement` of the app at `path`. The account it saves is linked to the
+   * app beside any signed in before, so calls choose it by ID.
+   */
   const startSignIn = (path: string, requirement = "mail") =>
     Effect.gen(function* () {
       const { api, actors, prefix, connection } = yield* harness;
-      const profile = (yield* createProfile(actors.owner, path)).id;
-      const id = yield* connection(path, requirement, profile);
+      const id = yield* connection(path, requirement);
       const started = yield* api.request(
         actors.owner,
         "POST",
         `${prefix}/connections/${id}/oauth/start`,
         { method: "oauth", label: "Mail" },
       );
-      return { profile, connection: id, started };
+      return { connection: id, started };
     });
   /** Accept the operator's client for `redirect`, finish the started sign-in and answer. */
   const finishSignIn = (
@@ -1475,6 +1449,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
               "first-party-client",
             );
             const completed = yield* finishSignIn(issuer, attempt.connection, redirect);
+            // Each sign-in from the app replaces the earlier one's link, so calls use this account.
             if (completed.status === 200) {
               const account = (yield* body(Resource, completed)).id;
               yield* Effect.addFinalizer(() =>
@@ -1550,7 +1525,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(renewing.completed.status, JSON.stringify(renewing.completed.body)).toBe(200);
         yield* issuer.expireAccessTokens;
         const read = yield* api.request(actors.owner, "POST", `${scoped}/tools/call`, {
-          profile: renewing.profile,
           tool: "resource",
           kind: "query",
           input: {},
@@ -1585,7 +1559,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           hold: "refresh-issued",
         });
         const use = api.request(actors.owner, "POST", `${scoped}/tools/call`, {
-          profile: racing.profile,
           tool: "resource",
           input: {},
         });
@@ -1600,9 +1573,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         yield* issuer.configure({ scopeGrant: { defaults: [] }, expiresIn: 3600, hold: null });
         const reconnecting = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${scoped}/connections`, {
-            requirement: "mail",
-            profile: racing.profile,
+          yield* api.request(actors.owner, "POST", connectionsPath(scoped, "user", "mail"), {
             account: raced,
           }),
         );
@@ -1833,35 +1804,30 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
 
         // App code reads a handle, and Cloud's outbound sends the real token in the operator's
         // placement: the service, which accepts only tokens it issued, answers.
-        const fields = yield* call(
-          path,
-          Schema.Struct({ access_token: Schema.String }),
-          "fields",
-          attempt.profile,
-        );
+        const fields = yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields");
         expect(fields.access_token).toMatch(handle);
         // Sent as written, a refusal would say why.
         expect(
-          yield* callWith(path, Sent, "send", attempt.profile, {
+          yield* callWith(path, Sent, "send", {
             url: options.resource,
             token: fields.access_token,
           }),
         ).toEqual({ status: 200, refusal: null });
         expect(yield* authorized).toBe(realBearer);
         const Read = Schema.Struct({ token: Schema.String, status: Schema.Number });
-        const read = yield* call(path, Read, "resource", attempt.profile);
+        const read = yield* call(path, Read, "resource");
         expect(read.token).toMatch(handle);
         expect(read.status).toBe(200);
         expect(yield* authorized).toBe(realBearer);
         // A handle app code kept is sent as long as it lives.
-        const replay = yield* callWith(path, Sent, "send", attempt.profile, {
+        const replay = yield* callWith(path, Sent, "send", {
           url: options.resource,
           token: read.token,
         });
         expect(replay.status).toBe(200);
         expect(yield* authorized).toBe(realBearer);
         // The operator's header and hosts bind it on Cloud too.
-        const probe = yield* call(path, Probe, "probe", attempt.profile);
+        const probe = yield* call(path, Probe, "probe");
         expect(probe.resource.status).toBe(200);
         expect(probe.leak.refusal).toEqual({
           reason: "credential_placement",
@@ -1985,12 +1951,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
               attempt.connection,
               yield* body(Redirect, attempt.started),
             );
-            return { path, profile: attempt.profile };
+            return { path };
           });
         // Exact hosts within the operator's wildcards stay exact: the token reaches them and no
         // other name.
         const exact = yield* signedIn("exact", [issuerHost, storeHost]);
-        const probe = yield* call(exact.path, Probe, "probe", exact.profile);
+        const probe = yield* call(exact.path, Probe, "probe");
         expect(probe.resource.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
         expect(probe.undeclared.refusal).toMatchObject({
@@ -2004,9 +1970,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           deeper.path,
           Schema.Struct({ access_token: Schema.String }),
           "fields",
-          deeper.profile,
         );
-        const refused = yield* callWith(deeper.path, Sent, "send", deeper.profile, {
+        const refused = yield* callWith(deeper.path, Sent, "send", {
           url: `${issuer.origin}/resource`,
           token: kept.access_token,
         });
@@ -2072,29 +2037,27 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           });
         interface Selected {
           readonly path: string;
-          readonly profile: string;
           readonly account: string;
         }
         /**
-         * A new account the user's own registered client signed in, selected by an app of its
-         * own, so completing another account's sign-in never resolves it.
+         * A new account the user's own registered client signed in, linked to an app of its own,
+         * so completing another account's sign-in never resolves it.
          */
         const ownAccount = Effect.gen(function* () {
           const { path } = yield* deploy(`Synthetic Mail ${randomUUID().slice(0, 8)}`, source);
-          const { profile, connection } = yield* startSignIn(path);
+          const { connection } = yield* startSignIn(path);
           const account = yield* signIn(connection, false);
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
           );
-          return { path, profile, account } satisfies Selected;
+          return { path, account } satisfies Selected;
         });
         /** Replace the account's credential with one the operator's client signs in. */
         const reconnect = ({ path, ...selected }: Selected) =>
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${path}/connections`, {
-                requirement: "mail",
+              yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "mail"), {
                 ...selected,
               }),
             );
@@ -2106,7 +2069,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         yield* issuer.configure({ expiresIn: 36_000 });
         const refused = yield* ownAccount;
         const Fields = Schema.Struct({ access_token: Schema.String });
-        expect((yield* call(renewing.path, Fields, "fields", renewing.profile)).access_token).toBe(
+        expect((yield* call(renewing.path, Fields, "fields")).access_token).toBe(
           "synthetic-access-token",
         );
 
@@ -2160,12 +2123,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             return yield* Fiber.join(running);
           });
 
-        // A tool call that selected the account before the reconnect reads the credential it
+        // A tool call that read the account before the reconnect reads the credential it
         // received, which is now managed: sealed, though the provider marks it raw().
-        const read = yield* interleaved(
-          renewing,
-          call(renewing.path, Fields, "fields", renewing.profile),
-        );
+        const read = yield* interleaved(renewing, call(renewing.path, Fields, "fields"));
         expect(read.access_token).toMatch(handle);
 
         // So does an account check that read the account before the reconnect.
@@ -2186,7 +2146,6 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
             refused.path,
             Schema.Struct({ token: Schema.String, status: Schema.Number }),
             "resource",
-            refused.profile,
           ),
         );
         expect(retried.token).toMatch(handle);
@@ -2284,7 +2243,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         // The exchange sent the operator's resource, and the account holds the nested user token:
         // the service accepts only tokens it issued.
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
-        const used = yield* call(first.path, Called, "resource", signIn.profile);
+        const used = yield* call(first.path, Called, "resource");
         expect(used.token).toMatch(handle);
         expect(used.status).toBe(200);
         expect((yield* issuer.metrics).resourceAuthorizations.at(-1)).toBe(realBearer);
@@ -2297,7 +2256,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource", signIn.profile);
+        const renewed = yield* call(first.path, Called, "resource");
         expect(renewed.status).toBe(200);
         const metrics = yield* issuer.metrics;
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
@@ -2314,9 +2273,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         // It still reconnects the account it holds.
         const reconnecting = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${first.path}/connections`, {
-            requirement: "mail",
-            profile: signIn.profile,
+          yield* api.request(actors.owner, "POST", connectionsPath(first.path, "user", "mail"), {
             account,
           }),
         );

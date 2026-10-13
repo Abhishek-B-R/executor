@@ -62,7 +62,7 @@ const operationApp = [
     path: "index.ts",
     content: `import { CacheError, defineApp, string, query, mutation, object, router } from "apps";
 class ConversationMissing extends Error { override name = "ConversationMissing"; }
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     fail: query({ input: object({}) }, async () => { throw new ConversationMissing(${JSON.stringify(appMarker)}); }),
     cacheUnavailable: query({ input: object({}) }, async () => { throw new CacheError({ reason: "unavailable" }); }),
@@ -106,7 +106,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure details", (it) => 
           {
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
+export default defineApp({}, { tools: router({ broken: ) }) });`,
           },
         ]);
         yield* evidence.json("compile-failure.json", compile.body);
@@ -114,9 +114,9 @@ export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
         const compiled = yield* body(BuildFailed, compile);
         expect(compiled).toMatchObject({
           stage: "compile",
-          location: { file: "index.ts", line: 2, column: 70 },
+          location: { file: "index.ts", line: 2, column: 56 },
         });
-        expect(compiled.message).toContain('index.ts:2:70: Unexpected ")"');
+        expect(compiled.message).toContain('index.ts:2:56: Unexpected ")"');
 
         // Columns count UTF-16 code units, as editors do, after non-ASCII text on the same line:
         // "é" is one unit and "🙂" two, though they take two and four bytes.
@@ -124,7 +124,7 @@ export default defineApp({ accounts: {} }, { tools: router({ broken: ) }) });`,
           {
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) });`,
+export default defineApp({}, { tools: router({ "café 🙂": ) }) });`,
           },
         ]);
         yield* evidence.json("unicode-compile-failure.json", unicode.body);
@@ -132,9 +132,9 @@ export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) 
         const counted = yield* body(BuildFailed, unicode);
         expect(counted).toMatchObject({
           stage: "compile",
-          location: { file: "index.ts", line: 2, column: 73 },
+          location: { file: "index.ts", line: 2, column: 59 },
         });
-        expect(counted.message).toContain('index.ts:2:73: Unexpected ")"');
+        expect(counted.message).toContain('index.ts:2:59: Unexpected ")"');
 
         // An import that no deployed file satisfies fails where it is written.
         const missing = yield* deploy([
@@ -142,7 +142,7 @@ export default defineApp({ accounts: {} }, { tools: router({ "café 🙂": ) }) 
             path: "index.ts",
             content: `import { defineApp, router } from "apps";
 import { value } from "./not-there.ts";
-export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
+export default defineApp({}, { tools: router({ value }) });`,
           },
         ]);
         yield* evidence.json("missing-module-failure.json", missing.body);
@@ -160,7 +160,7 @@ export default defineApp({ accounts: {} }, { tools: router({ value }) });`,
             path: "index.ts",
             content: `import { defineApp, query, object, router } from "apps";
 import settings from "./settings.json";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   settings: query({ input: object({}) }, async () => settings),
 }) });`,
           },
@@ -182,7 +182,7 @@ export default defineApp({ accounts: {} }, { tools: router({
             path: "index.ts",
             content: `import { defineApp } from "apps";
 import { tools } from "./lib/tools.js";
-export default defineApp({ accounts: {} }, { tools });`,
+export default defineApp({}, { tools });`,
           },
           {
             path: "lib/tools.ts",
@@ -214,7 +214,7 @@ const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
   tokenUrl: "https://auth.example.test/token",
   scopes: [],
 }) } });
-export default defineApp({ accounts: { service } }, {});`,
+export default defineApp({ user: { accounts: { service } } }, {});`,
           },
         ]);
         yield* evidence.json("invalid-oauth-declaration-failure.json", oauth.body);
@@ -237,7 +237,7 @@ const service = defineProvider({ name: "Synthetic", auth: { oauth: oauth2({
   tokenUrl: "https://auth.example.test/token",
   scopes: [],
 }) } });
-export default defineApp({ accounts: { service } }, {});`,
+export default defineApp({ user: { accounts: { service } } }, {});`,
           },
         ]);
         yield* evidence.json("incomplete-oauth-declaration-failure.json", machine.body);
@@ -255,7 +255,7 @@ export default defineApp({ accounts: { service } }, {});`,
             path: "index.ts",
             content: `import { defineApp } from "apps";
 throw new Error(${JSON.stringify(declarationMarker)});
-export default defineApp({ accounts: {} }, {});`,
+export default defineApp({}, {});`,
           },
         ]);
         yield* evidence.json("declaration-failure.json", declaration.body);
@@ -270,7 +270,7 @@ export default defineApp({ accounts: {} }, {});`,
             path: "index.ts",
             content: `import { defineApp } from "apps";
 throw Object.freeze(new TypeError(${JSON.stringify(declarationMarker)}));
-export default defineApp({ accounts: {} }, {});`,
+export default defineApp({}, {});`,
           },
         ]);
         yield* evidence.json("frozen-declaration-failure.json", frozen.body);
@@ -285,27 +285,25 @@ export default defineApp({ accounts: {} }, {});`,
         expect(kept.message).not.toContain("read only");
 
         // The Executor app's deploy tool carries the same detail to an MCP caller.
-        const { client, profile } = yield* frameworkSession;
+        const { client, queries } = yield* frameworkSession;
         const deployed = yield* client.use("Deploy a failing app through MCP", (client, signal) =>
           client.callTool(
             {
               name: "execute",
               arguments: {
-                code: `return await tools.executor.profiles[${JSON.stringify(profile.id)}].apps.deploy(${JSON.stringify(
-                  {
-                    path: { organization: actors.organization.id },
-                    body: {
-                      name: `MCP build failure ${randomUUID().slice(0, 8)}`,
-                      files: [
-                        {
-                          path: "index.ts",
-                          content: `import { defineApp } from "apps";\nthrow new Error(${JSON.stringify(declarationMarker)});\nexport default defineApp({ accounts: {} }, {});`,
-                        },
-                        appsManifest,
-                      ],
-                    },
+                code: `return await ${queries}.apps.deploy(${JSON.stringify({
+                  path: { organization: actors.organization.id },
+                  body: {
+                    name: `MCP build failure ${randomUUID().slice(0, 8)}`,
+                    files: [
+                      {
+                        path: "index.ts",
+                        content: `import { defineApp } from "apps";\nthrow new Error(${JSON.stringify(declarationMarker)});\nexport default defineApp({}, {});`,
+                      },
+                      appsManifest,
+                    ],
                   },
-                )});`,
+                })});`,
               },
             },
             undefined,

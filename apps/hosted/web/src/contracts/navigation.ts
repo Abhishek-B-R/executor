@@ -1,4 +1,4 @@
-import { AccountConnectionId, AccountId, ProfileId } from "@executor-js/sdk";
+import { AccountConnectionId, AccountId } from "@executor-js/sdk";
 import { GrantId } from "@executor-js/mcp-auth/grants";
 import { AppView, AssistantId } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
@@ -77,17 +77,15 @@ declare module "@tanstack/history" {
     agentSetup?: AgentBaseline;
   }
 }
-/** App tabs keep their selection on refresh in both hosted products. */
+/** App tabs keep their view on refresh in both hosted products. */
 export function parseAppSearch(search: Record<string, unknown>): ReturnType<
   typeof parseConnectionSearch
 > & {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
-  readonly profile?: ProfileId | undefined;
 } {
   return {
     ...parseConnectionSearch(search),
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),
   };
@@ -153,14 +151,5 @@ export function parseAccountSearch(search: Record<string, unknown>): {
     organization: Option.getOrUndefined(
       Schema.decodeUnknownOption(Schema.NonEmptyString)(search.organization),
     ),
-  };
-}
-
-/** Account setup targets an explicit personal selection, or starts a new one. */
-export function parseSetupSearch(search: Record<string, unknown>): {
-  profile?: ProfileId | undefined;
-} {
-  return {
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }

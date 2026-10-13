@@ -9,7 +9,6 @@ import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { managementApp } from "../support/management-app.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Target } from "../support/platform.ts";
 import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
@@ -54,7 +53,7 @@ import { defineApp, defineProvider, object, router, secrets, string } from "apps
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
   },
   appsManifest,
@@ -78,7 +77,6 @@ layer(HostedLive, { excludeTestServices: true })("Connection link", (it) => {
         });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const app = yield* body(App, deployed);
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -98,9 +96,10 @@ layer(HostedLive, { excludeTestServices: true })("Connection link", (it) => {
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
             .pipe(Effect.orDie),
         );
-        const management = yield* managementApp(actors.owner);
+        // The Executor app is provisioned with the member's key linked to it.
+        yield* managementApp(actors.owner);
         const client = yield* mcp.connect(token.key, "connection-link", { organization });
-        const executor = `const executor = tools.executor.profiles[${JSON.stringify(management.profile.id)}];`;
+        const executor = "const executor = tools.executor;";
 
         /** Request a link as the code-mode skill says, then read the request back as an agent would. */
         const run = (step: string, account?: string) =>
@@ -111,13 +110,9 @@ layer(HostedLive, { excludeTestServices: true })("Connection link", (it) => {
                   name: "execute",
                   arguments: {
                     code: `${executor}
-const connect = await executor.accounts.connect(${JSON.stringify({
-                      path: { organization, app: app.id },
-                      body: {
-                        requirement: "service",
-                        profile: profile.id,
-                        ...(account === undefined ? {} : { account }),
-                      },
+const connect = await executor.appAccounts.userConnect(${JSON.stringify({
+                      path: { organization, app: app.id, requirement: "service" },
+                      body: account === undefined ? {} : { account },
                     })});
 const read = await executor.accounts.connection({ path: { organization: ${JSON.stringify(organization)}, connection: connect.id } });
 return { connect, read };`,
@@ -186,7 +181,7 @@ return { connect, read };`,
         const error = refused.execution.error;
         expect(error.response.code).toBe("AccountSelectionInvalid");
         // The agent reads why the account no longer fits and that it must connect a new one,
-        // not the generic advice to review the profile's choices. `accounts.connect` is a
+        // not the generic advice to review the selected accounts. `appAccounts.userConnect` is a
         // mutation the host handed to the management app's code, so its recovery first says not
         // to repeat the call, then quotes the API's own advice, whose other steps still apply.
         expect(error.response.message).toContain("different provider definition");

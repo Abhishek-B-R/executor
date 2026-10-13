@@ -1,4 +1,4 @@
-import { HostedProfiles } from "./profiles.ts";
+import { HostedAppAccounts } from "./app-accounts.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedOAuthClients } from "./oauth-clients.ts";
 import { HostedSchedules } from "./schedules.ts";
@@ -163,7 +163,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
 /** Common API contract; each host extends it with its own groups. */
 export const HostedApi = HttpApi.make("executor-hosted")
   .add(
-    HostedProfiles,
+    HostedAppAccounts,
     HostedWebhookSetup,
     HostedWebhooks,
     HostedWorkflows,

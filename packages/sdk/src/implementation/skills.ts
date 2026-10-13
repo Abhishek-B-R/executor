@@ -50,7 +50,7 @@ const sorted = (skills: typeof AppSkills.Type) =>
 
 /**
  * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
- * with the selected profile. A read pinned to a revision is served a kept catalog with that
+ * with the named accounts. A read pinned to a revision is served a kept catalog with that
  * revision, stale-while-revalidate within its bound. A read without one gets the publisher's
  * current catalog: a stale kept catalog that reflects a publisher is evaluated again first, so
  * the revision it returns is not replaced by a background refresh moments later. A listing read
@@ -136,16 +136,13 @@ export const makeSkills = (
                 ),
                 Effect.flatMap((catalog) => decode(catalog.skills)),
               );
-              return { skills, profile: state.profile };
+              return skills;
             })
-          : {
-              skills: yield* readDeploymentSource(blobs, retained.id).pipe(
-                Effect.flatMap(prepareAppSkills),
-                Effect.flatMap(decode),
-              ),
-              profile: undefined,
-            };
-      const skills = live.skills;
+          : yield* readDeploymentSource(blobs, retained.id).pipe(
+              Effect.flatMap(prepareAppSkills),
+              Effect.flatMap(decode),
+            );
+      const skills = live;
       const revision = yield* catalogRevision(crypto, skills);
       if (input.revision !== undefined && input.revision !== revision)
         return yield* new SkillRevisionChanged({
@@ -158,9 +155,6 @@ export const makeSkills = (
         deployment: retained.id,
         revision,
         skills,
-        ...(live.profile === undefined
-          ? {}
-          : { profile: live.profile.id, profileRevision: live.profile.revision }),
       };
     });
   return {

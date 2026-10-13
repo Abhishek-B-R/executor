@@ -17,7 +17,7 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
       context,
       Effect.gen(function* () {
         const fixture = yield* liveOpenapiFixture(0, { staleFor: 0 });
-        const { call, callTool, api, actors, path, profile } = fixture;
+        const { call, callTool, api, actors, path } = fixture;
         const first = yield* call("old", "old");
         expect(first.status).toBe(200);
         expect(yield* body(Schema.Json, first)).toEqual({
@@ -41,11 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI", (it) => {
           errorName: "OpenapiCompileError",
           code: "multiple_hosts",
         });
-        const tools = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools?profile=${profile.id}`,
-        );
+        const tools = yield* api.request(actors.owner, "GET", `${path}/tools`);
         expect(tools.status).toBe(200);
         const listing = yield* body(
           Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),

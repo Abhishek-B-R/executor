@@ -28,5 +28,3 @@ export * from "./source.ts";
 export * from "./public-files.ts";
 export * from "./registry.ts";
 export * from "./publications.ts";
-
-export * from "./profiles.ts";

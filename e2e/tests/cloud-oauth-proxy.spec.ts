@@ -25,9 +25,9 @@ import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { rawRequest, roleHost, targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 class ProxyScenarioFailed extends Schema.TaggedError<ProxyScenarioFailed>()("ProxyScenarioFailed", {
   message: Schema.String,
@@ -189,7 +189,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud OAuth proxy", (it) => {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Approved callback service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
             },
             appsManifest,
           ],
@@ -199,13 +199,14 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const started = yield* api.request(
           actors.owner,

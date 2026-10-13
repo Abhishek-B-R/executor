@@ -7,23 +7,6 @@ import type { Executor } from "../contracts/executor.ts";
 /** Mount the SDK contract with one supplied executor; the host provides transport and access control. */
 export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
-    HttpApiBuilder.group(ExecutorApi, "appProfiles", (handlers) =>
-      handlers
-        .handle("create", ({ params, payload }) =>
-          executor.apps.profiles.create({ ...params, ...payload }),
-        )
-        .handle("get", ({ params, query }) => executor.apps.profiles.get({ ...params, ...query }))
-        .handle("list", ({ params, query }) => executor.apps.profiles.list({ ...params, ...query }))
-        .handle("listMany", ({ payload }) => executor.apps.profiles.listMany(payload))
-        .handle("update", ({ params, payload }) =>
-          executor.apps.profiles.update({ ...params, ...payload }),
-        )
-        .handle("setEnabled", ({ params, payload }) =>
-          executor.apps.profiles.setEnabled({ ...params, ...payload }),
-        )
-        .handle("reconcile", ({ params }) => executor.apps.profiles.reconcile(params))
-        .handle("remove", ({ params }) => executor.apps.profiles.remove(params)),
-    ),
     HttpApiBuilder.group(ExecutorApi, "skills", (handlers) =>
       handlers
         .handle("bundle", ({ params, query }) => executor.skills.bundle({ ...params, ...query }))
@@ -39,9 +22,14 @@ export const executorHandlers = (executor: Executor) =>
         .handle("configure", ({ params, payload }) =>
           executor.schedules.configure({ ...params, ...payload }),
         )
+        .handle("copy", ({ params, query }) => executor.schedules.copy({ ...params, ...query }))
+        .handle("update", ({ params, payload }) =>
+          executor.schedules.update({ ...params, ...payload }),
+        )
         .handle("runNow", ({ params, payload }) =>
           executor.schedules.runNow({ ...params, ...payload }),
         )
+        .handle("remove", ({ params, query }) => executor.schedules.remove({ ...params, ...query }))
         .handle("runs", ({ query }) => executor.schedules.runs(query))
         .handle("approval", ({ params, query }) =>
           executor.schedules.approval({ ...params, ...query }),
@@ -182,12 +170,18 @@ export const executorHandlers = (executor: Executor) =>
         .handle("definitions", ({ params, query }) =>
           executor.webhooks.definitions({ ...params, ...query }),
         )
-        .handle("list", ({ params, query }) => executor.webhooks.list({ ...params, ...query }))
+        .handle("list", ({ params }) => executor.webhooks.list(params))
         .handle("create", ({ params, payload }) =>
           executor.webhooks.create({ ...params, ...payload }),
         )
         .handle("reconcile", ({ params }) => executor.webhooks.reconcile(params))
         .handle("remove", ({ params }) => executor.webhooks.remove(params))
+        .handle("sources", ({ params }) => executor.webhooks.sources(params))
+        .handle("link", ({ params, payload }) => executor.webhooks.link({ ...params, ...payload }))
+        .handle("configureSource", ({ params, payload }) =>
+          executor.webhooks.configureSource({ ...params, ...payload }),
+        )
+        .handle("unlink", ({ params }) => executor.webhooks.unlink(params))
         .handle("deliver", ({ params, payload }) =>
           executor.webhooks.deliver({ ...params, ...payload }),
         ),

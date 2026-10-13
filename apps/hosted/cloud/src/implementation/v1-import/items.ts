@@ -1,7 +1,7 @@
 /**
- * One v1 item becomes v2 resources: an integration an app, a connection a personal account and a
- * profile of its app, a policy per-tool approvals inside its integration's app, a toolkit a scoped
- * MCP connection, an artifact an app's source without a deployment. Each returns
+ * One v1 item becomes v2 resources: an integration an app, a connection a personal account linked
+ * to its app for the importing user, a policy per-tool approvals inside its integration's app, a
+ * toolkit a scoped MCP connection, an artifact an app's source without a deployment. Each returns
  * the resource it created, or why the item cannot be imported; a defect or storage failure
  * fails the request instead and the item is retried.
  */
@@ -17,6 +17,7 @@ import {
 } from "@executor-js/app-templates";
 import {
   CurrentUserId,
+  linkUserAccount,
   organizationOwner,
   type McpConnectionStore,
   type OrganizationId,
@@ -28,15 +29,14 @@ import {
 } from "@executor-js/mcp-auth/connections";
 import { personalAccountCreation } from "@executor-js/hosted-server/resource-lifecycle";
 import {
+  AccountId,
   AppId,
   OAuthGrantImport,
   OAuthRegistration,
-  ProfileId,
   scopeGeneratedPackage,
   SourceFiles,
   StorageHost,
   ToolName,
-  type AccountId,
   type DeployedApp,
   type Executor,
   type OAuthGrantNotImportable,
@@ -44,6 +44,7 @@ import {
 } from "@executor-js/sdk/core";
 import { planOperationNames } from "apps/openapi";
 import { Effect, Option, Redacted, Schema } from "effect";
+import type { SqlClient } from "effect/sql";
 import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
 import {
   credentialLike,
@@ -99,10 +100,12 @@ export interface ItemContext {
   /** The importing user's scoped MCP connections in the target organization. */
   readonly connections: McpConnectionStore;
   readonly store: ImportStore;
+  /** The product database, on the connection the executor writes with. */
+  readonly sql: SqlClient.SqlClient;
   readonly source: V1Source;
   readonly snapshot: V1Snapshot;
   readonly target: { readonly id: OrganizationId; readonly slug: string };
-  /** The importing v2 user, who owns every account and profile. */
+  /** The importing v2 user, who owns every account and links it to its app. */
   readonly user: string;
   /** The operator's OAuth clients v1's first-party connections move to. */
   readonly firstParty: FirstPartyClients;
@@ -885,35 +888,21 @@ export const importAccount = (
   }).pipe(Effect.provideService(CurrentUserId, context.user));
 
 /**
- * One profile per connection, selecting its account. The first profile of an app is the default,
- * and connections are imported oldest first, so the oldest connection's profile is the default.
+ * Link the connection's account to its app's `service` requirement for the importing user, as
+ * linking it in v2 does. The requirement takes many accounts, so every imported connection of an
+ * integration stays usable. Linking again changes nothing, so a retried item does not duplicate it.
  */
-export const importProfile = (
+export const linkConnectionAccount = (
   context: ItemContext,
-  row: ConnectionRow,
-  app: Pick<DeployedApp, "id" | "requirements">,
+  app: Pick<DeployedApp, "id">,
   account: AccountId,
 ) =>
-  Effect.gen(function* () {
-    const owner = organizationOwner(context.target.id);
-    const existing = yield* context.executor.apps.profiles.list({
-      app: app.id,
-      owner,
-      subject: context.user,
-    });
-    const idempotencyKey = `v1-import:${row.row_id}`;
-    const own = existing.find((profile) => profile.idempotencyKey === idempotencyKey);
-    if (own !== undefined) return own.id;
-    const profile = yield* context.executor.apps.profiles.create({
-      app: app.id,
-      owner,
-      subject: context.user,
-      ...(existing.length === 0 ? {} : { name: accountLabel(context.snapshot, row).slice(0, 128) }),
-      accounts: { service: [account] },
-      idempotencyKey,
-    });
-    return profile.id;
-  }).pipe(Effect.provideService(CurrentUserId, context.user));
+  linkUserAccount(context.executor, context.sql, {
+    app: app.id,
+    requirement: "service",
+    account,
+    subject: context.user,
+  });
 
 // ---------------------------------------------------------------------------------------------
 // Toolkits.
@@ -922,8 +911,7 @@ type RunTarget = ConnectionApp["runsAs"][number];
 
 /**
  * What an earlier item request imported: an integration's app, and a connection's account and the
- * target its tools run as (its profile, or the app itself for a public app). The audit supplies
- * its own from planned outcomes.
+ * target its tools run as (its linked account, or the app itself for a public app).
  */
 export interface ImportedLookup {
   readonly app: (
@@ -937,7 +925,14 @@ export interface ImportedLookup {
   >;
 }
 
-/** The import map's view of earlier item requests. */
+/**
+ * The import map's view of earlier item requests. A connection is done once its `profile` row is:
+ * the row keeps the kind it had when imports made a profile per connection, so imports started
+ * then still read. Its `v2_kind` is `app` for a public app's connection, whose tools run as the
+ * app; otherwise the connection's account, recorded in its `connection` row, is linked to the app
+ * and is what its tools run as. Its `v2_id` is the linked account, or, in a row from before
+ * profiles were removed, the profile, which the item's result replaces with that account.
+ */
 export const mapLookup = (store: ImportStore): ImportedLookup => ({
   app: (integration) =>
     store
@@ -949,26 +944,29 @@ export const mapLookup = (store: ImportStore): ImportedLookup => ({
       ),
   connection: (connection) =>
     Effect.gen(function* () {
-      const profile = yield* store.find("profile", connection.row_id);
-      if (profile?.status !== "imported" || profile.v2_id === null) return undefined;
+      const linked = yield* store.find("profile", connection.row_id);
+      if (linked?.status !== "imported" || linked.v2_id === null) return undefined;
+      if (linked.v2_kind === "app") return { target: { kind: "app" } as const, account: null };
       const account = yield* store.find("connection", connection.row_id);
+      if (account?.status !== "imported" || account.v2_id === null) return undefined;
       return {
-        target:
-          profile.v2_kind === "app"
-            ? ({ kind: "app" } as const)
-            : ({ kind: "profile", id: ProfileId.make(profile.v2_id) } as const),
-        account: account?.status === "imported" ? account.v2_id : null,
+        target: { kind: "account", id: AccountId.make(account.v2_id) } as const,
+        account: account.v2_id,
       };
     }),
 });
+
+const sameTarget = (a: RunTarget, b: RunTarget) =>
+  a.kind === "app" ? b.kind === "app" : b.kind === "account" && a.id === b.id;
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 /**
  * A toolkit's scoped MCP connection: for each imported app whose tools it granted, the tools v1
- * served through it (`selected`, by the app's names) and the profiles of the connections it
- * granted. v2 selects an app's tools and profiles separately, so a tool v1 granted for only some
- * of those connections becomes available through all of them; the note says so.
+ * served through it (`selected`, by the app's names) and the linked accounts of the connections it
+ * granted (or the app itself, for a public app). v2 selects an app's tools and accounts
+ * separately, so a tool v1 granted for only some of those connections becomes available through
+ * all of them; the note says so.
  */
 export const toolkitPolicy = (
   context: { readonly snapshot: V1Snapshot; readonly source: Pick<V1Source, "tools"> },
@@ -1029,14 +1027,7 @@ export const toolkitPolicy = (
       for (const connection of granted.values()) {
         const target = (yield* lookup.connection(connection))?.target;
         if (target === undefined) missingConnections.add(`${label} ${connection.name}`);
-        else if (
-          !targets.some(
-            (other) =>
-              other.kind === target.kind &&
-              (other.kind === "app" || (target.kind === "profile" && other.id === target.id)),
-          )
-        )
-          targets.push(target);
+        else if (!targets.some((other) => sameTarget(other, target))) targets.push(target);
       }
       const [first, ...rest] = targets;
       if (first === undefined) continue;
@@ -1104,11 +1095,10 @@ export interface ArtifactRoleMapping {
   readonly v1: ArtifactBinding | null;
   readonly app: { readonly id: string; readonly name: string } | null;
   readonly account: string | null;
-  readonly profile: string | null;
   readonly problem: string | null;
 }
 
-/** Each role's imported app, account and profile, read from the import map. */
+/** Each role's imported app and linked account, read from the import map. */
 export const artifactMapping = (
   snapshot: Pick<V1Snapshot, "integrations" | "connections">,
   lookup: ImportedLookup,
@@ -1126,7 +1116,6 @@ export const artifactMapping = (
           v1: use.binding ?? null,
           app: null,
           account: null,
-          profile: null,
           problem: null,
           ...rest,
         });
@@ -1142,11 +1131,7 @@ export const artifactMapping = (
         const imported = yield* lookup.connection(connection);
         if (imported === undefined)
           return mapping({ app, problem: "Its connection was not imported." });
-        return mapping({
-          app,
-          account: imported.account,
-          profile: imported.target.kind === "profile" ? imported.target.id : null,
-        });
+        return mapping({ app, account: imported.account });
       }),
     );
     return { roles, builtIn: planned.builtIn };
@@ -1176,9 +1161,9 @@ export const artifactFiles = (
  * ui/artifact.tsx, called other integrations' tools from the browser (\`tools.<integration>...\`),
  * and a v2 app's page calls only its own app's tools. Add tools here that do what the page needs,
  * then rewrite the page to call them through \`apps/client\`. v1-artifact.json lists the imported
- * app, account and profile each \`tools.<role>\` call used.
+ * app and account each \`tools.<role>\` call used.
  */
-export default defineApp({ accounts: {} }, { tools: router({}) });
+export default defineApp({}, { tools: router({}) });
 `,
     },
     {

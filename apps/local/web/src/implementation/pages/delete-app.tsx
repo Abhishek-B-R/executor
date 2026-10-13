@@ -75,9 +75,7 @@ function DeleteAppConfirmation({ id, data }: { readonly id: AppId; readonly data
           <AppIcon app={app} large />
           <h2>{app.name}</h2>
         </div>
-        <p>
-          This deletes this app and its account selections. Saved accounts and other apps are kept.
-        </p>
+        <p>This deletes this app. Saved accounts and other apps are kept.</p>
         {error && <Failure cause={error} />}
         <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px]">
           <Button variant="destructive" loading={pending} onClick={confirm}>

@@ -13,13 +13,13 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { mcpSdkVersion, withApps } from "../support/apps-release.ts";
 import { TestLive, withHostedCase } from "../support/case.ts";
 import { dataStepSummaries, nextDataStepSummary } from "../support/data-steps.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -34,7 +34,7 @@ const appFiles = (name: string, url: string) => [
 import { mcpRouter } from "apps/mcp";
 import { provider } from "./provider.ts";
 
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, cache, signal }) => ({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user: { accounts }, cache, signal }) => ({
   tools: await accountRouter(accounts.service, async (account) => mcpRouter({
     url: ${JSON.stringify(url)},
     account,
@@ -130,12 +130,11 @@ layer(TestLive, { excludeTestServices: true })("Saved OAuth clients by issuer", 
             });
             expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
             const app = yield* body(DeployedApp, deployed);
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* api.request(
               actors.owner,
               "POST",
-              `${prefix}/apps/${app.id}/connections`,
-              { requirement: "service", profile: profile.id },
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const { id } = yield* body(Schema.Struct({ id: Schema.String }), connection);

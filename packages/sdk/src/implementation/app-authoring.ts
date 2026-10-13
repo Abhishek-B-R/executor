@@ -29,6 +29,7 @@ export const makeAppAuthoring = (
     input: Parameters<Executor["apps"]["create"]>[0],
     copiedFrom: AppCopyOrigin | null = null,
     stored?: StoredBytes,
+    reserved?: AppId,
   ) =>
     Effect.gen(function* () {
       yield* sourcePathsFit(input.files);
@@ -41,9 +42,11 @@ export const makeAppAuthoring = (
         if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
         yield* adoptStoredFiles(blobs, code, input.files, stored);
       }
-      const id = AppId.make(
-        `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-      );
+      const id =
+        reserved ??
+        AppId.make(
+          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+        );
       yield* writeInitialSource(blobs, code, input.files);
       const app = {
         id,

@@ -6,6 +6,7 @@
 import { Crypto, Effect, JsonPointer, Schema } from "effect";
 import { Hex } from "effect/encoding";
 import { type Json, JsonObject, StorageError } from "../contracts/shared.ts";
+import { invocationEntries, type AppAccounts } from "../contracts/apps.ts";
 import {
   type Tool,
   type ToolSearchInput,
@@ -16,6 +17,7 @@ import {
 import type { ToolListing } from "./listings.ts";
 import { restoreTool, shareListing, type StoredTool } from "./listing-json.ts";
 import type { InvocationSnapshot } from "./tools.ts";
+import { scopedSelection } from "./selection.ts";
 import type { SearchToolRow, ToolSearchStore } from "./tool-search-store.ts";
 
 /** Lowercase words, with camelCase and snake_case split and a plural `s` removed. */
@@ -90,6 +92,21 @@ export const makeToolSearch = (options: {
       Effect.mapError(() => new StorageError()),
     );
   /**
+   * The target a listing belongs to: a digest of the account set it was evaluated with, each
+   * requirement's accounts in ID order. Requirements without accounts name none. Requirement
+   * names are unique across scopes; a listing evaluated without a caller is marked as such.
+   */
+  const target = (accounts: AppAccounts) => {
+    const named = invocationEntries(accounts)
+      .filter(([, ids]) => ids.length > 0)
+      .map(([slot, ids]) => [slot, [...new Set(ids)].sort()] as const)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return digest(JSON.stringify(accounts.user === undefined ? ["app", named] : named));
+  };
+  /** The target of an invocation state's listing. */
+  const stateTarget = (state: InvocationSnapshot) =>
+    target(scopedSelection(state.deployment.requirements.accounts, state.accounts, state.scope));
+  /**
    * Digests of definitions, and what makes two targets' tools of one name the same result:
    * everything agents read but the name. Kept listings share their tool and definition objects,
    * so a listing written again reuses these.
@@ -156,7 +173,9 @@ export const makeToolSearch = (options: {
       return { tools: derived, definitions: stored.definitions };
     });
   return {
-    listing: store.listing,
+    /** The kept rows of the state's listing, if any. */
+    listing: (state: InvocationSnapshot, listing: ToolSearchListing) =>
+      Effect.flatMap(stateTarget(state), (target) => store.listing(listing, target)),
     revive: store.revive,
     /**
      * Keep a listing's rows. The rows' digest covers what ranking and results read, so a listing
@@ -184,7 +203,7 @@ export const makeToolSearch = (options: {
             owner: state.app.owner,
             app: state.app.id,
             deployment: state.deployment.id,
-            profile: state.profile?.id,
+            target: yield* stateTarget(state),
             at,
             digest: digested,
             routers: listing.routers,
@@ -205,12 +224,16 @@ export const makeToolSearch = (options: {
     page: (input: ToolSearchInput) =>
       Effect.gen(function* () {
         const terms = [...new Set(words(input.query))];
+        const targets = yield* Effect.forEach(input.targets, ({ accounts, ...rest }) =>
+          Effect.map(target(accounts), (digested) => ({
+            ...rest,
+            target: digested,
+            labels: rest.labels.flatMap(words),
+          })),
+        );
         const ranked = yield* store.page({
           terms,
-          targets: input.targets.map((target) => ({
-            ...target,
-            labels: target.labels.flatMap(words),
-          })),
+          targets,
           offset: input.offset,
           limit: input.limit,
         });

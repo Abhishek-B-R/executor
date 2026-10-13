@@ -25,7 +25,7 @@ type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 const delayMs = 3000;
 
 const timingAppSource = `import { defineApp, query, object, string, number, boolean, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text" },
     async (_ctx, { text }) => ({ text })),
   wait: query({ input: object({ ms: number() }), output: object({ done: boolean() }), description: "Answer after a delay" },

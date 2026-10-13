@@ -40,7 +40,7 @@ MCP instructions introduce Executor to the agent. They are the Executor app's
 For one or a few calls, an agent needs no program:
 
 ```json
-{ "calls": [{ "path": "tools.vercel.profiles[\"<profile-id>\"].listProjects", "input": {} }] }
+{ "calls": [{ "path": "tools.vercel.listProjects", "input": {} }] }
 ```
 
 `call` returns each call's outcome in order, with `ok` and its `value` or
@@ -67,15 +67,19 @@ return await tools.search({ query: "vercel projects" });
 ```
 
 Search returns a page of tools: each one's exact callable path, the first line
-of its description and its input type. Each app and profile is listed once.
+of its description and its input type. Each app and its linked accounts are listed once.
 `next` continues to the following page, and
 `tools.search.describe({ paths })` returns a tool's whole signature, including
-its output type. An app without accounts is called by its slug,
-`tools.<app>.<tool>`. An app with accounts is called through one of your
-profiles, which chooses the accounts its tools use:
+its output type. Every app is called by its slug, `tools.<app>.<tool>`. A call
+uses the accounts you linked to the app: one for each single-account
+requirement, and every linked account for a `.many()` requirement. An app's own
+accounts, linked for everyone by people who can edit it, fill its app account
+requirements for every caller; search and `$accounts` describe only the accounts you link. Calls never
+choose accounts; an input with `$accounts` fails with `AccountChoiceUnsupported`.
+To use another account, link it on the app's **Accounts** tab.
 
 ```js
-const projects = await tools.vercel.profiles["<profile-id>"].listProjects({});
+const projects = await tools.vercel.listProjects({});
 return projects.projects.map((project) => project.name);
 ```
 
@@ -119,10 +123,11 @@ connect it through a scoped connection instead.
 
 A **scoped connection** is a named MCP URL that reaches only what you turned on.
 Create one under **Scoped connections** on the dashboard's Connect page. For
-each app, choose which of your profiles it runs as, or none for an app without
-accounts, and which tools it exposes: all tools, read-only tools, or the tools
+each app, choose which of the accounts you linked to it the connection runs as,
+or none for an app without accounts, and which tools it exposes: all tools, read-only tools, or the tools
 you pick. All and read-only include tools the app adds later. Approval rules
-still come from each app's code.
+still come from each app's code. A connection never lists the accounts linked to
+an app for everyone: access to the app authorizes them.
 
 Each connection has its own URL, `/mcp?connection=<id>`. Add
 `&elicitation_mode=browser` or `native` to it for another

@@ -87,10 +87,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
     // A span per wake, named as Cloud's coordinator wake, shows which write asked for setup.
-    const wake = scheduler.wakeProfiles.pipe(
+    const wake = scheduler.wakeWebhookSources.pipe(
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": "change" } }),
     );
-    // Member setup saves profiles and redeploys the default Executor app; it wakes their setup.
+    // Member setup links accounts and redeploys the default Executor app; it wakes webhook sources.
     yield* drainProvisioning(selfHostProvisioningServices).pipe(
       Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
       Effect.repeat(Schedule.spaced("1 second")),

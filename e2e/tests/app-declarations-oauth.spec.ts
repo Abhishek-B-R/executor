@@ -12,8 +12,8 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Workflows = Schema.Array(Schema.Struct({ name: Schema.String }));
@@ -48,7 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations and OAuth gra
                 content: `import {defineApp,defineProvider,oauth2,query,workflow,object, router} from "apps";
 const service=defineProvider({name:"Reporting",auth:{oauth:oauth2({discover:${discover}})}});
 const noop=workflow({input:object({})},async()=>null);
-export default defineApp({accounts:{service}},async({accounts})=>{
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>{
   const generation=accounts.service.fields.access_token.split("-").pop();
   return {
     tools: router({
@@ -73,13 +73,10 @@ export default defineApp({accounts:{service}},async({accounts})=>{
                 yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
             }).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, path);
+          // Connecting from the app links the account, so reads and calls use it.
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const started = yield* api.request(
             actors.owner,
@@ -109,17 +106,9 @@ export default defineApp({accounts:{service}},async({accounts})=>{
           account = (yield* body(Resource, completed)).id;
           const connectedAt = Date.now();
 
-          const workflows = api.request(
-            actors.owner,
-            "GET",
-            `${path}/workflows?profile=${profile.id}`,
-          );
-          const bundle = api.request(
-            actors.owner,
-            "GET",
-            `${path}/skill-bundle?profile=${profile.id}`,
-          );
-          const listing = api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`);
+          const workflows = api.request(actors.owner, "GET", `${path}/workflows`);
+          const bundle = api.request(actors.owner, "GET", `${path}/skill-bundle`);
+          const listing = api.request(actors.owner, "GET", `${path}/tools`);
           const names = (response: { status: number; body: unknown }) =>
             body(Workflows, response).pipe(Effect.map((rows) => rows.map((row) => row.name)));
           const descriptions = (response: { status: number; body: unknown }) =>
@@ -150,7 +139,6 @@ export default defineApp({accounts:{service}},async({accounts})=>{
             tokenError: { status: 400, body: { error: "invalid_grant" } },
           });
           const refused = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "read",
             kind: "query",
             input: {},

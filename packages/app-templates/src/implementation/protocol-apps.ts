@@ -396,8 +396,8 @@ import { mcpRouter } from "apps/mcp"
 import { always } from "apps/operations/approval"
 import { provider, target } from "./provider.ts"
 ${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, signal, cache }) => ({
-  tools: await accountRouter(accounts.service, async (account) => {
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user, signal, cache }) => ({
+  tools: await accountRouter(user?.accounts.service ?? [], async (account) => {
     const request = target(account)
     return ${ruled(
       "await mcpRouter({ url: request.url, account, cache, headers: request.headers, signal })",
@@ -411,7 +411,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
 import { mcpRouter } from "apps/mcp"
 import { always } from "apps/operations/approval"
 ${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}
-export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
+export default defineApp({}, async ({ signal, cache }) => ({
   tools: ${ruled(`await mcpRouter({ url: ${JSON.stringify(fixedUrl)}, ${publicHeaders(options.headers)}cache, signal })`, rules, defaultRule)},
 }))
 `;
@@ -513,13 +513,13 @@ const send =
 
 ${
   accounts
-    ? `export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, cache, fetch, signal }) => ({
-  tools: await accountRouter(accounts.service, (account) =>
+    ? `export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user, cache, fetch, signal }) => ({
+  tools: await accountRouter(user?.accounts.service ?? [], (account) =>
     ${ruled(router, rules, defaultRule)},
     { signal },
   ),
 }))`
-    : `export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+    : `export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: ${ruled(router, rules, defaultRule)},
 }))`
 }
@@ -576,8 +576,8 @@ import { graphqlRouter } from "apps/graphql"
 import { always } from "apps/operations/approval"
 import { credentials, fixed, provider } from "./provider.ts"
 ${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, signal, cache }) => ({
-  tools: await accountRouter(accounts.service, async (account) => {
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user, signal, cache }) => ({
+  tools: await accountRouter(user?.accounts.service ?? [], async (account) => {
     const sent = credentials(account)
     const url = new URL(${JSON.stringify(options.url)})
     for (const [name, value] of Object.entries({ ...fixed.query, ...sent.query })) url.searchParams.set(name, value)
@@ -593,7 +593,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
 import { graphqlRouter } from "apps/graphql"
 import { always } from "apps/operations/approval"
 ${rules ? `import { approval, exposedName } from "./tools.ts"\n` : ""}
-export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
+export default defineApp({}, async ({ signal, cache }) => ({
   tools: ${ruled(`await graphqlRouter({ url: ${JSON.stringify(fixedUrl)}, ${publicHeaders(options.headers)}cache, signal })`, rules, defaultRule)},
 }))
 `;

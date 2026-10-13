@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { connectLocalAccount, createProfile } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -41,7 +41,7 @@ import { defineApp, defineProvider, secrets, object, string } from "apps";
 const service = defineProvider({ name: "Draft test service", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({  }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({  }));
 `,
               },
               appsManifest,
@@ -70,19 +70,12 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
               .pipe(Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200)))),
           ).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: app.owner, subject: "local" },
-          headers,
-        );
         const addAccount = (label: string) =>
           Effect.gen(function* () {
             const account = yield* connectLocalAccount(
               agent,
               {
                 app: app.id,
-                profile: profile.id,
                 requirement: "service",
                 method: "key",
                 label,
@@ -165,6 +158,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
         yield* browser.use("Open the app's accounts", (page) =>
           page.goto(`/apps/${app.id}?view=accounts`),
         );
+        // The linked account fills the plain requirement, so connecting another replaces it.
         yield* browser.use("Start connecting another account", (page) =>
           page.getByRole("button", { name: "Connect new account", exact: true }).click(),
         );

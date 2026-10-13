@@ -14,7 +14,7 @@ import { serverControl } from "../support/server-control.ts";
 const App = Schema.Struct({ id: Schema.String, name: Schema.String });
 const source = `import { defineApp, object, query, router } from "apps";
 const ping = query({ input: object({}) }, async () => "ok");
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ ping }) }));`;
+export default defineApp({}, async () => ({ tools: router({ ping }) }));`;
 
 layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
   it.effect(scenarios.localShutdown.title, (context) =>

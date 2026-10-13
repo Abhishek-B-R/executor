@@ -14,7 +14,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, Profile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -72,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth declared endpoints", (it
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async({accounts})=>({tools: router({
+export default defineApp({user: { accounts:{service} }},async({user: { accounts }})=>({tools: router({
   read:query({input:object({})},async({fetch})=>{const result=await fetch(${JSON.stringify(`${issuer.origin}/resource`)},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});return result.json();}),
 })}));`,
                 },
@@ -88,15 +89,18 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           });
         const connect = (app: typeof AppProvider.Type) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
+            // The app's links before this connection completes.
+            const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
-            return { app, profile, connection: connection.id };
+            return { app, linked, connection: connection.id };
           });
         const start = (
           connection: string,
@@ -130,7 +134,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             callbackUrl,
           });
         const expectCompleted = (
-          attempt: { readonly profile: typeof Profile.Type; readonly connection: string },
+          attempt: { readonly linked: ReadonlyArray<string>; readonly connection: string },
           response: { readonly status: number; readonly body: unknown },
           app: typeof AppProvider.Type,
         ) =>
@@ -145,13 +149,15 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
                 .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
                 .pipe(Effect.orDie),
             );
-            expect(
-              (yield* api.request(
-                actors.owner,
-                "GET",
-                `${prefix}/apps/${app.id}/profiles/${attempt.profile.id}`,
-              )).body,
-            ).toMatchObject({ accounts: { service: account.id } });
+            // Completing links the new account to the app in place of its earlier link, as the
+            // app's one requirement is plain; the earlier accounts stay saved.
+            expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+              account.id,
+            ]);
+            for (const earlier of attempt.linked)
+              expect(
+                (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${earlier}`)).status,
+              ).toBe(200);
             expect(
               (yield* api.request(
                 actors.owner,
@@ -162,17 +168,18 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             return account;
           });
         // Tokens are issued inside the host's renewal window, so using the account refreshes it.
-        const expectRenewed = (
-          attempt: { readonly profile: typeof Profile.Type },
-          app: typeof AppProvider.Type,
-        ) =>
+        // Calls use the app's linked account.
+        const expectRenewed = (account: string, app: typeof AppProvider.Type) =>
           Effect.gen(function* () {
+            expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+              account,
+            ]);
             const before = (yield* issuer.metrics).refreshes;
             const read = yield* api.request(
               actors.owner,
               "POST",
               `${prefix}/apps/${app.id}/tools/call`,
-              { profile: attempt.profile.id, tool: "read", kind: "query", input: {} },
+              { tool: "read", kind: "query", input: {} },
             );
             const metrics = yield* issuer.metrics;
             expect(
@@ -228,7 +235,7 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
         expect(confidentialAccount.label).toBe("Default");
         expect((yield* issuer.metrics).nonceRequested).toBe(false);
         expect((yield* issuer.metrics).lastExchangeAuth).toBe("client_secret_basic");
-        yield* expectRenewed(confidential, undeclared);
+        yield* expectRenewed(confidentialAccount.id, undeclared);
 
         const publicClient = yield* connect(undeclared);
         const publicStart = yield* start(publicClient.connection, clients.public, null);
@@ -252,10 +259,8 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
           yield* api.request(
             actors.owner,
             "POST",
-            `${prefix}/apps/${publicClient.app.id}/connections`,
+            connectionsPath(`${prefix}/apps/${publicClient.app.id}`, "user", "service"),
             {
-              requirement: "service",
-              profile: publicClient.profile.id,
               account: publicAccount.id,
             },
           ),
@@ -276,16 +281,15 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
         const matching = yield* connect(declared);
         const matchingStart = yield* start(matching.connection, clients.confidential);
         // A name supplied when sign-in starts is used as given.
-        expect(
-          (yield* expectCompleted(
-            matching,
-            yield* complete(matching.connection, yield* consent(matchingStart.authorizationUrl)),
-            declared,
-          )).label,
-        ).toBe("Declared confidential-client");
-        yield* expectRenewed(matching, declared);
+        const matchingAccount = yield* expectCompleted(
+          matching,
+          yield* complete(matching.connection, yield* consent(matchingStart.authorizationUrl)),
+          declared,
+        );
+        expect(matchingAccount.label).toBe("Declared confidential-client");
+        yield* expectRenewed(matchingAccount.id, declared);
         const expectRejected = (
-          attempt: { readonly profile: typeof Profile.Type; readonly connection: string },
+          attempt: { readonly linked: ReadonlyArray<string>; readonly connection: string },
           response: { readonly status: number; readonly body: unknown },
           reason: "issuer_mismatch",
         ) =>
@@ -295,16 +299,10 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
               _tag: "OAuthCompletionFailed",
               reason,
             });
-            expect(
-              (yield* body(
-                Profile,
-                yield* api.request(
-                  actors.owner,
-                  "GET",
-                  `${prefix}/apps/${declared.id}/profiles/${attempt.profile.id}`,
-                ),
-              )).accounts,
-            ).toEqual(attempt.profile.accounts);
+            // A rejected completion links nothing.
+            expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${declared.id}`)).toEqual(
+              attempt.linked,
+            );
             expect(
               (yield* api.request(
                 actors.owner,
@@ -317,12 +315,12 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
         yield* issuer.configure({ idTokenIssuer: issuer.origin });
         const foreignIdToken = yield* connect(declared);
         const foreignStart = yield* start(foreignIdToken.connection, clients.confidential);
-        yield* expectCompleted(
+        const foreignIdTokenAccount = yield* expectCompleted(
           foreignIdToken,
           yield* complete(foreignIdToken.connection, yield* consent(foreignStart.authorizationUrl)),
           declared,
         );
-        yield* expectRenewed(foreignIdToken, declared);
+        yield* expectRenewed(foreignIdTokenAccount.id, declared);
         yield* issuer.configure({ idTokenIssuer: signInOrigin });
         yield* issuer.configure({ callbackIssuer: issuer.origin });
         const mismatched = yield* connect(declared);
@@ -387,30 +385,22 @@ export default defineApp({accounts:{service}},async({accounts})=>({tools: router
             )
             .then(() => nameConnectedAccount(page, "Public form account"))
             .then(() =>
-              page
-                .getByRole("radio", { name: "Public form account", exact: true, checked: true })
-                .waitFor({ state: "visible" }),
+              linkedChoice(page, "Open client auth", "Public form account").waitFor({
+                state: "visible",
+              }),
             );
         });
         expect((yield* issuer.metrics).tokenExchanges).toBe(exchangesBeforeForm + 1);
         expect((yield* issuer.metrics).lastExchangeAuth).toBe("none");
-        const profile = yield* Schema.decodeUnknownEffect(Schema.String)(
-          yield* browser.use("Read the selected account setup", (page) =>
-            page.evaluate(() => new URL(location.href).searchParams.get("profile")),
-          ),
+        // Connecting from the app's form linked the new account to it.
+        const [saved, ...extra] = yield* linkedAccountIds(
+          actors.owner,
+          `${prefix}/apps/${formApp.id}`,
         );
-        const saved = yield* body(
-          Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) }),
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${formApp.id}/profiles/${profile}`,
-          ),
-        );
+        if (saved === undefined) return yield* Effect.die("The form's account is not linked");
+        expect(extra).toEqual([]);
         yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "DELETE", `${prefix}/accounts/${saved.accounts.service}`)
-            .pipe(Effect.orDie),
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${saved}`).pipe(Effect.orDie),
         );
         yield* browser.checkpoint("Public client connected from the form");
 

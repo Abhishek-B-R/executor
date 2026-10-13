@@ -1,4 +1,4 @@
-import type { ResourceLifecycle } from "../contracts/executor.ts";
+import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
 import type { BackgroundWork } from "../contracts/declarations.ts";
 /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
 import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
@@ -19,6 +19,8 @@ import {
 } from "effect";
 import { Base64, Hex } from "effect/encoding";
 import {
+  AccountConnectionRefused,
+  AccountConnectionTargetChanged,
   StartConnectionOAuth,
   CompleteConnectionOAuth,
   FindConnectionOAuth,
@@ -87,6 +89,7 @@ import {
   HttpUrl,
   JsonObject,
   StorageError,
+  type AppId,
   type OwnerId,
   type ProviderId,
 } from "../contracts/shared.ts";
@@ -103,7 +106,6 @@ import {
   registeredClientKey,
   withdrawCredentials,
 } from "./stored-oauth-client-credentials.ts";
-import { storedProfile } from "./profiles.ts";
 import {
   clientRegistration,
   isOAuthErrorResponse,
@@ -305,11 +307,38 @@ const causeAttributes = (cause: OAuthFailureCause) => ({
 });
 
 /**
+ * The product no longer authorizes a use of a selected account, before its credentials resolve or
+ * after a renewal. Unlike a storage failure it lasts until access changes, so retrying does not
+ * help: removal that the product refuses waits for a person instead. Callers that do not tell the
+ * two apart see it as `StorageError`.
+ */
+export class AccountUseRefused extends Schema.TaggedError<AccountUseRefused>()(
+  "AccountUseRefused",
+  {},
+) {}
+
+/**
  * Whether resolving credentials waited for, or performed, a renewal. Only then can it outlive a
  * permission change, so only then is product authority checked again afterwards.
  */
 interface Resolution {
   contested: boolean;
+}
+/**
+ * What credentials are resolved for: running the app's code, removing what the app registered,
+ * or checking an account outside the app's code.
+ */
+type CredentialUse =
+  | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
+  | { readonly kind: "removal"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
+  | { readonly kind: "check" };
+/**
+ * How an evaluation uses one account: whether a user requirement uses it (`user`), and the app
+ * requirements it fills (`appUses`). Each use is authorized on its own; see `ResourceLifecycle`.
+ */
+export interface AccountUses {
+  readonly user: boolean;
+  readonly appUses: readonly string[];
 }
 
 /** Spans that can find a grant that needs reconnecting. */
@@ -1616,15 +1645,9 @@ export const makeOAuth = (
                 id: current.id,
                 owner: current.owner,
                 reconnectAccount: current.reconnectAccount,
-                target: {
-                  app: current.target.app,
-                  profile: yield* storedProfile(tx, {
-                    app: current.target.app,
-                    profile: current.target.profile,
-                  }),
-                },
+                target: { app: current.target.app, requirement: current.target.requirement },
               });
-            yield* finishConnection(tx, claimed, saved);
+            yield* finishConnection(tx, claimed, saved, lifecycle);
             return saved;
           }),
         );
@@ -1894,10 +1917,14 @@ export const makeOAuth = (
         db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
       );
       if (claimed?.status !== claim) return yield* failed("sign_in_used");
-      // This completion owns the sign-in now, so whatever ends it is the request's latest outcome.
+      // This completion owns the sign-in now, so whatever ends it is the request's latest outcome,
+      // including a refusal or changed target that rolled back the account it signed in to: the
+      // claimed sign-in cannot complete again, so the request reads failed until a new one starts.
       return yield* exchangeClaimed(protocol, input, callback, id, attempt, legacySavedClient).pipe(
         Effect.tapError((error) =>
-          Schema.is(OAuthCompletionFailed)(error)
+          Schema.is(OAuthCompletionFailed)(error) ||
+          Schema.is(AccountConnectionRefused)(error) ||
+          Schema.is(AccountConnectionTargetChanged)(error)
             ? recordSignInFailure(db, crypto, input, id, error)
             : Effect.void,
         ),
@@ -2193,15 +2220,9 @@ export const makeOAuth = (
               id: current.id,
               owner: current.owner,
               reconnectAccount: current.reconnectAccount,
-              target: {
-                app: current.target.app,
-                profile: yield* storedProfile(tx, {
-                  app: current.target.app,
-                  profile: current.target.profile,
-                }),
-              },
+              target: { app: current.target.app, requirement: current.target.requirement },
             });
-          yield* finishConnection(tx, current, saved);
+          yield* finishConnection(tx, current, saved, lifecycle);
           // Credentials a client was registered with during this sign-in are that client's and
           // are not saved again. The grant then names a client that does not exist, which is
           // harmless: its copy of the credentials still resolves to the client holding them.
@@ -2719,8 +2740,18 @@ export const makeOAuth = (
     lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
       ? Effect.succeed(undefined)
       : lifecycle.accountsResolving(accounts);
+  /** Fail unless the product still authorizes every one of `accounts` in `current`. */
+  const enforced = (
+    current: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError>,
+    accounts: readonly StoredAccount[],
+  ) =>
+    Effect.flatMap(current, (allowed) =>
+      allowed === undefined || accounts.every((account) => allowed.has(account.id))
+        ? Effect.void
+        : Effect.fail(new AccountUseRefused()),
+    );
   /**
-   * Resolve one account checked in `allowed`, checking again if resolving waited or renewed.
+   * Resolve one account checked in `allowed`, and run `recheck` if resolving waited or renewed.
    * `resolution` records whether it did.
    */
   const resolveAuthorized = (
@@ -2729,44 +2760,111 @@ export const makeOAuth = (
     allowed: ReadonlySet<AccountId> | undefined,
     resolution: Resolution,
     rejected?: JsonObject,
+    recheck: Effect.Effect<void, StorageError | AccountUseRefused> = enforced(
+      authorized([account]),
+      [account],
+    ),
   ) =>
     Effect.gen(function* () {
-      if (allowed !== undefined && !allowed.has(account.id)) return yield* new StorageError();
+      if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
       const fields = yield* resolveCredentials(account, provider, resolution, rejected);
-      // A remote token refresh can outlive a permission change or account deletion.
-      if (resolution.contested) {
-        const current = yield* authorized([account]);
-        if (current !== undefined && !current.has(account.id)) return yield* new StorageError();
-      }
+      // A remote token refresh can outlive a permission change, an unlinking or account deletion.
+      if (resolution.contested) yield* recheck;
       return fields;
     });
   const resolve = (account: StoredAccount, provider: ProviderDefinition, rejected?: JsonObject) =>
     Effect.flatMap(authorized([account]), (allowed) =>
       resolveAuthorized(account, provider, allowed, { contested: false }, rejected),
+    ).pipe(
+      // A refusal is the storage failure callers that do not distinguish it have always seen.
+      Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
     );
   /**
-   * Resolve each selected account's credentials in order. Product authority for all of them is
-   * checked in one read first, and refused in selection order; a caller that checks it with the
-   * profile supplies that read. Once one account has waited for or performed a renewal, that read
-   * can be seconds old, so each later account is checked again immediately before it resolves.
+   * Running the app's code needs the current actor to use the app; removing what the app
+   * registered, or checking an account, does not. To run it, the actor's app access, its use of
+   * the user accounts and the app link of each app requirement's account (`appUses`) are
+   * rechecked in one product read. Removing what the app registered rechecks the actor's use of
+   * the user accounts and the app's authority over the app accounts it registered with, linked
+   * or not since. Checking an account rechecks only the actor's use of it. An account used by both
+   * scopes is in both lists and passes only when every check does.
+   */
+  const authorizedFor = (
+    use: CredentialUse,
+    accounts: readonly StoredAccount[],
+    appUses: ReadonlyArray<AppAccountUse> = [],
+  ): Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> =>
+    lifecycle === undefined
+      ? Effect.succeed(undefined)
+      : use.kind === "run"
+        ? lifecycle.appResolving(use.app, accounts, appUses)
+        : use.kind === "removal"
+          ? accounts.length === 0 && appUses.length === 0
+            ? Effect.succeed(undefined)
+            : lifecycle.removalResolving(use.app, accounts, appUses)
+          : authorized(accounts);
+  /**
+   * Product authority over a whole selection, for every use the evaluation makes of each account:
+   * the actor's use where a user requirement uses it, and the app's authority for each app
+   * requirement it fills. Running the app also rechecks the actor's app access in the same read.
+   */
+  const selectionAuthority = (
+    use: CredentialUse,
+    selection: ReadonlyArray<{ readonly account: StoredAccount } & AccountUses>,
+  ) =>
+    authorizedFor(
+      use,
+      selection.filter(({ user }) => user).map(({ account }) => account),
+      selection.flatMap(({ account, appUses }) =>
+        appUses.map((requirement) => ({ requirement, account })),
+      ),
+    );
+  /**
+   * Fail unless the product still authorizes the whole selection; see `selectionAuthority`.
+   * Run after any renewal wait, since every account's earlier check can then be seconds old.
+   */
+  const selectionAuthorized = (
+    use: CredentialUse,
+    selection: ReadonlyArray<{ readonly account: StoredAccount } & AccountUses>,
+  ) =>
+    enforced(
+      selectionAuthority(use, selection),
+      selection.map(({ account }) => account),
+    );
+  /**
+   * Resolve each selected account's credentials in order, for evaluating the app's code. To run
+   * the app, the product first rechecks that the current actor may use it, even without accounts;
+   * removing what the app registered needs no app access. Product authority for all accounts is
+   * always checked in the same read, and refused in selection order. Once any account has waited
+   * for or performed a renewal, that read can be seconds old, so the whole selection, including
+   * the accounts already resolved and app access, is checked again before anything else resolves
+   * or the credentials are returned. A refusal fails with `AccountUseRefused`. A caller that ran
+   * the first check beside its own reads supplies its outcome as `authority`.
    */
   const resolveSelected = (
-    selected: ReadonlyArray<{
-      readonly account: StoredAccount;
-      readonly provider: ProviderDefinition;
-    }>,
-    authority: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> = authorized(
-      selected.map(({ account }) => account),
+    use: Exclude<CredentialUse, { readonly kind: "check" }>,
+    selected: ReadonlyArray<
+      {
+        readonly account: StoredAccount;
+        readonly provider: ProviderDefinition;
+      } & AccountUses
+    >,
+    authority: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> = selectionAuthority(
+      use,
+      selected,
     ),
   ) =>
     Effect.flatMap(authority, (checked) => {
-      const batch: Resolution = { contested: false };
+      const recheck = selectionAuthorized(use, selected);
       return Effect.forEach(selected, ({ account, provider }) =>
         Effect.gen(function* () {
-          const allowed = batch.contested ? yield* authorized([account]) : checked;
-          const resolution: Resolution = { contested: false };
-          const credential = yield* resolveAuthorized(account, provider, allowed, resolution);
-          if (resolution.contested) batch.contested = true;
+          const credential = yield* resolveAuthorized(
+            account,
+            provider,
+            checked,
+            { contested: false },
+            undefined,
+            recheck,
+          );
           /** The account as one slot's invocation sends it, under that slot's definition. */
           return (definition: ProviderDefinition) =>
             invocationAccount(account, definition, credential, firstPartyClients);
@@ -2776,13 +2874,28 @@ export const makeOAuth = (
   /**
    * The service refused these credentials. Renew the grant once, or read a renewal another call
    * already made, and return the account's current credentials. They equal `rejected` when the
-   * account cannot be renewed, such as a secrets account or a grant without a refresh token.
+   * account cannot be renewed, such as a secrets account or a grant without a refresh token. A
+   * renewal can take seconds, and a call that runs the app again sends every account of its
+   * `selection` with the new credentials, so once a renewal settles the whole selection is
+   * checked again for every use the call makes of each account, with app access to run it.
    */
   const renewRejected = (
+    use: Exclude<CredentialUse, { readonly kind: "removal" }>,
     account: StoredAccount,
     provider: ProviderDefinition,
     rejected: JsonObject,
-  ) => resolve(account, provider, rejected);
+    selection: ReadonlyArray<{ readonly account: StoredAccount } & AccountUses> = [
+      { account, user: true, appUses: [] },
+    ],
+  ) => {
+    const recheck = selectionAuthorized(use, selection);
+    return Effect.flatMap(recheck, () =>
+      resolveAuthorized(account, provider, undefined, { contested: false }, rejected, recheck),
+    ).pipe(
+      // A refusal is the storage failure callers that do not distinguish it have always seen.
+      Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
+    );
+  };
   /**
    * RFC 7009 revocation with the grant's own client, at its server's revocation endpoint. The
    * refresh token is revoked when present, since that also ends its access tokens at most

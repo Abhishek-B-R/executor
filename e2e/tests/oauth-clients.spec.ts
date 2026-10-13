@@ -17,8 +17,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const DeployedApp = Schema.Struct({
   id: Schema.String,
@@ -118,19 +118,19 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         .request(actor, "GET", `${prefix}/providers/${provider}/oauth/oauth/setup`)
         .pipe(Effect.flatMap((response) => body(Options, response)));
     /**
-     * A personal connection for the actor's own profile of the app, or one that replaces an
-     * existing account's credentials.
+     * A personal connection from the app, which links the saved account to it for the actor, or
+     * one that replaces an existing account's credentials.
      */
     const connection = (actor: Session, app: string, account?: string) =>
       Effect.gen(function* () {
-        const profile = yield* createProfile(actor, `${prefix}/apps/${app}`);
         return (yield* body(
           Resource,
-          yield* api.request(actor, "POST", `${prefix}/apps/${app}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-            ...(account === undefined ? {} : { account }),
-          }),
+          yield* api.request(
+            actor,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+            account === undefined ? {} : { account },
+          ),
         )).id;
       });
     const start = (actor: Session, connection: string, client?: unknown) =>
@@ -522,11 +522,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         // An administrator connects a shared account with client details entered for it alone.
         const shared = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: (yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`)).id,
-            destination: { kind: "shared", audience: { kind: "everyone" } },
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {
+              destination: { kind: "shared", audience: { kind: "everyone" } },
+            },
+          ),
         );
         const entered = { clientId: "synthetic-entered-client", clientSecret: "synthetic-entered" };
         const sharedStart = yield* body(Redirect, yield* start(actors.owner, shared.id, entered));
@@ -1616,7 +1619,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Machine isolation",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["reports:read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service:service.many()}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service:service.many()} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -1628,13 +1631,14 @@ export default defineApp({accounts:{service:service.many()}},async()=>({tools: r
         );
         const connect = (client?: typeof machineClient | { readonly id: string }) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             return yield* api.request(
               actors.owner,

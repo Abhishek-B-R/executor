@@ -25,7 +25,6 @@ import {
   targetProvider,
 } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { storedProfile } from "./profiles.ts";
 
 /** Requests survive host restarts. Pending requests expire after thirty minutes. */
 export const makeAccountConnections = (
@@ -55,7 +54,6 @@ export const makeAccountConnections = (
       app: row.target.app,
       requirement: row.target.requirement,
       name: row.target.name,
-      profile: row.target.profile,
     },
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
@@ -186,15 +184,9 @@ export const makeAccountConnections = (
               id: row.id,
               owner: row.owner,
               reconnectAccount: row.reconnectAccount,
-              target: {
-                app: row.target.app,
-                profile: yield* storedProfile(tx, {
-                  app: row.target.app,
-                  profile: row.target.profile,
-                }),
-              },
+              target: { app: row.target.app, requirement: row.target.requirement },
             });
-          yield* finishConnection(tx, row, account);
+          yield* finishConnection(tx, row, account, lifecycle);
           return account;
         }),
       ).pipe(Effect.withSpan("sdk.connections.submit")),

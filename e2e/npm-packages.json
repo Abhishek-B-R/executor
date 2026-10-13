@@ -46,6 +46,11 @@
       "transitive": true
     },
     {
+      "name": "zod",
+      "range": "3.25.76",
+      "transitive": true
+    },
+    {
       "name": "tailwindcss",
       "range": "4.3.3",
       "transitive": false
@@ -104,17 +109,22 @@
       "name": "apps",
       "range": "0.0.1-beta.59",
       "transitive": false
+    },
+    {
+      "name": "apps",
+      "range": "0.0.1-beta.84",
+      "transitive": false
     }
   ],
   "packages": {
     "@hono/node-server": {
       "distTags": {
-        "latest": "2.1.4"
+        "latest": "2.1.5"
       },
       "versions": {
-        "2.1.4": {
-          "tarball": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.4.tgz",
-          "integrity": "sha512-2g1qeHl4BduwDn6L8nkAvDrPUWPMlkQ//a5NhP/zIyaXKMjZNRV+cG9Csu+BiJFf6+68pqzjf4Hi5sJGKHuS1g=="
+        "2.1.5": {
+          "tarball": "https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.5.tgz",
+          "integrity": "sha512-MgP/I06GdvsilDspMk/qmRzpk8LOUStP6jFAbSRi40W09DhoyUn+Mj7eyKICPqeYKybOjVFLVIAQzvu1bfIa7Q=="
         }
       }
     },
@@ -304,6 +314,14 @@
         "0.0.1-beta.59": {
           "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.59.tgz",
           "integrity": "sha512-KpF9FQGLTsfNq55M9D/13gnWqa/3SeSdJ7cSnNl9nDm7WY35EQEaNiSQNXCmzdq0EB4+hlY2EyyBCp7bVzRvcg==",
+          "dependencies": {
+            "effect": "4.0.1",
+            "@cloudflare/workers-types": "5.20260729.1"
+          }
+        },
+        "0.0.1-beta.84": {
+          "tarball": "https://registry.npmjs.org/apps/-/apps-0.0.1-beta.84.tgz",
+          "integrity": "sha512-Fv7eRMHOaQ1qVUoZeL1MDqwir6VCpHoIv1PVJZVxqnJMuZwlpDNtREmRXFGPOzOqLbHijxvCu2IFzbkotacslQ==",
           "dependencies": {
             "effect": "4.0.1",
             "@cloudflare/workers-types": "5.20260729.1"
@@ -913,12 +931,12 @@
     },
     "ip-address": {
       "distTags": {
-        "latest": "10.7.3"
+        "latest": "10.7.4"
       },
       "versions": {
-        "10.7.3": {
-          "tarball": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.3.tgz",
-          "integrity": "sha512-A1kdq/tSb5QjvKvAMgIoEvDBIgL7qaqVP/jkvSwYYRZ9iEzvPpopxp2wQfu3SuZRHtpHNxMn8Fs0bS+gf5Xmwg=="
+        "10.7.4": {
+          "tarball": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.4.tgz",
+          "integrity": "sha512-DWBMKyeM25D70nrIiTkgQth59/G+naKOTep6huF9j+GmeK3DMD60Zvxg5d5qQnz+38AHgou6ean2LECX+lrKDg=="
         }
       }
     },
@@ -1555,12 +1573,16 @@
     },
     "zod": {
       "distTags": {
-        "latest": "4.6.5"
+        "latest": "4.6.7"
       },
       "versions": {
-        "4.6.5": {
-          "tarball": "https://registry.npmjs.org/zod/-/zod-4.6.5.tgz",
-          "integrity": "sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q=="
+        "3.25.76": {
+          "tarball": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
+          "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="
+        },
+        "4.6.7": {
+          "tarball": "https://registry.npmjs.org/zod/-/zod-4.6.7.tgz",
+          "integrity": "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="
         }
       }
     },

@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import {
   clientCredentialsScheme,
   credentialEchoUpstream,
@@ -65,7 +65,7 @@ const Recorded = Schema.Struct({ method: Schema.String, url: Schema.String, body
 const diagnosed = `import { defineApp, router } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 const common = { securitySchemes: {}, methods: {}, oauth: [] };
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: router({
     mail: liveOpenapiRouter({ ...common, cache, fetch, signal,
       source: { document: ${JSON.stringify(otherHostDocument)} },
@@ -152,7 +152,7 @@ const options = {
 const common = { allowedOrigin: "https://ci.example.com", securitySchemes: {}, methods: {}, oauth: [] };
 const plans = ${JSON.stringify(collisionPlans)};
 const approvals = new Map([["project.deleteEnvvar", always()]]);
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: router({
     api: withApprovals(
       liveOpenapiRouter({ ...options, cache, fetch, signal }),
@@ -270,7 +270,7 @@ import { liveOpenapiRouter, openapiToolNames } from "apps/openapi";
 const options = ${JSON.stringify(options)};
 const accounts = ${JSON.stringify(accounts)};
 const allowedOrigin = ${JSON.stringify(origin)};
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: router({
     bot: liveOpenapiRouter({ ...options.bot, allowedOrigin, cache, fetch, signal, account: accounts.bot }),
     basic: liveOpenapiRouter({ ...options.basic, allowedOrigin, cache, fetch, signal, account: accounts.basic }),
@@ -330,8 +330,8 @@ const charges = defineProvider({
   name: "Charges fixture",
   auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
 });
-export default defineApp({ accounts: { charges: charges.many() } }, async ({ accounts, cache, fetch, signal }) => ({
-  tools: await accountRouter(accounts.charges, (account) => liveOpenapiRouter({
+export default defineApp({ user: { accounts: { charges: charges.many() } } }, async ({ user, cache, fetch, signal }) => ({
+  tools: await accountRouter(user?.accounts.charges ?? [], (account) => liveOpenapiRouter({
     source: { document: ${JSON.stringify(document)} },
     allowedOrigin: ${JSON.stringify(origin)},
     securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
@@ -515,13 +515,15 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
       Effect.gen(function* () {
         const upstream = yield* credentialEchoUpstream;
         const app = yield* deployPublicApp(expandable(upstream.origin));
-        yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, { charges: [] });
+        // Connecting from the app links the new account to its requirement for the caller.
         const connection = yield* body(
           Resource,
-          yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
-            requirement: "charges",
-            profile: app.profile.id,
-          }),
+          yield* app.api.request(
+            app.actors.owner,
+            "POST",
+            connectionsPath(app.path, "user", "charges"),
+            {},
+          ),
         );
         const account = yield* body(
           Resource,
@@ -570,7 +572,7 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         const upstream = yield* openapi32Upstream;
         const app = yield* deployPublicApp(`import { defineApp } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ cache, fetch, signal,
     source: { url: ${JSON.stringify(`${upstream.origin}/openapi.json`)} },
     allowedOrigin: ${JSON.stringify(upstream.origin)},

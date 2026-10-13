@@ -8,6 +8,7 @@ import {
   type GetAccountConnection,
 } from "../contracts/account-connection.ts";
 import type { Account } from "../contracts/account.ts";
+import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { StorageError } from "../contracts/shared.ts";
 import { StoredConnectionState, StoredConnectionTarget } from "../contracts/storage.ts";
 import { applyConnectionTarget } from "./connection-target.ts";
@@ -95,9 +96,21 @@ export const openConnection = (db: Query, input: typeof GetAccountConnection.Typ
  * Commit with the account write, never as a later, independently failing update. `claimed` is the
  * row `lockConnection` returned in this transaction. Writers claim the row first, so it is current.
  */
-export const finishConnection = (db: Query, claimed: ConnectionRow, account: Account) =>
+export const finishConnection = (
+  db: Query,
+  claimed: ConnectionRow,
+  account: Account,
+  lifecycle: ResourceLifecycle | undefined,
+) =>
   Effect.gen(function* () {
-    yield* applyConnectionTarget(db, claimed.target, claimed.provider, account);
+    yield* applyConnectionTarget(
+      db,
+      claimed.id,
+      claimed.target,
+      claimed.provider,
+      account,
+      lifecycle,
+    );
     yield* query(() =>
       db.updateMany("accountConnections", {
         where: (b) => b("id", "=", claimed.id),

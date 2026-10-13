@@ -3,13 +3,13 @@
  * account; the public docs used `alice`. Those records were missing from the dashboard and their
  * apps could not open. Upgrading gives them to `local` once, at startup, in data step
  * `7_local_owners`. The scenarios build apps and accounts through the product, then stop it and
- * rewrite their owners as the earlier server stored them: an app, its profile, account and
- * connections under one owner, and an account connected for a local app under another. Records
+ * rewrite their owners as the earlier server stored them: an app, its account and connections
+ * under one owner, and an account connected for a local app under another. Records
  * whose owner is encrypted, a pending sign-in and a pending approval, and the identity of an OAuth
  * client's credentials are then written by the product itself, for an app that owner holds.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
@@ -20,20 +20,26 @@ import { dataStepSummaries, logMessages, nextDataStepSummary } from "../support/
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { ConnectedAccount, connectLocalAccount, createProfile } from "../support/profiles.ts";
+import { ConnectedAccount, connectLocalAccount } from "../support/app-accounts.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 
 const step = "7_local_owners";
-const source = `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
-const service = defineProvider({ name: "Owner move fixture", auth: {
+/**
+ * Each app has its own provider, so an app shares no account with another app's fixture. An
+ * account connected for an app is linked to it.
+ */
+const source = (
+  provider: string,
+) => `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
+const service = defineProvider({ name: ${JSON.stringify(provider)}, auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-export const who = query({ input: object({}) }, async (ctx) => ctx.accounts.service.id);
-export default defineApp({ accounts: { service } }, { tools: router({ who }) });`;
+export const who = query({ input: object({}) }, async (ctx) => ctx.user.accounts.service.id);
+export default defineApp({ user: { accounts: { service } } }, { tools: router({ who }) });`;
 /** The app page shows the account its tool call ran with. */
-const files = [
-  { path: "index.ts", content: source },
+const files = (provider: string) => [
+  { path: "index.ts", content: source(provider) },
   {
     path: "ui/index.html",
     content:
@@ -70,7 +76,6 @@ const ownedApp = (app: string, owner: string): [Statement, ...Statement[]] => [
       WHERE code = (SELECT code FROM executor_apps WHERE id = $1)`,
     params: [app, owner],
   },
-  { sql: `UPDATE executor_installations SET owner = $2 WHERE app = $1`, params: [app, owner] },
   {
     sql: `UPDATE executor_tool_search_listings SET owner = $2 WHERE app = $1`,
     params: [app, owner],
@@ -107,6 +112,7 @@ const ownerTables = [
   "executor_scheduled_runs",
   "executor_workflow_runs",
   "executor_webhooks",
+  "executor_webhook_sources",
   "executor_event_subscriptions",
   "executor_accounts",
   "executor_account_connections",
@@ -128,7 +134,7 @@ const oauthSource = (
   name: string,
 ) => `import { defineApp, defineProvider, mutation, oauth2, object, query, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     read: query({ input: object({}) }, async ({ fetch }) => ({ account: accounts.service.id, service: await (await fetch(${JSON.stringify(`${issuer}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
     approved: mutation({ input: object({}), approval: async () => "user-approval" as const }, async () => accounts.service.id),
@@ -182,12 +188,12 @@ const stored = {
 };
 
 /** A connection link for the app's account, and the grant its browser page holds. */
-const connectionFor = (agent: Session, app: string, profile: string) =>
+const connectionFor = (agent: Session, app: string) =>
   Effect.gen(function* () {
     const link = yield* body(
       Link,
       yield* agent.send("POST", "/account-connect/api/requests", {
-        target: { app, profile, requirement: "service" },
+        target: { app, requirement: "service" },
       }),
     );
     return {
@@ -264,26 +270,25 @@ const agentSession = Effect.gen(function* () {
   return { session, agent, headers, log: `${target.directory}/server.log` };
 });
 
-/** Deploy an app with a profile and an account connected for it. */
+/** Deploy an app with an account connected for it, of a provider only this app requires. */
 const appWithAccount = (agent: Session, name: string, label: string) =>
   Effect.gen(function* () {
     const { app } = yield* body(
       Deployed,
-      yield* agent.send("POST", "/v1/apps/deploy", { owner: "local", name, files }),
+      yield* agent.send("POST", "/v1/apps/deploy", {
+        owner: "local",
+        name,
+        files: files(`Owner move fixture ${name}`),
+      }),
     );
-    const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-      owner: "local",
-      subject: "local",
-    });
     const account = yield* connectLocalAccount(agent, {
       app: app.id,
-      profile: profile.id,
       requirement: "service",
       method: "key",
       label,
       fields: { token: `synthetic-${randomUUID()}` },
     });
-    return { app, profile, account };
+    return { app, account };
   });
 
 layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => {
@@ -301,7 +306,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               .send("GET", `/v1/accounts?owner=${owner}`)
               .pipe(Effect.flatMap((response) => body(Listed, response)));
 
-          // An app deployed under `alice`, with its profile and account, and an account the docs'
+          // An app deployed under `alice`, with its account, and an account the docs'
           // example connected under `bob` for an app of the local user.
           const moved = yield* appWithAccount(agent, `Moved ${suffix}`, `Alice key ${suffix}`);
           const local = yield* appWithAccount(agent, `Kept ${suffix}`, `Bob key ${suffix}`);
@@ -325,7 +330,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           const open = yield* body(
             Link,
             yield* agent.send("POST", "/account-connect/api/requests", {
-              target: { app: moved.app.id, profile: moved.profile.id, requirement: "service" },
+              target: { app: moved.app.id, requirement: "service" },
               account: moved.account.id,
             }),
           );
@@ -386,7 +391,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             Pending,
             yield* agent.send("POST", "/v1/account-connections", {
               owner: "alice",
-              target: { app: moved.app.id, profile: moved.profile.id, requirement: "service" },
+              target: { app: moved.app.id, requirement: "service" },
             }),
           );
           expect(pending.owner).toBe("local");
@@ -548,7 +553,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           // Until it moves, local does not serve the app: a connection for it is refused rather
           // than saved under the owner the app has.
           const refused = yield* agent.send("POST", "/account-connect/api/requests", {
-            target: { app: stray.app.id, profile: stray.profile.id, requirement: "service" },
+            target: { app: stray.app.id, requirement: "service" },
           });
           expect(refused.status).toBe(404);
           expect(refused.body).toMatchObject({ _tag: "AppNotFound", app: stray.app.id });
@@ -599,10 +604,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               ],
             }),
           );
-          const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-            owner: "local",
-            subject: "local",
-          });
           // A client entered at the service by hand, which the agent registered.
           const credentials = {
             clientId: `synthetic-moved-${suffix}`,
@@ -620,7 +621,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             )).id,
           };
           // An account signed in with it, whose grant keeps a copy of the client.
-          const first = yield* connectionFor(agent, app.id, profile.id);
+          const first = yield* connectionFor(agent, app.id);
           const signedIn = yield* body(
             Resource,
             yield* session.send("POST", "/account-connect/api/oauth/complete", {
@@ -635,7 +636,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             }),
           );
           // A second connection, whose sign-in starts once the app is another owner's.
-          const second = yield* connectionFor(agent, app.id, profile.id);
+          const second = yield* connectionFor(agent, app.id);
           let added: string | undefined;
           yield* Effect.addFinalizer(() =>
             serverControl("start").pipe(
@@ -683,13 +684,12 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
             expect(edited.status, JSON.stringify(edited.body)).toBe(200);
           }
           // A sign-in for `alice`, consented at the service and left to complete after the
-          // upgrade, and a call of `alice`'s app waiting for approval with her account.
+          // upgrade, and a call of `alice`'s app waiting for approval with her linked account.
           const callback = yield* consentWith(session, issuer, second, client, `Added ${suffix}`);
           const waiting = yield* body(
             ApprovalRequired,
             yield* agent.send("POST", "/v1/tools/call", {
               app: app.id,
-              profile: profile.id,
               tool: "approved",
               input: {},
             }),
@@ -743,7 +743,6 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           const before = (yield* issuer.metrics).refreshesIssued;
           const read = yield* agent.send("POST", "/v1/tools/call", {
             app: app.id,
-            profile: profile.id,
             tool: "read",
             input: {},
           });
@@ -770,6 +769,29 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           });
           expect(again.status, JSON.stringify(again.body)).toBe(409);
           expect(again.body).toMatchObject({ _tag: "OAuthClientExists", client: client.id });
+
+          // The completed sign-in linked its account to the app in place of the account signed in
+          // before the upgrade, whose webhook source is removed in the background. Wait for that,
+          // so the snapshot below holds only rows the data step could change.
+          yield* agent.send("GET", `/v1/apps/${app.id}/webhook-sources`).pipe(
+            Effect.flatMap((response) =>
+              body(
+                Schema.Array(Schema.Struct({ account: Schema.String, status: Schema.String })),
+                response,
+              ),
+            ),
+            Effect.flatMap((sources) =>
+              sources.length === 1 &&
+              sources[0]?.account === account.id &&
+              sources[0].status !== "pending" &&
+              sources[0].status !== "removing"
+                ? Effect.void
+                : Effect.fail(
+                    new Error(`Webhook sources are settling: ${JSON.stringify(sources)}`),
+                  ),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+          );
 
           // No record keeps another owner, and running the item again changes nothing.
           expect(yield* legacyStorage([owners])).toEqual([
@@ -975,7 +997,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
           // product would not read any of them back. The client's secret reads but its
           // registration does not: it authenticates with a secret it does not hold. The sign-in
           // names only its owner and provider, the approval only its invocation's owner and an
-          // account selection, and the connection's target has lost its cardinality.
+          // account selection, and the connection's target has lost its requirement.
           yield* legacyStorage([
             ...ownedApp(stray.app.id, "alice"),
             ...ownedAccounts(stray.app.id, "alice"),
@@ -1022,7 +1044,7 @@ layer(TestLive, { excludeTestServices: true })("Local owner migration", (it) => 
               ],
             },
             {
-              sql: `UPDATE executor_account_connections SET target = (target::jsonb - 'cardinality')::json
+              sql: `UPDATE executor_account_connections SET target = (target::jsonb - 'requirement')::json
                 WHERE target->>'app' = $1`,
               params: [stray.app.id],
             },

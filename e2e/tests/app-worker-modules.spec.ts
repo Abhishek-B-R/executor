@@ -98,7 +98,7 @@ const upstream = Effect.gen(function* () {
 
 const plain = `import { defineApp, query, object, string, router } from "apps";
 export const ping = query({ input: object({}), output: string() }, async () => "plain");
-export default defineApp({ accounts: {} }, { tools: router({ ping }) });`;
+export default defineApp({}, { tools: router({ ping }) });`;
 
 /** The specifier is computed, so no static scan can see that the app loads `apps/graphql`. */
 const computed = `import { defineApp, query, object, string, router } from "apps";
@@ -107,7 +107,7 @@ export const ping = query({ input: object({}), output: string() }, async () => {
   const graphql = await import(entry);
   return typeof graphql.graphqlRouter;
 });
-export default defineApp({ accounts: {} }, { tools: router({ ping }) });`;
+export default defineApp({}, { tools: router({ ping }) });`;
 
 /** An app whose only tools come from one framework entry's router over the upstream. */
 const entryApps = (origin: string) => [
@@ -117,7 +117,7 @@ const entryApps = (origin: string) => [
     tool: "remote.echo",
     source: `import { defineApp, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: router({ remote: await mcpRouter({ url: ${JSON.stringify(`${origin}/mcp`)}, signal }) }),
 }));`,
   },
@@ -127,7 +127,7 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
     tool: "remote.entries.read",
     source: `import { defineApp, router } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: router({
     remote: liveOpenapiRouter({
       cache, fetch, signal,
@@ -162,7 +162,7 @@ export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => (
     tool: "remote.query_entry",
     source: `import { defineApp, router } from "apps";
 import { graphqlRouter } from "apps/graphql";
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: router({ remote: await graphqlRouter({ url: ${JSON.stringify(`${origin}/graphql`)}, signal }) }),
 }));`,
   },

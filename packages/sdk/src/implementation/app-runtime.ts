@@ -26,6 +26,7 @@ import {
   ToolResultObservation,
   type HostContext,
   type HostRequest,
+  scopedSlots,
 } from "apps/contracts";
 import {
   AppCacheChanges,
@@ -298,7 +299,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
               app: input.app,
               accounts: [
                 ...new Set(
-                  Object.values(Redacted.value(input.accounts)).flatMap((selected) =>
+                  scopedSlots(Redacted.value(input.accounts)).flatMap(([, selected]) =>
                     (Array.isArray(selected) ? selected : [selected]).map((account) => account.id),
                   ),
                 ),
@@ -390,7 +391,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
         ).pipe(Effect.withSpan(span("checkAccount"))),
       migrate: (input) =>
         dispatch(
-          { ...input, database: true, accounts: Redacted.make({}) },
+          { ...input, database: true, accounts: Redacted.make({ app: {} }) },
           { operation: "migrate" },
           MigrateResult,
           HostCallError,

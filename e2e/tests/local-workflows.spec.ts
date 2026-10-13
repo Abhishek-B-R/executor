@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { connectLocalAccount, createProfile } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { localLinks } from "../support/local-links.ts";
 import {
   workflowFiles,
   WorkflowRun as Run,
@@ -78,12 +79,12 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const { app } = yield* body(Deployment, deployed);
         resources.apps.push(app.id);
         const path = `/v1/apps/${app.id}`;
-        const profile = yield* createProfile(agent, path, { owner, subject: "local" });
-        /** Connect an account for the profile, which selects it, or replace one's key. */
+        // Calls name no accounts: each uses the account linked to the app, which connecting from
+        // the app replaces.
+        /** Connect an account for the app, or replace one's key. */
         const connect = (token: string, account?: string) =>
           connectLocalAccount(agent, {
             app: app.id,
-            profile: profile.id,
             requirement: "service",
             method: "key",
             label: name,
@@ -93,7 +94,12 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const addAccount = (token: string) =>
           connect(token).pipe(
             Effect.map((connected) => connected.id),
-            Effect.tap((account) => Effect.sync(() => resources.accounts.push(account))),
+            Effect.tap((account) =>
+              Effect.gen(function* () {
+                resources.accounts.push(account);
+                expect(yield* localLinks(agent, app.id)).toEqual([account]);
+              }),
+            ),
           );
         const account = yield* addAccount("synthetic-original");
         expect((yield* session.send("GET", `${path}/workflows`)).status).toBe(401);
@@ -103,11 +109,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
             input: {},
           })).status,
         ).toBeGreaterThanOrEqual(400);
-        const definitions = yield* api.request(
-          agent,
-          "GET",
-          `${path}/workflows?profile=${profile.id}`,
-        );
+        const definitions = yield* api.request(agent, "GET", `${path}/workflows`);
         expect(definitions.status).toBe(200);
         expect(
           (yield* body(Schema.Array(Schema.Struct({ name: Schema.String })), definitions)).map(
@@ -117,7 +119,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         const start = (workflow: string, input: Schema.Json = {}, key: string = randomUUID()) =>
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", `${path}/workflow-runs`, {
-              profile: profile.id,
               workflow,
               input,
               key,
@@ -147,7 +148,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Effect.gen(function* () {
             const response = yield* api.request(agent, "POST", "/v1/tools/call", {
               app: app.id,
-              profile: profile.id,
               tool,
               kind: workflowToolKinds[tool],
               input,
@@ -165,7 +165,6 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         expect((yield* start("process", { label: "pinned" }, name)).id).toBe(run.id);
         expect(
           (yield* api.request(agent, "POST", `${path}/workflow-runs`, {
-            profile: profile.id,
             workflow: "process",
             input: { label: "other" },
             key: name,
@@ -215,11 +214,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           Schema.Struct({ items: Schema.Array(Run) }),
         )(yield* call("history"));
         expect(history.items.length).toBe(1);
-        const listed = yield* api.request(
-          agent,
-          "GET",
-          `${path}/workflow-runs?limit=1&profile=${profile.id}`,
-        );
+        const listed = yield* api.request(agent, "GET", `${path}/workflow-runs?limit=1`);
         expect(listed.status).toBe(200);
         expect(
           (yield* body(Schema.Struct({ items: Schema.Array(Run), next: Schema.String }), listed))

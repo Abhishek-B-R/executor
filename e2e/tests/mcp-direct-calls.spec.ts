@@ -13,7 +13,7 @@ import { appsManifest } from "../support/apps-release.ts";
 
 const source = `import { defineApp, mutation, query, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text back to the caller" },
     async (_ctx, { text }) => ({ text })),
   oversized: query({ input: object({}), description: "Return more than the output limit" },

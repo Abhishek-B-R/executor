@@ -51,10 +51,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
     WorkflowFailure: () =>
       message(
         "Workflow could not complete",
-        "Check this run or reload its account selection before trying again.",
+        "Check this run or its linked accounts before trying again.",
       ),
-    ProfileNotFound: () =>
-      message("Profile unavailable", "This profile is no longer available for this app."),
     ConnectionNotFound: () =>
       message("Connection unavailable", "This connection was revoked or no longer exists."),
     ConnectionIdTaken: () =>
@@ -64,13 +62,10 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Connection not saved",
         {
           app: "An included app is no longer available. Remove it and try again.",
-          profile: "A selected profile is no longer available. Choose how the app runs again.",
           account: "A selected account is no longer available for this app. Choose another one.",
           target: "Choose how each included app runs.",
         }[reason],
       ),
-    ProfileConflict: () =>
-      message("Profile changed", "Reload the current account selection before trying again."),
     ScheduleNotFound: () =>
       message("Schedule unavailable", "This schedule or run is no longer available."),
     ScheduleConflict: () =>
@@ -94,13 +89,25 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     AccountConnectionClosed: () =>
       message("This connection has ended", "Ask your agent for a new connection link."),
+    AccountConnectionRefused: () =>
+      message(
+        "Account not connected",
+        "Connecting this account for the app was refused, so nothing was saved. Start account setup again.",
+      ),
     OAuthSetupFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     OAuthCompletionFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
+    // Local has one subject, who manages every app, so an app's own account is theirs to reconnect.
     OAuthReconnectRequired: (error) => ({
-      title: "This account needs a new sign-in",
-      description: "Reconnect to load its tools.",
+      title:
+        error.appRequirement === undefined
+          ? "This account needs a new sign-in"
+          : `The app’s “${error.appRequirement}” account needs a new sign-in`,
+      description:
+        error.appRequirement === undefined
+          ? "Reconnect to load its tools."
+          : "The app uses this account for every call. Reconnect it to load its tools.",
       account: error.account,
     }),
     OAuthRenewalFailed: (error) =>
@@ -145,19 +152,46 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message("Managed by Executor", "This app is part of the local server and cannot be renamed."),
     AppDeletionBlocked: () =>
       message("Managed by Executor", "This app is part of the local server and cannot be deleted."),
+    AppAccountLinksBlocked: () =>
+      message(
+        "Managed by Executor",
+        "This app is part of the local server, which links its account itself.",
+      ),
     DeploymentNotFound: () =>
       message("Deployment not found", "Choose another retained deployment."),
-    AccountRequired: () =>
+    AccountRequired: ({ scope }) =>
+      scope === "app"
+        ? message(
+            "Link an account first",
+            "This app needs its own account before its live tools can load. Link one under App accounts on the Accounts tab.",
+          )
+        : message(
+            "Connect an account first",
+            "This app needs an account before its live tools can load. Connect one from the Accounts tab.",
+          ),
+    AccountChoiceUnsupported: () =>
       message(
-        "Select an account first",
-        "This app needs an account before its live tools can load. Choose an account from the Accounts tab.",
+        "Accounts are not chosen per call",
+        "Each app uses the accounts linked to it. Change them in the app's Accounts tab.",
       ),
     AccountNotFound: () =>
-      message("Selected account is unavailable", "Choose an available account for this app."),
+      message("Chosen account is unavailable", "Choose an available account for this app."),
+    RequirementMismatch: ({ reason }) =>
+      message(
+        "Account not linked",
+        reason === "provider"
+          ? "This requirement uses another kind of account. Link an account of the kind it names."
+          : "This app no longer has that account requirement here. Reload the app's accounts.",
+      ),
+    AccountLinkedToApp: () =>
+      message(
+        "This account is linked to an app for everyone",
+        "An app uses it as its own account. Unlink it under App accounts on the app's Accounts tab, then delete it.",
+      ),
     AccountSelectionInvalid: () =>
       message(
         "Account selection needs attention",
-        "Review this app's account requirements and update its selection.",
+        "Review this app's account requirements and choose matching accounts.",
       ),
     AppProviderFailed: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
@@ -315,6 +349,7 @@ export const connectionLinkRecovery = Match.type<DashboardError>().pipe(
     AccountConnectionNotFound: newConnectionLink,
     AccountConnectionClosed: newConnectionLink,
     AccountConnectionTargetChanged: newConnectionLink,
+    AccountConnectionRefused: newConnectionLink,
   }),
   Match.orElse(() => undefined),
 );

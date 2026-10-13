@@ -25,7 +25,7 @@ const aged = 60_000;
 /** Every evaluation names itself in the probe's description; a call reports the isolate's count. */
 const probeSource = `import { defineApp, query, object, router } from "apps";
 let evaluations = 0;
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   evaluations += 1;
   const evaluation = crypto.randomUUID();
   return { tools: router({ probe: query(

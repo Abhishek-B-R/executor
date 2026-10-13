@@ -14,6 +14,7 @@ import ApiLive, { Api } from "./src/main.ts";
 import AppCompilerLive from "./src/compiler.ts";
 import DashboardLive from "./src/dashboard.ts";
 import FormatterLive from "./src/formatter.ts";
+import AuthoringLive from "./src/authoring.ts";
 import AppDataLive from "./src/app-data.ts";
 import ArtifactsCredentialsLive from "./src/artifacts-credentials.ts";
 import McpServerLive from "./src/mcp-server.ts";
@@ -49,6 +50,7 @@ export const cloudWorkers = Layer.mergeAll(
   AppCompilerLive,
   DashboardLive,
   FormatterLive,
+  AuthoringLive,
   AppDataLive,
   ArtifactsCredentialsLive,
   McpServerLive,

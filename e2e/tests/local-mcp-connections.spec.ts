@@ -3,7 +3,7 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -19,7 +19,8 @@ import {
   revokeClientGrants,
 } from "../support/mcp-connections.ts";
 import { Target } from "../support/platform.ts";
-import { Profile } from "../support/profiles.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
+import { linkLocal, localLinks } from "../support/local-links.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /**
@@ -57,14 +58,31 @@ const Refused = Schema.Struct({
     }),
   }),
 });
+/** An app with one keyed account whose `review` waits for the client to approve it. */
+const reviewAppFiles = (provider: string) => [
+  {
+    path: "index.ts",
+    content: `
+import { defineApp, defineProvider, mutation, object, router, secrets, string } from "apps";
+import { always } from "apps/operations/approval";
+const service = defineProvider({ name: ${JSON.stringify(provider)}, auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
+export default defineApp({ user: { accounts: { service } } }, async () => ({
+  tools: router({
+    review: mutation({ description: "Review after approval", input: object({}), approval: always() }, async () => ({ reviewed: true })),
+  }),
+}));
+`,
+  },
+  appsManifest,
+];
 /** An account-free app whose `review` waits for the client to approve it. */
-const reviewAppFiles = [
+const accountFreeReviewAppFiles = [
   {
     path: "index.ts",
     content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     review: mutation({ description: "Review after approval", input: object({}), approval: always() }, async () => ({ reviewed: true })),
   }),
@@ -562,36 +580,54 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           mcp = yield* McpClient;
         const operator = yield* pairLocalOperator;
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+        // Connection links are issued to agents: a request with a browser origin is refused.
+        const agent: Session = {
+          ...operator,
+          send: (method, path, data, extra = {}) => {
+            const { origin: _origin, ...rest } = extra;
+            return operator.send(method, path, data, { ...rest, ...headers });
+          },
+        };
+        const name = `Refused app ${randomUUID().slice(0, 8)}`;
         const deployed = yield* operator.send(
           "POST",
           "/v1/apps/deploy",
-          {
-            owner: "local",
-            name: `Refused app ${randomUUID().slice(0, 8)}`,
-            files: reviewAppFiles,
-          },
+          { owner: "local", name, files: reviewAppFiles(name) },
           headers,
         );
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const { app } = yield* body(Schema.Struct({ app: App }), deployed);
+        const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
-          operator.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
+          Effect.gen(function* () {
+            yield* operator.send("DELETE", `/v1/apps/${app.id}`, undefined, headers);
+            for (const account of accounts)
+              yield* operator.send("DELETE", `/v1/accounts/${account}`, undefined, headers);
+          }).pipe(Effect.orDie),
         );
-        const profile = yield* body(
-          Profile,
-          yield* operator.send(
-            "POST",
-            `/v1/apps/${app.id}/profiles`,
-            { owner: "local", subject: "local", accounts: {}, idempotencyKey: randomUUID() },
-            headers,
-          ),
-        );
+        // Connecting from the app links the account, replacing the one linked before; both stay
+        // saved. Calls use the linked account.
+        const connect = (token: string) =>
+          Effect.gen(function* () {
+            const { id: account } = yield* connectLocalAccount(agent, {
+              app: app.id,
+              requirement: "service",
+              method: "key",
+              label: token,
+              fields: { token },
+            });
+            accounts.push(account);
+            return account;
+          });
+        const other = yield* connect("synthetic-other");
+        const used = yield* connect("synthetic-used");
+        expect(yield* localLinks(agent, app.id)).toEqual([used]);
         const clients: string[] = [];
         yield* revokeClientGrants(operator, () => clients);
         const created = yield* api.request(operator, "POST", "/dashboard/api/mcp/connections", {
           id: randomUUID(),
           name: "Narrowed",
-          apps: [{ app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "all" } }],
+          apps: [{ app: app.id, runsAs: [{ kind: "account", id: used }], tools: { kind: "all" } }],
         });
         expect(created.status, JSON.stringify(created.body)).toBe(200);
         const connection = yield* body(ConnectionView, created);
@@ -616,7 +652,9 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
             client.callTool(
               {
                 name: "execute",
-                arguments: { code: `return await tools[${JSON.stringify(app.slug)}].review({})` },
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].review({})`,
+                },
               },
               undefined,
               { signal },
@@ -652,7 +690,11 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           Effect.gen(function* () {
             expect(
               yield* refusedAfter(pending[0].requestId, [
-                { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
+                {
+                  app: app.id,
+                  runsAs: [{ kind: "account", id: used }],
+                  tools: { kind: "readOnly" },
+                },
               ]),
             ).toBe(
               `GrantForbidden (HTTP 403): This credential’s grant does not include the tool “review” of the app ${app.id}. Recovery: Use a tool the grant includes, or add this tool to its connection or grant, then retry. Retryable (unchanged call): no.`,
@@ -660,18 +702,21 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           }),
         );
         yield* evidence.step(
-          "A connection that runs the app only as a profile names the target it excludes",
+          "A connection that runs the app only with another account names the account it excludes",
           Effect.gen(function* () {
+            // A connection names only accounts linked to the app. Linking the other account
+            // replaces the one the waiting call started with.
+            yield* linkLocal(agent, app.id, "service", other);
             expect(
               yield* refusedAfter(pending[1].requestId, [
                 {
                   app: app.id,
-                  runsAs: [{ kind: "profile", id: profile.id }],
+                  runsAs: [{ kind: "account", id: other }],
                   tools: { kind: "all" },
                 },
               ]),
             ).toBe(
-              `GrantForbidden (HTTP 403): This credential’s grant includes the app ${app.id}, but not running it without a profile. Recovery: Run the app as the grant allows, or add this target to its connection, then retry. Retryable (unchanged call): no.`,
+              `GrantForbidden (HTTP 403): This credential’s grant includes the app ${app.id}, but not running it with the account ${used}. Recovery: Run the app with accounts the grant allows, or add this target to its connection, then retry. Retryable (unchanged call): no.`,
             );
           }),
         );
@@ -700,7 +745,7 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           {
             owner: "local",
             name: `Resumed app ${randomUUID().slice(0, 8)}`,
-            files: reviewAppFiles,
+            files: accountFreeReviewAppFiles,
           },
           headers,
         );

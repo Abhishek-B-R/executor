@@ -1,4 +1,4 @@
-import type { McpTarget, McpTargetInput } from "./targets.ts";
+import type { McpAppAccounts, McpTargetInput } from "./targets.ts";
 import type {
   App,
   Executor,
@@ -48,7 +48,7 @@ export type McpEventError =
  * messages, fields and causes remain private.
  */
 export interface McpBackend<E extends Error> {
-  /** Authorize app and profile access before evaluating skill metadata. */
+  /** Authorize app and account access before evaluating skill metadata. */
   readonly listSkills: (
     input: Parameters<Executor["skills"]["list"]>[0],
     options?: CatalogReadOptions,
@@ -59,10 +59,7 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<AppSkillDocument, E>;
   /** Reauthorize input delivery using the current request before releasing a running tool. */
   readonly authorizeElicitation: (
-    input: Pick<
-      Parameters<Executor["tools"]["call"]>[0],
-      "app" | "tool" | "profile" | "expectedProfileRevision"
-    >,
+    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "tool" | "accounts">,
   ) => Effect.Effect<void, ElicitationFailed>;
   /** Apply IDs in storage before loading app metadata. [] selects none; omitted IDs add no restriction.
    * Hosts still enforce owner access; this filter is never an authorization grant.
@@ -72,9 +69,13 @@ export interface McpBackend<E extends Error> {
       /** Restrict the inventory to apps whose tools this caller may reach. */
       readonly toolsOnly?: boolean;
     },
-  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
-  /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
-  readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
+  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeDeployment">>, E>;
+  /**
+   * The caller's linked accounts for the app, by user requirement; skills use the same authority.
+   * App requirements are not listed: operations name `{ app: {}, user }` and the backend fills the
+   * app requirements from the app links.
+   */
+  readonly listAccounts: (input: McpTargetInput) => Effect.Effect<McpAppAccounts, E>;
   /** Authorize the app and its selected accounts before evaluating each catalog page. */
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],

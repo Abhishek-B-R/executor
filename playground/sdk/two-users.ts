@@ -40,28 +40,14 @@ export async function program() {
 
   // These owner IDs come from product auth, never end-user request fields.
   const aliceOwnedApp = await executor.apps.get({ app: aliceApp.id, owner: alice });
-  const aliceProfile = await executor.apps.profiles.create({
-    owner: alice,
-    subject: "alice",
-    idempotencyKey: "vercel",
-    app: aliceOwnedApp.id,
-    accounts: {},
-  });
   const bobOwnedApp = await executor.apps.get({ app: bobApp.id, owner: bob });
-  const bobProfile = await executor.apps.profiles.create({
-    owner: bob,
-    subject: "bob",
-    idempotencyKey: "vercel",
-    app: bobOwnedApp.id,
-    accounts: {},
-  });
 
-  // Each user connects their own account for their profile; completion selects it there.
+  // Each user connects their own account for their copy of the app.
   const aliceConnection = await executor.accountConnections.create({
     owner: alice,
-    target: { app: aliceOwnedApp.id, profile: aliceProfile.id, requirement: "vercel" },
+    target: { app: aliceOwnedApp.id, requirement: "vercel" },
   });
-  await executor.accountConnections.submit({
+  const aliceOwnedAccount = await executor.accountConnections.submit({
     connection: aliceConnection.id,
     owner: alice,
     method: "apiKey",
@@ -70,9 +56,9 @@ export async function program() {
   });
   const bobConnection = await executor.accountConnections.create({
     owner: bob,
-    target: { app: bobOwnedApp.id, profile: bobProfile.id, requirement: "vercel" },
+    target: { app: bobOwnedApp.id, requirement: "vercel" },
   });
-  await executor.accountConnections.submit({
+  const bobOwnedAccount = await executor.accountConnections.submit({
     connection: bobConnection.id,
     owner: bob,
     method: "apiKey",
@@ -85,14 +71,14 @@ export async function program() {
 
   const aliceProjects = await executor.tools.call({
     app: aliceOwnedApp.id,
-    profile: aliceProfile.id,
+    accounts: { app: {}, user: { vercel: [aliceOwnedAccount.id] } },
     tool: ToolName.make("listProjects"),
     kind: "query",
     input: {},
   });
   const bobProjects = await executor.tools.call({
     app: bobOwnedApp.id,
-    profile: bobProfile.id,
+    accounts: { app: {}, user: { vercel: [bobOwnedAccount.id] } },
     tool: ToolName.make("listProjects"),
     kind: "query",
     input: {},

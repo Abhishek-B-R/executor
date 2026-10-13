@@ -1,4 +1,4 @@
-import { hostedProfileHandlers } from "./profiles.ts";
+import { hostedAppAccountHandlers } from "./app-account-links.ts";
 import {
   AppGitOrigins,
   appManagementHandlers,
@@ -67,7 +67,7 @@ export const hostedHandlers = Layer.mergeAll(
   ),
   // Each host provides FrameworkDocumentation from its packaged authoring assets.
   frameworkHandlers(HostedFrameworkApi, HostedApi.identifier).pipe(Layer.provide(hostedAppAccess)),
-  hostedProfileHandlers,
+  hostedAppAccountHandlers,
   hostedScheduleHandlers,
   health,
   catalog,

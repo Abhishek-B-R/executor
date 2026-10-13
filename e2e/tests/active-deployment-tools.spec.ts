@@ -29,7 +29,7 @@ const source = (version: number) => [
     content: `
 import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({accounts:{}}, async()=>({tools: router({
+export default defineApp({}, async()=>({tools: router({
   guarded: mutation({input:object({})${version === 2 ? ",approval:always()" : ""}},async()=>({version:${version}})),
   review: mutation({input:object({}),approval:always()},async()=>({version:${version}}))
   ${version === 1 ? ",retired:mutation({input:object({})},async()=>({version:1}))" : ""},

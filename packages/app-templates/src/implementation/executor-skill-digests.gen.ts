@@ -2,18 +2,18 @@
 
 /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
 export const executorSkillDigests: Readonly<Record<string, string>> = {
-  "app-authoring/SKILL.md": "c1f87b852bf7b4fc4533970c1076be603f7566c8bc7686ef987776f708f39241",
-  "app-authoring/accounts.md": "8b11e1b66d94083557f2419a2c2dfddccecc1f336954bf579cbfb2b65bb73f65",
-  "app-authoring/deploy.md": "346e52d124bbf4ff5df8e9c460536eecb6dcf38e8659153b4b1f55a22904385b",
-  "app-authoring/events.md": "202bde87c2320af9706828063c6aaeeac0c9b8661971f610220f2a49293e3561",
-  "app-authoring/integrations.md": "9efd9b21b52065082e4659296a2b324074fead161871d071fc56eefb70062708",
+  "app-authoring/SKILL.md": "9ea602acf101a69300c8a502c897e4fe78fad611c6fd0851ab5938aac0b1d571",
+  "app-authoring/accounts.md": "79ff5338f09684bb033fa829a6ef56062d28c699c01f59d8ea9e99ecf35a8a3d",
+  "app-authoring/deploy.md": "61c21a56dc498504f4b96beb45c684a0172c02cb843658d2611484f1d9cff3c4",
+  "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
+  "app-authoring/integrations.md": "7713f0576c406e78c70361fb8e0fea729abd38c1423e95467b88d85bed44bc89",
   "app-authoring/starter.md": "3e5b2f55da9aed2a6c0ff95d4c1982d1da6aa206fd404d6b5f1fb0b7c2880077",
-  "app-authoring/storage.md": "da2f45549232df5adc778e37d57ae0d4e31a4c864361fb19c6b2fe2e10c64090",
-  "app-authoring/tools.md": "f9e22645a25b43e5caeac94e1d3c6523cde49256e7595987da2c0b7fb3a8d897",
-  "app-authoring/ui.md": "5484559c272464e1562eda2f7956f5fca41e1e22d104d71e412db9cd57911460",
-  "app-authoring/webhooks.md": "b7f43ad7af7fe1093cdc957cdec5f43bc98115d3c3237af1788cdd68d7fd9fce",
-  "app-authoring/workflows.md": "9e517eaf6f461ac07fd2d29a03f0d545e79cfcbcfedbed5b8432e7b41392257b",
-  "code-mode/SKILL.md": "de5382e88b60ae0116af95ba9c997d724ea1247f7c6c62ca3983962d5c8a72a3",
-  "executor/SKILL.md": "c8e8c0b94caecee934d314772589ad47ab9ba2b5016aef20b5fce3905312fa4b",
+  "app-authoring/storage.md": "f811677f7ff0a5bcf43bf5009cecf797a17cf862cec4ad5c7fde340994c818aa",
+  "app-authoring/tools.md": "641cc2301d56d31b20a4e91fc05ef15c9ff4f86deb701ff73bf3424d80a38a5a",
+  "app-authoring/ui.md": "a304e873bc31c3d865552e4205f9599650a9d5f01c14690f102ae51d79c5f67a",
+  "app-authoring/webhooks.md": "b23ac48b7ff1b34ce0c09c285e1c435650c71068bfa223b277aca68644ca7ffa",
+  "app-authoring/workflows.md": "7a711dac0803032f7ea7fdf1265defabc18d935d868d7058034fc94a8c9d9019",
+  "code-mode/SKILL.md": "a1fb5110a9d12613eee7097ca01369b2b64ea9ac9d3bd297dafc0f471132875f",
+  "executor/SKILL.md": "8e8ae6af79edec98ecb62a14e591ae46f15deed14832972bf0a92de46761b432",
   "executor/feedback.md": "11397bd260917e5a21e92897a19368d0426bf5944a7c081adc2c061d1ea797cd"
 };

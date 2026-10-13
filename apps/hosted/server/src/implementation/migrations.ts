@@ -13,6 +13,7 @@ import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
+import { migrateAppAccountLinks } from "./app-account-schema.ts";
 
 /**
  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
@@ -105,6 +106,9 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   }),
   // Additive: who may use each stored OAuth client; the running server never reads it.
   "8_oauth_client_access": migrateOAuthClientAccess,
+  // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
+  // the profiles.
+  "9_app_account_links": migrateAppAccountLinks,
 });
 
 /**

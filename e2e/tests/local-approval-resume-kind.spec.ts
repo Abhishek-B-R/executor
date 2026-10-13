@@ -12,7 +12,6 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { recordingService } from "../support/recording-service.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -72,7 +71,7 @@ layer(TestLive, { excludeTestServices: true })("Local approval resume kind", (it
               content: `import { defineApp, defineProvider, oauth2, query, mutation, object, router, ProviderError } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
 const record = (name) => fetch(${JSON.stringify(`${records.url}/records`)}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     save: ${tool("query", "save")},
     write: ${tool("mutation", "write")},
@@ -92,15 +91,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
               yield* api.request(agent, "DELETE", `/v1/accounts/${account}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
         const link = yield* body(
           Link,
           yield* api.request(agent, "POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           }),
         );
         const grant = {
@@ -131,7 +126,8 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           { ...grant, callbackUrl },
         );
         expect(completed.status, JSON.stringify(completed.body)).toBe(200);
-        account = (yield* body(Resource, completed)).id;
+        const connected = (yield* body(Resource, completed)).id;
+        account = connected;
 
         /**
          * Call the tool, then resume its approval after the service has ended the account's
@@ -143,9 +139,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
               records: (yield* records.saved).length,
               refreshes: (yield* issuer.metrics).refreshesIssued,
             };
+            // The call names no account; it uses the account linked to the app.
             const called = yield* api.request(agent, "POST", "/v1/tools/call", {
               app: app.id,
-              profile: profile.id,
               tool: name,
               ...(kind === undefined ? {} : { kind }),
               input: {},

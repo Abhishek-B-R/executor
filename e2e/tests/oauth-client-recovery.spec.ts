@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,6 +10,8 @@ import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { oauthRecoveryIssuer, recoveryClients } from "../support/oauth-recovery-issuer.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { enterClientDetails } from "../support/oauth-client-entry.ts";
@@ -59,7 +60,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client recovery", (it) =
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Recoverable OAuth",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -82,13 +83,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
             )
             .pipe(Effect.flatMap((response) => body(Setup, response)));
-        let profile = (yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`)).id;
         const connection = () =>
           api
-            .request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile,
-            })
+            .request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            )
             .pipe(Effect.flatMap((response) => body(Resource, response)));
         const started = yield* connection();
         const bad = yield* api.request(
@@ -210,21 +212,15 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             )
             .then(() => nameConnectedAccount(page, "Recovery account"))
             .then(() =>
-              page
-                .getByRole("radio", { name: "Recovery account", exact: true, checked: true })
-                .waitFor({ state: "visible" }),
+              linkedChoice(page, "Recoverable OAuth", "Recovery account").waitFor({
+                state: "visible",
+              }),
             ),
         );
-        profile = yield* Schema.decodeUnknownEffect(Schema.String)(
-          yield* browser.use("Read the selected account setup", (page) =>
-            page.evaluate(() => new URL(location.href).searchParams.get("profile")),
-          ),
-        );
-        const bindings = Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) });
-        savedAccount = (yield* body(
-          bindings,
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
-        )).accounts.service;
+        // Connecting from the app linked the new account to it.
+        const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
+        expect(linked).toHaveLength(1);
+        savedAccount = linked[0];
         expect(savedAccount).toBeDefined();
         // A client entered for one account signs in that account only; nobody else is offered it.
         expect(yield* setup()).toEqual({ mode: "client-required", clients: [] });
@@ -233,11 +229,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           Effect.gen(function* () {
             const started = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile,
-                account: savedAccount,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {
+                  account: savedAccount,
+                },
+              ),
             );
             const signIn = yield* body(
               Redirect,
@@ -252,11 +251,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           });
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile,
-            account: savedAccount,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {
+              account: savedAccount,
+            },
+          ),
         );
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
@@ -344,12 +346,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 ),
             ),
         );
-        expect(
-          (yield* body(
-            bindings,
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
-          )).accounts.service,
-        ).toBe(savedAccount);
+        // Reconnecting with a replacement client keeps the same account linked.
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          savedAccount,
+        ]);
         expect(yield* reconnectStart()).toBe(recoveryClients.replacement.clientId);
         yield* browser.checkpoint("Replacement succeeded without changing the account");
       }),

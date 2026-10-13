@@ -25,8 +25,8 @@ import { appFailureBootstrap } from "./ui-errors.ts";
  */
 export const appDocument = <E, R>(options: {
   readonly deployment: string;
-  readonly profile?: string | undefined;
-  readonly expectedProfileRevision?: number | undefined;
+  /** The account IDs the page runs with, by requirement. */
+  readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
   readonly origin: string;
   readonly accounts?: UiAccountNotice | undefined;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
@@ -68,8 +68,7 @@ export const appDocument = <E, R>(options: {
       });
     const context = JSON.stringify({
       deployment: options.deployment,
-      profile: options.profile,
-      expectedProfileRevision: options.expectedProfileRevision,
+      accounts: options.accountIds,
     }).replaceAll("<", "\\u003c");
     const telemetry = yield* CurrentTelemetryConfig;
     const attribute = (text: string) =>

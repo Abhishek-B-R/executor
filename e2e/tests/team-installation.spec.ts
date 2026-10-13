@@ -3,8 +3,8 @@
  * right after the team's durable workflow exists. The workflow runs the same job as well: it
  * waits for a fresh claim, finishes an attempt the request could not, and finds a finished job
  * done. Locally the workflow starts at once and often claims first, so both attempts then run
- * together; whatever the order, the team ends with one Executor app and one default profile per
- * manager.
+ * together; whatever the order, the team ends with one Executor app and one linked managed key
+ * per manager.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -52,7 +52,7 @@ layer(HostedLive, { excludeTestServices: true })("Team installation", (it) => {
         expect(inventory.apps.filter((item) => item.name === "Executor")).toEqual([
           expect.objectContaining({ id: app.id }),
         ]);
-        // Each manager gets exactly one default profile on that app.
+        // Each manager has exactly one linked managed key on that app.
         for (const manager of [actors.owner, actors.admin])
           expect((yield* managementApp(manager)).app.id).toBe(app.id);
       }),

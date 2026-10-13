@@ -130,7 +130,7 @@ function ResumedConnectionDialog({
               void navigate({
                 to: "/org/$organizationSlug/apps/$appId",
                 params: { organizationSlug, appId: connection.target.app },
-                search: { view: "accounts", profile: connection.target.profile },
+                search: { view: "accounts" },
                 replace: true,
               });
             }}
@@ -159,7 +159,7 @@ export function ConnectionEntry({
     void navigate({
       to: "/org/$organizationSlug/apps/$appId",
       params: { organizationSlug, appId: connection.target.app },
-      search: { ...search, view: "accounts", profile: connection.target.profile },
+      search: { ...search, view: "accounts" },
       replace: true,
     });
   }, [connection, client, navigate, organizationSlug]);

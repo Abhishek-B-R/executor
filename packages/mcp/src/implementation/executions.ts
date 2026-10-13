@@ -5,6 +5,7 @@ import {
   ElicitationFailed,
   toolCallSpan,
   ToolInputs,
+  invocationAccounts,
   type ToolCallResult,
   type ToolPending,
 } from "@executor-js/sdk/core";
@@ -73,19 +74,22 @@ const endedRetentionMs = 30 * 60 * 1000;
 /** Bounds that memory however many requests a host issues. */
 const maxEnded = 4096;
 
-/** The asking call's identity. A call without a profile omits the keys; MCP results are JSON. */
+/** Whether a call runs with no account in either scope. */
+const accountFree = (accounts: NonNullable<InteractionTool["accounts"]>) =>
+  Object.keys(accounts.app).length === 0 && Object.keys(accounts.user ?? {}).length === 0;
+
+/**
+ * The asking call's identity. A call without accounts in either scope omits the key; MCP results
+ * are JSON.
+ */
 const interactionTool = (call: {
   readonly app: InteractionTool["app"];
   readonly tool: InteractionTool["tool"];
-  readonly profile?: InteractionTool["profile"] | undefined;
-  readonly expectedProfileRevision?: InteractionTool["expectedProfileRevision"] | undefined;
+  readonly accounts?: InteractionTool["accounts"] | undefined;
 }): InteractionTool => ({
   app: call.app,
   tool: call.tool,
-  ...(call.profile === undefined ? {} : { profile: call.profile }),
-  ...(call.expectedProfileRevision === undefined
-    ? {}
-    : { expectedProfileRevision: call.expectedProfileRevision }),
+  ...(call.accounts === undefined || accountFree(call.accounts) ? {} : { accounts: call.accounts }),
 });
 
 /**
@@ -410,8 +414,7 @@ export const makeExecutions = (
               interactionTool({
                 app: request.invocation.app,
                 tool: request.invocation.tool,
-                profile: request.invocation.profile,
-                expectedProfileRevision: request.invocation.profileRevision,
+                accounts: invocationAccounts(request.invocation),
               }),
             ),
           },
@@ -515,7 +518,7 @@ export const makeExecutions = (
         listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
-        listTargets: (input) => exchange((backend) => backend.listTargets(input)),
+        listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),
         listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
         searchableTools: (input, options) =>
           exchange((backend) => backend.searchableTools(input, options)),
@@ -851,8 +854,7 @@ export const makeExecutions = (
                       interactionTool({
                         app: pending.request.invocation.app,
                         tool: pending.request.invocation.tool,
-                        profile: pending.request.invocation.profile,
-                        expectedProfileRevision: pending.request.invocation.profileRevision,
+                        accounts: invocationAccounts(pending.request.invocation),
                       }),
                     ),
                   })

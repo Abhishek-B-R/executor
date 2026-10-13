@@ -112,7 +112,7 @@ export function DashboardEntryPending({
 export function OrganizationLookupError({ retry }: { readonly retry: () => void }) {
   return (
     <PageFrame>
-      <PageHeader title="Apps" description="Your installed apps and their selected accounts." />
+      <PageHeader title="Apps" description="Your installed apps and their linked accounts." />
       <div role="alert" className="space-y-3 rounded-lg border p-4 text-sm">
         <h2 className="font-medium">Unable to load your organizations</h2>
         <p>Try again to open your workspace.</p>

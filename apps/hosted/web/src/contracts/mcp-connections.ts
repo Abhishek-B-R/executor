@@ -35,7 +35,7 @@ export const saveMcpConnectionAtom = Atom.family((organization: OrganizationRefe
           })
         : yield* client.mcpConnections.create({ params: { organization }, payload: input });
       acknowledge(get, mcpConnectionsAtom(organization), (current) => upsert(current, saved));
-      // Saving can create profiles for bare accounts; their labels come from the inventory.
+      // Saving can link accounts to apps; their labels come from the inventory.
       get.refresh(resourceInventoryAtom(organization));
       return saved;
     }),

@@ -1,7 +1,7 @@
 /**
  * A self-host or local process keeps at most its configured number of app Workers loaded, however
- * many apps and account selections are called. Each Worker is named by app, build and account
- * selection; an authored module reports a per-isolate identifier from module state, so a Worker
+ * many apps and accounts are called. Each Worker is named by app, build and the accounts a call
+ * uses; an authored module reports a per-isolate identifier from module state, so a Worker
  * the runtime unloaded and loaded again reports a new identifier and no earlier calls.
  */
 import { expect, layer } from "@effect/vitest";
@@ -12,12 +12,18 @@ import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
-import { connectLocalAccount, createProfile } from "../support/profiles.ts";
+import {
+  connectionsPath,
+  connectLocalAccount,
+  linkAccount,
+  linkedAccountIds,
+} from "../support/app-accounts.ts";
+import { linkLocal } from "../support/local-links.ts";
 import { requestGate } from "../support/request-gate.ts";
 import { appsManifest, databaseFiles } from "../support/apps-release.ts";
 import { appWorkerBudgetLimit as limit, appWorkerIdleSeconds, scenarios } from "../test-plan.ts";
 
-/** Apps and account selections beyond the limit: two apps with three accounts each. */
+/** Apps and accounts beyond the limit: two apps with three accounts each. */
 const beyondLimit = { apps: 2, accountsPerApp: 3, database: false };
 /**
  * Apps with databases beyond the limit, each running its queries in its own data facet. A tool
@@ -46,7 +52,7 @@ const App = Schema.Struct({
   }),
 });
 const HostedApp = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
+const SourceStatus = Schema.Struct({ account: Schema.String, status: Schema.String });
 const Inventory = Schema.Struct({
   apps: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
 });
@@ -79,13 +85,13 @@ let isolate;
 let calls = 0;
 let held;
 let dropped;
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({
     probe: query({ input: object({ gate: string().optional() }) }, async (ctx, input) => {
       isolate ??= crypto.randomUUID();
       calls++;
       if (input.gate !== undefined) await (await fetch(input.gate)).text();
-      return { isolate, calls, token: ctx.accounts.service.fields.token };
+      return { isolate, calls, token: ctx.user.accounts.service.fields.token };
     }),
     seed: query({ input: object({}) }, async (ctx) => {
       for (const key of ["first", "second"])
@@ -140,10 +146,10 @@ interface Selection {
 
 /**
  * Wait until the organization's own setup stops calling app Workers. Once the actors join, member
- * setup installs the default Executor app with a profile for the owner and one for the admin, and
- * profile setup then calls that app's Workers in the background. They count against the same limit
- * as the scenario's Workers and unload whichever of those is idle, so the scenario starts once both
- * profiles are set up.
+ * setup installs the default Executor app and links a managed key to it for the owner and for the
+ * admin. Each link sets that key up as the app's webhook source, which calls the app's Workers in
+ * the background. They count against the same limit as the scenario's Workers and unload whichever
+ * of those is idle, so the scenario starts once both sources are set up.
  */
 const organizationSetUp = Effect.gen(function* () {
   const api = yield* Api,
@@ -156,24 +162,33 @@ const organizationSetUp = Effect.gen(function* () {
         const app = inventory.apps.find((app) => app.name === "Executor");
         return app === undefined
           ? Effect.fail(new Error("The default Executor app is not installed yet"))
-          : api.request(actor, "GET", `${prefix}/apps/${app.id}/profiles`);
+          : Effect.succeed(`${prefix}/apps/${app.id}`);
       }),
-      Effect.flatMap((response) => body(Schema.Array(SetupStatus), response)),
-      Effect.flatMap(([profile]) =>
-        profile === undefined || profile.status === "pending"
-          ? Effect.fail(new Error("The default profile has not been set up"))
-          : Effect.succeed(profile.status),
+      Effect.flatMap((path) =>
+        Effect.gen(function* () {
+          const [key] = yield* linkedAccountIds(actor, path);
+          if (key === undefined)
+            return yield* Effect.fail(new Error("The managed key is not linked yet"));
+          const sources = yield* body(
+            Schema.Array(SourceStatus),
+            yield* api.request(actor, "GET", `${path}/webhook-sources`),
+          );
+          const source = sources.find((source) => source.account === key);
+          return source === undefined || source.status === "pending"
+            ? yield* Effect.fail(new Error("The managed key's webhook source has not been set up"))
+            : source.status;
+        }),
       ),
       Effect.retry({
         schedule: Schedule.spaced("200 millis"),
         times: 100,
       }),
     );
-    expect(status, "the default Executor profile was set up").toBe("ready");
+    expect(status, "the managed key's webhook source was set up").toBe("ready");
   }
 });
 
-/** Self-host: apps, accounts and profiles through one organization's routes. */
+/** Self-host: apps and the accounts connected from them through one organization's routes. */
 const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -199,11 +214,13 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const path = `${prefix}/apps/${app.id}`;
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        const profile = yield* createProfile(actors.owner, path);
-        const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        });
+        // Connecting from the app links the new account to it for the owner.
+        const pending = yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(path, "user", "service"),
+          {},
+        );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const saved = yield* api.request(
           actors.owner,
@@ -216,26 +233,37 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${created}`).pipe(Effect.orDie),
         );
-        // Profile setup discovers the app in the background; wait so it is done before the calls.
-        yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-          Effect.flatMap((response) => body(SetupStatus, response)),
+        // Linking sets the account up as a webhook source in the background, which discovers the
+        // app; wait so it is done before the calls.
+        const setup = api.request(actors.owner, "GET", `${path}/webhook-sources`).pipe(
+          Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
+          Effect.map((sources) => sources.find((source) => source.account === created)?.status),
           Effect.flatMap((current) =>
-            current.status !== "pending"
+            current !== undefined && current !== "pending"
               ? Effect.void
-              : Effect.fail(new Error("Profile setup has not finished")),
+              : Effect.fail(new Error("Webhook source setup has not finished")),
           ),
           Effect.retry({
             schedule: Schedule.spaced("200 millis"),
             times: 100,
           }),
         );
+        yield* setup;
+        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
+        // another replaces it. Link this selection's account, which changes nothing when it is
+        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
-          api
-            .request(actors.owner, "POST", `${path}/tools/call`, {
-              profile: profile.id,
-              tool: name,
-              input,
-            })
+          linkAccount(actors.owner, path, "service", created)
+            .pipe(
+              Effect.provideService(Api, api),
+              Effect.andThen(setup),
+              Effect.andThen(
+                api.request(actors.owner, "POST", `${path}/tools/call`, {
+                  tool: name,
+                  input,
+                }),
+              ),
+            )
             .pipe(
               Effect.tap((response) =>
                 Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
@@ -256,7 +284,7 @@ const hostedSelections = ({ apps, accountsPerApp, database }: Workload) =>
     return selections;
   });
 
-/** Local: apps, accounts and profiles through the agent API. */
+/** Local: apps and accounts through the agent API, each account linked to its app before a call. */
 const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -289,7 +317,7 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       const { app } = yield* body(App, deployed);
       const path = `/v1/apps/${app.id}`;
       const accounts: string[] = [];
-      // Remove the app before the accounts its profiles select.
+      // Remove the app before the accounts linked to it.
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           expect((yield* api.request(agent, "DELETE", path)).status).toBe(200);
@@ -301,43 +329,51 @@ const localSelections = ({ apps, accountsPerApp, database }: Workload) =>
       );
       for (let account = 0; account < accountsPerApp; account++) {
         const token = `synthetic-budget-${index}-${account}`;
-        const profile = yield* createProfile(agent, path, {
-          owner,
-          subject: "local",
-        });
-        // Connecting the account for the profile selects it there.
+        // Connecting the account from the app links it there.
         const connected = yield* connectLocalAccount(agent, {
           app: app.id,
-          profile: profile.id,
           requirement: "service",
           method: "key",
           label: name,
           fields: { token },
         });
-        accounts.push(connected.id);
-        // Profile setup calls the selection's Worker in the background. Wait until it is done, so
-        // its calls cannot change which Workers were used most recently while the scenario runs.
-        const setup = yield* api.request(agent, "GET", `${path}/profiles/${profile.id}`).pipe(
-          Effect.flatMap((response) => body(SetupStatus, response)),
+        const id = connected.id;
+        accounts.push(id);
+        // Connecting from the app sets the account up as the app's webhook source, which calls its
+        // Worker in the background. Wait until it is done, so its calls cannot change which Workers
+        // were used most recently while the scenario runs.
+        const setup = api.request(agent, "GET", `${path}/webhook-sources`).pipe(
+          Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
+          Effect.map((sources) => sources.find((source) => source.account === id)?.status),
           Effect.flatMap((current) =>
-            current.status !== "pending"
-              ? Effect.succeed(current.status)
-              : Effect.fail(new Error("Profile setup has not finished")),
+            current !== undefined && current !== "pending"
+              ? Effect.succeed(current)
+              : Effect.fail(new Error("Webhook source setup has not finished")),
           ),
           Effect.retry({
             schedule: Schedule.spaced("200 millis"),
             times: 100,
           }),
         );
-        expect(setup, `profile setup of app ${index} account ${account}`).toBe("ready");
+        expect(yield* setup, `webhook source setup of app ${index} account ${account}`).toBe(
+          "ready",
+        );
+        // Calls cannot choose accounts: a call uses the account linked to the app, and linking
+        // another replaces it. Link this selection's account, which changes nothing when it is
+        // linked already, and wait for its webhook source as above.
         const query = (name: string, input: object = {}) =>
-          api
-            .request(agent, "POST", "/v1/tools/call", {
-              app: app.id,
-              profile: profile.id,
-              tool: name,
-              input,
-            })
+          linkLocal(agent, app.id, "service", id)
+            .pipe(
+              Effect.provideService(Api, api),
+              Effect.andThen(setup),
+              Effect.andThen(
+                api.request(agent, "POST", "/v1/tools/call", {
+                  app: app.id,
+                  tool: name,
+                  input,
+                }),
+              ),
+            )
             .pipe(
               Effect.tap((response) =>
                 Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
@@ -370,7 +406,7 @@ const observe = (selection: Selection, gate?: string) =>
     );
 
 /**
- * More apps and account selections than the limit: after every selection has been called, a
+ * More apps and accounts than the limit: after every selection has been called, a
  * sweep over all of them finds at most `limit` still loaded, the most recently used ones stay
  * loaded, and every Worker that was unloaded loads again with the right credential. A call that
  * loads `workersPerCall` Workers leaves room for `limit / workersPerCall` recent selections.
@@ -485,9 +521,10 @@ const releaseKeptPastItsLimit = (selections: ReadonlyArray<Selection>) =>
 const replacedFacets = { apps: 1, accountsPerApp: 2, database: true };
 
 /**
- * An app with a database runs one data facet at a time. When a call selects other accounts, the
- * facet it replaces is unloaded rather than kept for the rest of the process, so selecting the
- * first accounts again starts a fresh Worker with its own credential.
+ * An app with a database runs one data facet at a time. When a call uses other accounts, because
+ * another was linked in place of the first, the facet it replaces is unloaded rather than kept for
+ * the rest of the process, so linking the first account again starts a fresh Worker with its own
+ * credential.
  */
 const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
@@ -510,8 +547,8 @@ const supervisorEvicted = "20 seconds";
 
 /**
  * The runtime evicts an idle data supervisor but keeps the facet Workers it loaded. Calls that
- * alternate account selections with the supervisor evicted in between still unload each replaced
- * facet, so the app keeps one facet Worker rather than one per account selection ever used.
+ * alternate accounts with the supervisor evicted in between still unload each replaced facet, so
+ * the app keeps one facet Worker rather than one per account ever used.
  */
 const replacedFacetUnloadedAfterEviction = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {

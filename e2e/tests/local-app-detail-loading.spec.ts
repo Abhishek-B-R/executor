@@ -36,7 +36,7 @@ layer(TestLive, { excludeTestServices: true })("Local app navigation", (it) => {
                   path: "index.ts",
                   content: `
 import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     hello: query({ description: "A simple greeting", input: object({}) }, async () => "Hello"),
   })

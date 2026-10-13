@@ -32,8 +32,8 @@ import {
   importAccount,
   importArtifact,
   importIntegration,
-  importProfile,
   importToolkit,
+  linkConnectionAccount,
   mapLookup,
   type ItemContext,
 } from "./items.ts";
@@ -128,10 +128,14 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               ? { status: "skipped", reason: found.reason ?? "There is nothing to import." }
               : { status: "failed", reason: found.reason ?? "It could not be imported." };
       if (item.kind !== "connection") return asResult(row(item.kind));
-      // A connection is imported once its account and its profile are.
+      // A connection is imported once its account is saved and linked to its app, which its
+      // `profile` row records (see `mapLookup`). A row from before profiles were removed names
+      // its profile; the account it selected is the connection's result.
       const account = row("connection");
       if (account?.status === "failed") return asResult(account);
-      return asResult(row("profile")) ?? (account === undefined ? null : asResult(account));
+      const linked = row("profile");
+      if (linked?.status === "imported" && linked.v2_kind === "profile") return asResult(account);
+      return asResult(linked) ?? (account === undefined ? null : asResult(account));
     };
 
     const previewOf = (
@@ -294,8 +298,8 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           (candidate) => candidate.kind === key.kind && candidate.id === key.id,
         );
         if (planned === undefined) return yield* new V1ImportItemNotFound();
-        // A connection's attempt is its profile row: a public app's connection and one whose
-        // account failed record no account row.
+        // A connection's attempt is its `profile` row, which records its link: a public app's
+        // connection and one whose account failed record no account row.
         for (const dependency of planned.dependsOn)
           if (
             (yield* store.find(
@@ -309,6 +313,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           executor: request.executor,
           connections: request.connections,
           store,
+          sql: request.sql,
           source,
           snapshot,
           target,
@@ -424,9 +429,21 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               integration === undefined
                 ? undefined
                 : yield* store.find("integration", integration.row_id);
-            const profileRow = yield* store.find("profile", key.id);
-            if (profileRow?.status === "imported" && profileRow.v2_id !== null)
-              return { status: "imported" as const, v2Id: profileRow.v2_id };
+            // The `profile` row records the connection's link (see `mapLookup`). One from before
+            // profiles were removed names its profile; the account it selected is the result.
+            const linkedRow = yield* store.find("profile", key.id);
+            if (linkedRow?.status === "imported" && linkedRow.v2_id !== null) {
+              const saved = yield* store.find("connection", key.id);
+              return {
+                status: "imported" as const,
+                v2Id:
+                  linkedRow.v2_kind === "profile" &&
+                  saved?.status === "imported" &&
+                  saved.v2_id !== null
+                    ? saved.v2_id
+                    : linkedRow.v2_id,
+              };
+            }
             return yield* Effect.gen(function* () {
               if (!plan.ok) return yield* new ItemFailed({ reason: plan.reason });
               if (appRow?.status !== "imported" || appRow.v2_id === null)
@@ -435,7 +452,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
                 owner,
                 app: appRow.v2_id as Parameters<typeof executor.apps.get>[0]["app"],
               });
-              // A public app needs no account or profile. When the app takes accounts, a
+              // A public app needs no account or link. When the app takes accounts, a
               // connection without credentials gets an account of the app's fixed ones.
               if (
                 plan.value.access.kind === "none" &&
@@ -448,10 +465,10 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               const accountRow = yield* store.find("connection", key.id);
               const account =
                 accountRow?.status === "imported" && accountRow.v2_id !== null
-                  ? (accountRow.v2_id as Parameters<typeof importProfile>[3])
+                  ? (accountRow.v2_id as Parameters<typeof linkConnectionAccount>[2])
                   : yield* importAccount(context, plan.value, app, record("connection", hash));
-              const profile = yield* importProfile(context, row, app, account);
-              const result: MapResult = { status: "imported", v2Kind: "profile", v2Id: profile };
+              yield* linkConnectionAccount(context, app, account);
+              const result: MapResult = { status: "imported", v2Kind: "account", v2Id: account };
               yield* record("profile", hash)(result);
               return outcome(result);
             }).pipe(Effect.catch(failed("profile", hash)));
@@ -507,7 +524,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               yield* record("toolkit", hash)(result);
               return outcome(result);
             }
-            // The connection follows the apps and profiles imported since; saving it again is safe.
+            // The connection follows the apps and accounts imported since; saving it again is safe.
             return yield* importToolkit(context, toolkit).pipe(
               Effect.tap(record("toolkit", hash)),
               Effect.map(outcome),

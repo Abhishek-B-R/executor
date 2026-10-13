@@ -16,14 +16,14 @@ import { appsManifest } from "../support/apps-release.ts";
 import { isPreviousServerAnswer, previousServerAnswers } from "../support/release-cb81bce6b.ts";
 import { scenarios } from "../test-plan.ts";
 
-const source = `import { defineApp, interval, mutation, object, string, router } from "apps";
+const source = `import { defineApp, userInterval, mutation, object, string, router } from "apps";
 const publish = mutation(
   { input: object({ title: string() }), approval: () => "user-approval" },
   async (_, input) => ({ published: input.title }),
 );
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ publish }),
-  schedules: { nightly: interval({ minutes: 1 }, publish, { title: "From the schedule" }) },
+  schedules: { nightly: userInterval({ minutes: 1 }, publish, { title: "From the schedule" }) },
 }));`;
 // Approving `fails` resumes the saved call, which throws.
 const failingSource = `import { defineApp, mutation, object, router } from "apps";
@@ -33,7 +33,7 @@ const fails = mutation(
     throw new Error("The service rejected the approved write");
   },
 );
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ fails }) }));`;
+export default defineApp({}, async () => ({ tools: router({ fails }) }));`;
 const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
@@ -68,7 +68,7 @@ const previousServerCopy: Record<string, string> = {
   cancelled: "Cancelled. Executor will not resume this saved call.",
   expired: "This request expired, so Executor will not resume this saved call.",
   "context-changed":
-    "The app, profile or accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
+    "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
   "already-consumed": "This request was already answered.",
   unavailable: "This request has expired, was handled, or is no longer running.",
 };

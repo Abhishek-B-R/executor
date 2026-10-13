@@ -112,15 +112,18 @@ const secretValues = (value: unknown, found: Set<string>): Set<string> => {
 };
 
 /**
- * Every credential field value of a slot-to-account record, longest first. Accepts both resolved
- * host accounts and bound author accounts; each account keeps its credential values in `fields`.
+ * Every credential field value of an invocation's accounts by scope, longest first. The accounts
+ * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
+ * each account keeps its credential values in `fields`.
  */
 export const accountFieldSecrets = (accounts: unknown) => {
   const found = new Set<string>();
   if (Predicate.isObject(accounts))
-    for (const slot of Object.values(accounts))
-      for (const account of Array.isArray(slot) ? slot : [slot])
-        if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
+    for (const scope of [accounts["app"], accounts["user"]])
+      if (Predicate.isObject(scope))
+        for (const slot of Object.values(scope))
+          for (const account of Array.isArray(slot) ? slot : [slot])
+            if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
   return [...found].sort((a, b) => b.length - a.length);
 };
 

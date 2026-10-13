@@ -67,7 +67,7 @@ export function ConnectionFields({
           <Link
             to="/org/$organizationSlug/apps/$appId"
             params={{ organizationSlug, appId: connection.target.app }}
-            search={{ view: "accounts", profile: connection.target.profile }}
+            search={{ view: "accounts" }}
           >
             Back to app
           </Link>
@@ -93,7 +93,6 @@ export function ConnectionFields({
             organizationSlug,
             connection: connection.id,
             app: connection.target.app,
-            profile: connection.target.profile,
             redirectUri: value.redirectUri,
             ...(connection.reconnectAccount ? { reconnect: true } : {}),
             manualClient: value.manualClient,

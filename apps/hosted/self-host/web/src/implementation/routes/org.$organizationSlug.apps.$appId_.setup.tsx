@@ -1,4 +1,3 @@
-import { parseSetupSearch } from "@executor-js/hosted-web/contracts/navigation";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { parseAppParams } from "@executor-js/hosted-web/route-params";
 
@@ -13,12 +12,11 @@ import { parseAppParams } from "@executor-js/hosted-web/route-params";
  */
 export const Route = createFileRoute("/org/$organizationSlug/apps/$appId_/setup")({
   params: { parse: parseAppParams },
-  validateSearch: parseSetupSearch,
-  beforeLoad: ({ params, search }) => {
+  beforeLoad: ({ params }) => {
     throw redirect({
       to: "/org/$organizationSlug/apps/$appId",
       params,
-      search: { view: "accounts", profile: search.profile },
+      search: { view: "accounts" },
       replace: true,
     });
   },

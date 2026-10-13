@@ -250,7 +250,7 @@ export function DisconnectAccountForm<E>({
   );
 }
 
-/** Account selections are edited on the app itself. */
+/** Links are managed on the app itself. */
 export function AccountApps({ apps }: { readonly apps: readonly App[] }) {
   const { AppLink } = useDashboard();
   return apps.length === 0 ? (

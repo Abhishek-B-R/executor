@@ -8,11 +8,11 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 /** The service's own words: an RFC 6749 error response, or the text of any other error body. */
@@ -59,7 +59,7 @@ const resourceAppFiles = (name: string, origin: string) => [
     path: "index.ts",
     content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(origin)}, scopes: ["openid", "read"] }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({
    read: query({ input: object({}) }, async ({ fetch }) => {
   const result = await fetch(${JSON.stringify(`${origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
   return result.json();
@@ -141,13 +141,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -184,7 +185,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             }
             return {
               app,
-              profile,
               connection,
               completed,
               failure: yield* body(Failure, completed),
@@ -450,13 +450,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           );
           const started = yield* api.request(
             actors.owner,
@@ -593,7 +594,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             actors.owner,
             "POST",
             `${prefix}/apps/${result.app.id}/tools/call`,
-            { profile: result.profile.id, tool: "read", kind: "query", input: {} },
+            { tool: "read", kind: "query", input: {} },
           );
           expect(read.status, `${scenario.name}: ${JSON.stringify(read.body)}`).toBe(200);
           expect((yield* body(Echo, read)).authorization, scenario.name).toBe(
@@ -623,7 +624,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             actors.owner,
             "POST",
             `${prefix}/apps/${result.app.id}/tools/call`,
-            { profile: result.profile.id, tool: "read", kind: "query", input: {} },
+            { tool: "read", kind: "query", input: {} },
           );
           expect((yield* issuer.metrics).refreshes, scenario.name).toBe(refreshes + 1);
           expect(read.status, `${scenario.name}: ${JSON.stringify(read.body)}`).toBe(200);

@@ -31,9 +31,10 @@ import type { Target } from "./platform.ts";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import {
   applyLegacyStatements,
+  LegacyDatabase,
+  legacyDatabase,
   LegacyResults,
   LegacyStatements,
-  productDatabase,
 } from "./legacy-storage.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
@@ -481,12 +482,19 @@ export const startManagedServer = (
           );
           if (!declared || target.metadata.target === "cloud")
             return HttpServerResponse.empty({ status: 403 });
-          const database = productDatabase(env.EXECUTOR_DATA_DIR, target.metadata.target);
           const body = yield* request.json.pipe(
             Effect.flatMap(
-              Schema.decodeUnknownEffect(Schema.Struct({ statements: LegacyStatements })),
+              Schema.decodeUnknownEffect(
+                Schema.Struct({ statements: LegacyStatements, database: LegacyDatabase }),
+              ),
             ),
           );
+          const database = legacyDatabase(
+            env.EXECUTOR_DATA_DIR,
+            target.metadata.target,
+            body.database,
+          );
+          if (database === undefined) return HttpServerResponse.empty({ status: 403 });
           // Hold the lifecycle gate so no product generation can open the database meanwhile.
           const rows = yield* gate.withPermits(1)(
             stop.pipe(

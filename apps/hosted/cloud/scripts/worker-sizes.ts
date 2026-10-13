@@ -483,7 +483,7 @@ const report = (
         "A dynamic `import()` does not help: its chunk is still uploaded.",
       "",
       "- Move rarely used code to another Worker behind a service binding, as `dashboard`, " +
-        "`formatter` and `mcp-server` do for the API Worker.",
+        "`formatter`, `authoring` and `mcp-server` do for the API Worker.",
       "- Serve large text or data as static assets or from storage instead of bundling it as JavaScript.",
       "- Remove duplicate copies of a package and import narrower entry points.",
       "",

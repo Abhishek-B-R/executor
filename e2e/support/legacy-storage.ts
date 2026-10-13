@@ -63,6 +63,25 @@ export class LegacyStatementFailed extends Schema.TaggedError<LegacyStatementFai
 export const productDatabase = (dataDirectory: string, target: "self-host" | "local") =>
   `${dataDirectory}/${target === "self-host" ? "hosted.pglite" : "executor.pglite"}`;
 
+/**
+ * Which database a write targets. Local keeps MCP connections and grants in a separate MCP auth
+ * database; self-host keeps them in its product database.
+ */
+export const LegacyDatabase = Schema.Literals(["product", "mcp-auth"]);
+export type LegacyDatabase = typeof LegacyDatabase.Type;
+
+/** The targeted database inside a runner-owned data directory, if the target has it. */
+export const legacyDatabase = (
+  dataDirectory: string,
+  target: "self-host" | "local",
+  database: LegacyDatabase,
+) =>
+  database === "product"
+    ? productDatabase(dataDirectory, target)
+    : target === "local"
+      ? `${dataDirectory}/mcp-auth.pglite`
+      : undefined;
+
 /** Runner side: the envelope the product decrypts with `key`, the hex key it was given. */
 const seal = (key: string, { id, value }: typeof LegacySealed.Type.sealed, index: number) =>
   Effect.gen(function* () {
@@ -195,18 +214,22 @@ export const applyLegacyStatements = (
   );
 
 /**
- * Scenario side: stop the product, apply the statements, and leave it stopped.
+ * Scenario side: stop the product, apply the statements to one of its databases, and leave it
+ * stopped.
  * Start it with `serverControl("start")` so the current server boots over the written state.
  */
-export const legacyStorage = (statements: typeof LegacyStatements.Type) =>
+export const legacyStorage = (
+  statements: typeof LegacyStatements.Type,
+  database: LegacyDatabase = "product",
+) =>
   Effect.gen(function* () {
     const target = yield* Target,
       evidence = yield* Evidence;
     if (target.metadata.target === "cloud")
       return yield* Effect.die("Legacy storage requires a runner-owned product database");
     return yield* evidence.step(
-      `Legacy storage write (${statements.length} statements)`,
-      controlRequest("storage/legacy", 200, { statements }).pipe(
+      `Legacy storage write to the ${database} database (${statements.length} statements)`,
+      controlRequest("storage/legacy", 200, { statements, database }).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LegacyResults))),
         Effect.orDie,
       ),

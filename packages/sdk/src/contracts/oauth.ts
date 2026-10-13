@@ -1013,24 +1013,50 @@ export const OAuthReconnectRequired = UserFacingError.define({
      */
     reason: Schema.optional(Schema.Literals(["renewal_interrupted", "scope_exceeded"])),
     cause: Schema.optional(OAuthFailureCause),
+    /**
+     * The app requirement the account is linked to as an app link, when the app uses it as its own
+     * account rather than the caller's: someone who can edit the app must reconnect it.
+     */
+    appRequirement: Schema.optional(Schema.String),
   },
-  recorded: ({ reason, cause }) => oauthRecorded("An account needs to reconnect", reason, cause),
-  presentation: ({ reason, cause }) =>
+  recorded: ({ reason, cause, appRequirement }) =>
+    oauthRecorded(
+      appRequirement === undefined
+        ? "An account needs to reconnect"
+        : `The app's ${appRequirement} account needs to reconnect`,
+      reason,
+      cause,
+    ),
+  presentation: ({ reason, cause, appRequirement }) =>
     withCause(
       {
-        title: "An account needs to reconnect",
+        title:
+          appRequirement === undefined
+            ? "An account needs to reconnect"
+            : `The app’s “${appRequirement}” account needs to reconnect`,
         description:
-          reason === "renewal_interrupted"
+          (reason === "renewal_interrupted"
             ? "Executor stopped while renewing this account’s access, before it could save the result. The service no longer accepts the saved sign-in, most likely because that renewal had already replaced it."
             : reason === "scope_exceeded"
               ? "Renewing this account’s access returned more access than this Executor instance allows for its own OAuth client, so Executor stopped using this sign-in. When the instance’s client supports revocation, Executor also asks the service to revoke that access."
-              : "The saved sign-in can no longer be used for this account.",
-        recovery: {
-          action:
-            "Open the app’s Accounts tab and reconnect the affected account, then return to Tools.",
-          instructions:
-            "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and profile bindings, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
-        },
+              : "The saved sign-in can no longer be used for this account.") +
+          (appRequirement === undefined
+            ? ""
+            : " The app uses this account for everyone, so someone who can edit the app must reconnect it."),
+        recovery:
+          appRequirement === undefined
+            ? {
+                action:
+                  "Open the app’s Accounts tab and reconnect the affected account, then return to Tools.",
+                instructions:
+                  "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and app links, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
+              }
+            : {
+                action:
+                  "Ask someone who can edit this app to reconnect the app’s account from its Accounts tab.",
+                instructions:
+                  "The account is linked to the app for everyone for this requirement, not linked by the caller. Tell the user someone who can edit the app must reconnect it; a caller cannot replace or reconnect it. Do not link another account as a workaround. Retry once it has been reconnected.",
+              },
       },
       cause,
     ),

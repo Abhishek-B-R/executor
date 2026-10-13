@@ -85,8 +85,10 @@ export { protocol7 } from "./protocols/7.ts";
 export { protocol8 } from "./protocols/8.ts";
 export { protocol9 } from "./protocols/9.ts";
 export { protocol10 } from "./protocols/10.ts";
+export { protocol11 } from "./protocols/11.ts";
+export { protocol12 } from "./protocols/12.ts";
 export {
-  current as protocol11,
+  current as protocol13,
   AccountCheckCommand,
   CredentialHost,
   MigrateCommand,
@@ -125,8 +127,11 @@ export { McpError, SkillLoadFailed } from "./protocols/current.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
+  DeclaredAccountSlot,
+  DeclaredAccountSlots,
   ResolvedAccount,
   ResolvedAccounts,
+  ResolvedAccountSlots,
   TrustedToolApproval,
   InvocationDeadline,
   HostedTool,
@@ -171,12 +176,31 @@ export const HostAccount = Schema.Struct({
 });
 export type HostAccount = typeof HostAccount.Type;
 
-/** An invocation's selections as the host sends them to the runner; see `HostAccount`. */
-export const HostAccounts = Schema.Record(
+/** One scope's accounts as the host sends them to the runner; see `HostAccount`. */
+export const HostAccountSlots = Schema.Record(
   Schema.NonEmptyString,
   Schema.Union([HostAccount, Schema.Array(HostAccount)]),
 );
+export type HostAccountSlots = typeof HostAccountSlots.Type;
+
+/**
+ * An invocation's accounts by scope as the host sends them to the runner; see `HostAccount`.
+ * `user` is absent for work without a caller, as in `ResolvedAccounts`.
+ */
+export const HostAccounts = Schema.Struct({
+  app: HostAccountSlots,
+  user: Schema.optionalKey(HostAccountSlots),
+});
 export type HostAccounts = typeof HostAccounts.Type;
+
+/** Each requirement's accounts across both scopes; requirement names are unique across them. */
+export const scopedSlots = <Slot>(accounts: {
+  readonly app: Readonly<Record<string, Slot>>;
+  readonly user?: Readonly<Record<string, Slot>>;
+}): ReadonlyArray<readonly [string, Slot]> => [
+  ...Object.entries(accounts.app),
+  ...Object.entries(accounts.user ?? {}),
+];
 
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {

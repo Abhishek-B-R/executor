@@ -26,9 +26,9 @@ import { recordingService } from "../support/recording-service.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { serverControl } from "../support/server-control.ts";
 import { previousToolRunCompletion } from "../support/release-cb81bce6b.ts";
-import { createProfile, Profile } from "../support/profiles.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 // A refresh that runs until its 30 s background limit unless cancelled.
 const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
@@ -42,7 +42,7 @@ const swr = { key: "swr", schema: string(), freshFor: 0, staleFor: "10 minutes" 
 const slowAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
 ${slowRefresh}
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({
     seed: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async () => "seed" })),
     stale: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async ({ signal }) => {
@@ -60,7 +60,7 @@ const approvalAppSource = (
   gate: string,
 ) => `import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   fails: mutation({ input: object({}), approval: always() }, async () => {
     throw new Error("The service rejected position Infinity");
   }),
@@ -82,7 +82,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
 // The second read serves the cached value and starts a refresh that outlasts the result.
 const refreshAppSource = `import { defineApp, query, object, string, router } from "apps";
 ${slowRefresh}
-export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
+export default defineApp({}, async (ctx) => ({ tools: router({
    seed: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async () => "seed" })),
   stale: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async ({ signal }) => {
     await slowRefresh(signal);
@@ -90,10 +90,10 @@ export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
   } })),
  }) }));`;
 
-// A required account that nobody has selected keeps the app out of the catalog.
+// A required account that nobody has linked keeps the app out of the catalog.
 const accountAppSource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Unselected fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({
    read: query({ input: object({}), description: "Read an item" }, async () => "item"),
  }) }));`;
 
@@ -111,14 +111,14 @@ const specInvalid = `class SpecInvalid extends Error {
 // The factory throws, so the whole app is unavailable.
 const throwingAppSource = `import { defineApp } from "apps";
 ${specInvalid}
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new SpecInvalid();
 });`;
 
 // Only one nested router throws; the rest of the app loads.
 const throwingRouterSource = `import { defineApp, dynamicRouter, object, query, router } from "apps";
 ${specInvalid}
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     ping: query({ input: object({}), description: "Answer pong" }, async () => "pong"),
     spec: dynamicRouter({
@@ -283,7 +283,7 @@ const pendingWriteAppSource = (
 const service = ${JSON.stringify(url)};
 const refusal = (status) =>
   new ProviderError(status === 401 ? { reason: "unauthorized", status } : { reason: "rate_limited", status });
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     save: mutation({ input: object({ name: string(), status: string() }) }, async ({ fetch }, { name, status }) => {
       const saving = fetch(service + "/records?pending", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
@@ -327,7 +327,7 @@ async function connect(fetch) {
   });
   if (!response.ok) throw new McpError({ phase: "connect", reason: "request", status: response.status });
 }
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     sync: mutation({ input: object({ name: string() }) }, async ({ fetch }, { name }) => {
       await fetch(service + "/records", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
@@ -363,7 +363,7 @@ class McpOptionsInvalid extends Error {
   }
 }
 const tool = (name, readOnly) => ({ name, description: "Resolve " + name, inputSchema: { type: "object", properties: {} }, ...(readOnly ? { readOnly } : {}) });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: dynamicRouter({
     list: async () => [tool("configure"), tool("inspect", true), tool("warm"), tool("send")],
     resolve: async (name) => {
@@ -436,8 +436,7 @@ const beforeTheApp = [
   "Forbidden",
   "OrganizationForbidden",
   "AuthenticationUnavailable",
-  "ProfileNotFound",
-  "ProfileConflict",
+  "AccountChoiceUnsupported",
   "AppNotFound",
   "AppNotDeployed",
   "DeploymentNotFound",
@@ -486,7 +485,7 @@ Response.prototype.json = async function (this: Response) {
   const tool = typeof message === "string" && message.startsWith("FORGE:") ? message.slice(6) : undefined;
   return tool === undefined ? reply : { ...reply, error: replies[tool] };
 } as typeof json;
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   const wrote = (tool: string) => ctx.cache.write([{ key: tool, value: "written" }], "1 minute");
   const write = (tool: string) => mutation({ input: object({}) }, async () => {
     await wrote(tool);
@@ -514,7 +513,7 @@ export default defineApp({ accounts: {} }, async (ctx) => {
  * Executor saves an approval request after the app's code received the call. `marker` reads it.
  */
 const approvalSaveAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
+export default defineApp({}, async (ctx) => ({ tools: router({
   guarded: mutation({ input: object({}), approval: async () => {
     await ctx.cache.write([{ key: "guarded", value: "written" }], "1 minute");
     return "user-approval" as const;
@@ -524,7 +523,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({ tools: router({
 
 /** An app with one tool for search to find. */
 const searchRowsAppSource = `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   findWidget: query({ description: "Find a widget by its name.", input: object({}) }, async () => "widget"),
 }) }));`;
 
@@ -537,7 +536,7 @@ const unnamedKindAppSource = (
   url: string,
 ) => `import { defineApp, query, object, router, CacheError } from "apps";
 const save = (name) => fetch(${JSON.stringify(`${url}/records`)}, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   await save("factory");
   return { tools: router({
     check: query({ input: object({}) }, async () => {
@@ -598,7 +597,7 @@ const mcpAppFiles = (url: string, timeoutMs?: number) => [
     path: "index.ts",
     content: `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
   },
 ];
 
@@ -641,7 +640,7 @@ const pickColors = [
   "pink",
 ];
 const inputAppSource = `import { defineApp, query, object, string, number, literal, jsonSchema, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   find: query({ input: object({ query: object({ text: string(), limit: number().default(10) }), filter: object({ tag: string() }).optional() }) }, async (_, input) => input.query.text),
   tree: query({ input: jsonSchema({ $schema: "https://json-schema.org/draft/2019-09/schema", $recursiveAnchor: true, type: "object", properties: { child: { $recursiveRef: "#" } }, anyOf: [{ required: ["name"] }, { required: ["id"] }] }) }, async () => "tree"),
   pick: query({ input: object({ version: literal("v1"), color: jsonSchema({ type: "string", enum: ${JSON.stringify(pickColors)} }) }) }, async (_, input) => input.color),
@@ -656,7 +655,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
 
 // `remove` declares a policy that denies every call, as an app that never lets agents delete.
 const deniedAppSource = `import { defineApp, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   remove: mutation({ input: object({ id: string() }), approval: () => "denied" }, async () => "removed"),
 }) }));`;
 
@@ -671,7 +670,7 @@ const publishAppFiles = [
     path: "index.ts",
     content: `import { defineApp, mutation, query, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   publish: mutation({ input: object({ title: string(), body: string() }), approval: always() }, async ({ sql }, { title, body }) => {
     sql.exec("INSERT INTO runs (title, length) VALUES (?, ?)", title, body.length);
     return { title, length: body.length };
@@ -873,7 +872,7 @@ const Faulted = Schema.Struct({
   failed: Schema.Boolean,
   spans: Schema.optional(Schema.Array(Schema.String)),
 });
-/** The resume's context check: the SDK's snapshot of the saved call's app and profile. */
+/** The resume's context check: the SDK's snapshot of the saved call's app and accounts. */
 const contextCheck = ["sdk.invocation.snapshot", "sdk.tools.resume"];
 const Users = Schema.Struct({
   users: Schema.Array(Schema.Struct({ id: Schema.String, email: Schema.String })),
@@ -1154,32 +1153,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           ),
         );
         expect(owned.execution).toMatchObject({ ok: true, value: { ran: true } });
-
-        // A profile that changes while its call waits is not resumed with other settings.
-        const profile = yield* createProfile(actors.owner, path);
-        const changing = yield* pendingApproval(
-          client,
-          "Ask to approve a call through a profile",
-          `return await ${app}.profiles[${JSON.stringify(profile.id)}].approved({});`,
-          "resume-context-pending.json",
-        );
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${path}/profiles/${profile.id}`, {
-            expectedRevision: profile.revision,
-            accounts: {},
-          })).status,
-        ).toBe(200);
-        const changed = yield* Schema.decodeUnknownEffect(Failed)(
-          yield* resumeOnce(
-            client,
-            "Approve the call after its profile changed",
-            changing,
-            "resume-context-changed.json",
-          ),
-        );
-        expect(changed.execution.error.response?.code).toBe("ApprovalUnavailable");
-        expect(changed.execution.error.message).toContain("changed");
-        expect(changed.execution.error.message).not.toContain("did not run");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -1228,10 +1201,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
         const app = yield* body(App, deployed);
         const path = `${prefix}/apps/${app.id}`;
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
-        const profile = yield* body(
-          Profile,
-          yield* send("POST", `${path}/profiles`, { accounts: {}, idempotencyKey: randomUUID() }),
-        );
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
           yield* send("POST", "/api/auth/api-key/create", { name: "Unconfirmed context" }),
@@ -1243,14 +1212,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           organization: organization.id,
           origin,
         });
-        const call = `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].approved({});`;
+        const call = `return await tools[${JSON.stringify(app.slug)}].approved({});`;
         /**
-         * Fail the resume's read of this profile in its context check. The host's own reads of
-         * the profile, which authorize the caller first, are left alone: a failure there is a
+         * Fail the resume's read of this app in its context check. The host's own reads of the
+         * app, which authorize the caller first, are left alone: a failure there is a
          * `StorageError` before the SDK checks the context.
          */
         const failContextCheck = send("POST", storageFault, {
-          profile: profile.id,
+          binds: app.id,
           within: contextCheck,
         }).pipe(Effect.map((armed) => expect(armed.status).toBe(200)));
         /** The fault fired, and on a read inside the context check. */
@@ -1264,22 +1233,22 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
             });
           });
 
-        // Storage fails while the resume reads the profile to compare it with the reviewed call.
+        // Storage fails while the resume reads the app to compare it with the reviewed call.
         const pending = yield* pendingApproval(
           client,
-          "Ask to approve a call through a profile",
+          "Ask to approve a call",
           call,
           "resume-unconfirmed-pending.json",
         );
         yield* failContextCheck;
         const resumed = yield* resumeOnce(
           client,
-          "Approve the call while its profile cannot be read",
+          "Approve the call while its app cannot be read",
           pending,
           "resume-unconfirmed.json",
         );
         yield* faultedContextCheck(
-          "The MCP resume's context check read the profile",
+          "The MCP resume's context check read the app",
           "resume-unconfirmed-fault.json",
         );
         const unconfirmed = yield* Schema.decodeUnknownEffect(Failed)(resumed);
@@ -1291,7 +1260,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           "changed after this call was saved",
         );
 
-        // Nothing changed: once storage answers, the same call through the profile runs.
+        // Nothing changed: once storage answers, the same call runs.
         const again = yield* pendingApproval(
           client,
           "Ask again once storage answers",
@@ -1316,7 +1285,6 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
             tool: "approved",
             kind: "mutation",
             input: {},
-            profile: profile.id,
           }),
         );
         yield* failContextCheck;
@@ -1339,7 +1307,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           "The tool failed after you approved it. It may have already made changes. Check before running it again.",
         );
         yield* faultedContextCheck(
-          "The dashboard resume's context check read the profile",
+          "The dashboard resume's context check read the app",
           "review-unconfirmed-fault.json",
         );
       }).pipe(Effect.provide(McpClient.layer)),
@@ -1397,37 +1365,54 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
             const reason = failed.unavailableApps.find((entry) => entry.app === app.id)?.reason;
             return { error: failed.execution.error, reason };
           });
-        // Without a profile, a call into the app says why instead of reporting an unknown tool.
-        const unprofiled = yield* call(
-          "Call a tool of an account app that has no profile",
-          "no-profile-result.json",
+        // Without a linked account, a call into the app says why instead of reporting an unknown tool.
+        const unlinked = yield* call(
+          "Call a tool of an account app with no linked account",
+          "no-account-result.json",
           `return await ${root}.read({});`,
         );
         // An app nobody has set up is not listed on every execute; only a call into it reports it.
-        expect(unprofiled.reason).toBeUndefined();
-        expect(unprofiled.error.kind).toBe("ToolFailure");
-        expect(unprofiled.error.response?.code).toBe("AppProfileRequired");
-        expect(unprofiled.error.message).toContain("you have no enabled profile for it");
-        const profile = yield* api.request(
+        expect(unlinked.reason).toBeUndefined();
+        expect(unlinked.error.kind).toBe("ToolFailure");
+        expect(unlinked.error.response?.code).toBe("AppAccountRequired");
+        expect(unlinked.error.message).toContain("none is linked to it for you");
+        // Following the error's recovery, connecting an account from the app links it, and the
+        // next execute lists and calls the app.
+        const connection = yield* body(
+          Schema.Struct({ id: Schema.String }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
+        );
+        const submitted = yield* api.request(
           actors.owner,
           "POST",
-          `${prefix}/apps/${app.id}/profiles`,
-          { accounts: {}, idempotencyKey: randomUUID() },
+          `${prefix}/connections/${connection.id}/submit`,
+          { method: "key", label: "Linked key", fields: { token: "synthetic-linked-key" } },
         );
-        expect(profile.status).toBe(200);
-        const { id } = yield* body(Schema.Struct({ id: Schema.String }), profile);
-        // With a profile but no selected account, the SDK's curated error reaches the caller.
-        const unselected = yield* call(
-          "Call a tool of an app whose account is not selected",
-          "unselected-result.json",
-          `return await ${root}.profiles[${JSON.stringify(id)}].read({});`,
+        expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+        const account = yield* body(Schema.Struct({ id: Schema.String }), submitted);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
+            .pipe(Effect.orDie),
         );
-        expect(unselected.reason ?? "").toContain(
-          "This app needs an account that has not been selected yet.",
+        const recovered = yield* client.use(
+          "Call the app once an account is linked",
+          (client, signal) =>
+            client.callTool(
+              { name: "execute", arguments: { code: `return await ${root}.read({});` } },
+              undefined,
+              { signal },
+            ),
         );
-        expect(unselected.error.kind).toBe("ToolFailure");
-        expect(unselected.error.response?.code).toBe("AccountRequired");
-        expect(unselected.error.message).toContain("Open Accounts");
+        yield* evidence.json("linked-result.json", recovered.structuredContent);
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(recovered.structuredContent)).execution,
+        ).toMatchObject({ ok: true, value: "item" });
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -2022,7 +2007,7 @@ return messages;`,
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(`${gate.origin}/moved/mcp`)} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(`${gate.origin}/moved/mcp`)} }) }));`,
             },
           ],
         });

@@ -113,8 +113,8 @@ no line; a change that removes product code records a new baseline with
 Each test yields the services it needs. Native Vitest setup hooks start the isolated
 server and provision the actors declared in the test plan. Provisioning belongs to
 the setup deadline; scenario actions retain their full deadline. Scenarios that need
-the default management app can declare `managementProfiles` with the required actor
-roles. Setup waits for those committed profiles through public APIs. Scenarios that
+the default management app can declare `managementApps` with the required actor
+roles. Setup waits for the app and each actor's linked Executor key through public APIs. Scenarios that
 exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
 another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
 child scope the test may close. Native cleanup
@@ -150,7 +150,8 @@ public surface can create. A scenario that needs such rows declares
 parameterized SQL to its own PGlite database in one transaction, returns each
 statement's rows, and leaves the product stopped. `serverControl("start")` then
 boots the current server over that state, as an upgrade would. Statement errors
-roll back the whole write.
+roll back the whole write. A write targets the product database unless it names
+`"mcp-auth"`: Local's separate MCP auth database, where MCP connections and grants live.
 
 Use it only for legacy or upgrade-era data, for reading rows that exist only
 in storage, and for a storage fault no public surface can cause, such as a
@@ -196,7 +197,7 @@ when operations are independent. Keep dependent actions ordered.
 
 The self-host load case creates 1,000 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
-46 MB of input schemas, plus three MCP apps with profiles whose server never answers, and bounds
+46 MB of input schemas, plus nine MCP apps whose server never answers, and bounds
 execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
 after the other, in parallel with the functional suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
 invalidate the load timing. The normal self-host command still includes every

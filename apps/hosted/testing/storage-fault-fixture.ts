@@ -1,8 +1,8 @@
 /**
- * Test host only: fails a read that binds one profile's ID inside a chosen operation, so a
+ * Test host only: fails a read that binds one chosen ID inside a chosen operation, so a
  * scenario can show how a storage failure is reported where Executor reads saved state. The arm
  * names the spans the read must run inside (for example `sdk.invocation.snapshot`), so reads of
- * the same profile elsewhere, such as the host's own authorization reads, pass untouched. The
+ * the same ID elsewhere, such as the host's own authorization reads, pass untouched. The
  * statement is replaced by one the database rejects, so the failure is a real SQL error from the
  * driver. Production entry points never provide it.
  */
@@ -12,7 +12,7 @@ import * as Statement from "effect/sql/Statement";
 
 const path = "/api/devtools/storage-fault";
 const Arm = Schema.Struct({
-  profile: Schema.NonEmptyString,
+  binds: Schema.NonEmptyString,
   within: Schema.NonEmptyArray(Schema.NonEmptyString),
 });
 
@@ -28,7 +28,7 @@ const enclosing = (span: Tracer.AnySpan): ReadonlyArray<string> => {
 };
 
 export const storageFaultFixture = Effect.sync(() => {
-  /** Armed until a read of the profile inside every named span reaches it; then reported until the next arm. */
+  /** Armed until a read binding the ID inside every named span reaches it; then reported until the next arm. */
   let armed: typeof Arm.Type | undefined;
   let failed: ReadonlyArray<string> | undefined;
   const transformer: Statement.Transformer = (statement, sql, _fiber, span) =>
@@ -36,7 +36,7 @@ export const storageFaultFixture = Effect.sync(() => {
       const fault = armed;
       if (fault === undefined) return statement;
       const [text, params] = statement.compile();
-      if (!/^\s*select\b/iu.test(text) || !params.includes(fault.profile)) return statement;
+      if (!/^\s*select\b/iu.test(text) || !params.includes(fault.binds)) return statement;
       const spans = enclosing(span);
       if (!fault.within.every((name) => spans.includes(name))) return statement;
       armed = undefined;

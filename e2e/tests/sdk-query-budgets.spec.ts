@@ -1,5 +1,4 @@
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
-/** Invocations read many selected accounts in saved order, and workflow history lists finished runs. */
+/** Invocations read many linked accounts in link order, and workflow history lists finished runs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -10,14 +9,20 @@ import { Resource } from "../support/contracts.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import {
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+  connectionsPath,
+} from "../support/app-accounts.ts";
 
 const source = `import { defineApp, defineProvider, secrets, object, string, query, workflow, router } from "apps";
 const service = defineProvider({ name: "Query budget fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { workspaces: service.many() } }, async ctx => ({
+export default defineApp({ user: { accounts: { workspaces: service.many() } } }, async ctx => ({
   tools: router({
-    selected: query({ input: object({}) }, async () => ctx.accounts.workspaces.map(account => account.fields.token)),
+    selected: query({ input: object({}) }, async () => ctx.user.accounts.workspaces.map(account => account.fields.token)),
   }),
   workflows: { quick: workflow({ input: object({}) }, async () => "finished") }
 }));`;
@@ -52,12 +57,14 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
           }).pipe(Effect.orDie),
         );
 
-        const profile = yield* createProfile(actors.owner, path);
+        // Connecting from the app links each account to it.
         for (let index = 0; index < 10; index++) {
-          const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "workspaces",
-            profile: profile.id,
-          });
+          const pending = yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(path, "user", "workspaces"),
+            {},
+          );
           expect(pending.status).toBe(200);
           const connection = yield* body(Resource, pending);
           const saved = yield* api.request(
@@ -73,14 +80,15 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
           expect(saved.status).toBe(200);
           accounts.push((yield* body(Resource, saved)).id);
         }
-        // Deliberately reverse creation order: the batch read must retain saved binding order.
+        // many() uses every linked account, oldest link first. Link them again in reverse
+        // creation order: the batch read must retain the link order.
         const selected = [...accounts].reverse();
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: selected }))
-            .status,
-        ).toBe(200);
+        for (const account of accounts)
+          yield* unlinkAccount(actors.owner, path, "workspaces", account);
+        for (const account of selected)
+          yield* linkAccount(actors.owner, path, "workspaces", account);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual(selected);
         const called = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-          profile: profile.id,
           tool: "selected",
           kind: "query",
           input: {},
@@ -89,17 +97,11 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
         expect(called.body).toEqual(
           Array.from({ length: 10 }, (_, index) => `synthetic-${9 - index}`),
         );
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, {
-            workspaces: [...selected, ...selected],
-          })).status,
-        ).toBeGreaterThanOrEqual(400);
-        // Explicit empty selections remain valid and let the workflow fixture run without account pins.
-        expect(
-          (yield* selectProfileAccounts(actors.owner, path, profile.id, { workspaces: [] })).status,
-        ).toBe(200);
+        // With no linked account, many() is empty, which lets the workflow fixture run without
+        // accounts.
+        for (const account of accounts)
+          yield* unlinkAccount(actors.owner, path, "workspaces", account);
         const empty = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-          profile: profile.id,
           tool: "selected",
           kind: "query",
           input: {},
@@ -109,7 +111,6 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
 
         for (let index = 0; index < 20; index++) {
           const started = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
-            profile: profile.id,
             workflow: "quick",
             input: {},
             key: randomUUID(),

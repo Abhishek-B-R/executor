@@ -1,19 +1,33 @@
 import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
 import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { localResourceHandlers } from "./resources.ts";
-import { localProfileHandlers } from "./profiles.ts";
+import {
+  accountLinks,
+  appAccountLinks,
+  appAccountRequirement,
+  appLinkApps,
+  callerAccounts,
+  linkAccount,
+  requireScopedRequirement,
+  unlinkAccount,
+} from "./app-accounts.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
 /** Product projections over the existing SDK and retained deployment storage. */
 import {
   StorageError,
   AppNameTaken,
   HttpUrl,
+  type AccountFieldsInput,
+  type AccountScope,
+  type AuthMethodName,
+  type OAuthClientSelection,
   RequestInvalid,
   ToolApprovalIssuer,
   ToolApprovalNotFound,
+  invocationEntries,
+  type App,
   type AppId,
   type ApprovalRequestId,
-  type ProfileId,
   type AccountId,
   type ExecutorDatabase,
   type Cursor,
@@ -23,6 +37,7 @@ import {
   type Executor,
 } from "@executor-js/sdk/core";
 import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
+import type { SqlClient } from "effect/sql";
 import { ApprovalResponse, approvalElicitation } from "apps/contracts";
 import {
   ToolRunApprovalRefused,
@@ -49,7 +64,9 @@ import {
   providerDisplayUrl,
   AppDeletionBlocked,
   AppRenameBlocked,
+  AppAccountLinksBlocked,
   AccountManagementBlocked,
+  AccountLinkedToApp,
   ToolCatalogChanged,
   type AppAccountTarget,
 } from "../contracts/dashboard.ts";
@@ -90,6 +107,7 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
 /** Serve authenticated read endpoints without granting browser access to SDK mutations. */
 export const dashboard = (
   executor: Executor,
+  sql: SqlClient.SqlClient,
   reactivity: ExecutorDatabase["reactivity"],
   config: ServerConfig,
   auth: LocalAuth,
@@ -99,6 +117,7 @@ export const dashboard = (
     managedApp,
     managedAccount,
     ownerMigration,
+    wakeWebhookSources,
   }: {
     /** The official app feed's index.json; without one the catalog lists no apps. */
     readonly catalogFeedUrl?: string | undefined;
@@ -106,6 +125,8 @@ export const dashboard = (
     readonly managedAccount?: AccountId;
     /** Why this start did not move other owners' records to `local`, if it did not. */
     readonly ownerMigration: Effect.Effect<LocalOwnerMigration | null>;
+    /** Wakes webhook source reconciliation after saved intent commits. */
+    readonly wakeWebhookSources: Effect.Effect<void>;
   },
 ) => {
   const appCatalog = createCatalog({
@@ -126,21 +147,81 @@ export const dashboard = (
   const manage = <A, E, R>(account: AccountId, operation: Effect.Effect<A, E, R>) =>
     account === managedAccount ? Effect.fail(new AccountManagementBlocked({ account })) : operation;
   /**
-   * Every dashboard sign-in fills an app requirement; completing it selects the account there. A
-   * reconnect names the account, which the local server's own account cannot be.
+   * The server links its own Executor app to its managed account when it starts; that app's tools
+   * fail without it. Its links are never changed through these routes.
    */
-  const appConnection = (app: AppId, target: typeof AppAccountTarget.Type) =>
-    target.account === undefined
-      ? connectForApp(executor, managedApp, {
-          target: { app, profile: target.profile, requirement: target.requirement },
-        })
-      : manage(
-          target.account,
-          connectForApp(executor, managedApp, {
-            account: target.account,
-            target: { app, profile: target.profile, requirement: target.requirement },
-          }),
-        );
+  const changeLinks = <A, E, R>(app: AppId, operation: Effect.Effect<A, E, R>) =>
+    app === managedApp ? Effect.fail(new AppAccountLinksBlocked({ app })) : operation;
+  /**
+   * Every dashboard sign-in fills an app requirement in the route's scope; completing it links the
+   * account to the app in that scope, or refuses if the requirement has moved to the other one. A
+   * reconnect names the account, which the local server's own account cannot be, and the server's
+   * own app is never connected this way.
+   */
+  const appConnection = (
+    params: { readonly app: AppId; readonly requirement: string },
+    scope: AccountScope,
+    target: typeof AppAccountTarget.Type,
+  ) =>
+    Effect.gen(function* () {
+      if (params.app === managedApp) return yield* new AppAccountLinksBlocked({ app: params.app });
+      yield* requireScopedRequirement(executor, { ...params, scope });
+      const connectionTarget = { app: params.app, requirement: params.requirement, scope };
+      return yield* target.account === undefined
+        ? connectForApp(executor, managedApp, { target: connectionTarget })
+        : manage(
+            target.account,
+            connectForApp(executor, managedApp, {
+              account: target.account,
+              target: connectionTarget,
+            }),
+          );
+    });
+  /** A connected account is linked to its requirement, which may change the webhook sources. */
+  const connectWithFields = (
+    params: { readonly app: AppId; readonly requirement: string },
+    scope: AccountScope,
+    payload: typeof AppAccountTarget.Type & {
+      readonly method: typeof AuthMethodName.Type;
+      readonly label?: string | undefined;
+      readonly fields: typeof AccountFieldsInput.Type;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const { method, label, fields, ...target } = payload;
+      const connection = yield* appConnection(params, scope, target);
+      return yield* executor.accountConnections.submit({
+        connection: connection.id,
+        method,
+        ...(label === undefined ? {} : { label }),
+        fields,
+      });
+    }).pipe(Effect.tap(() => wakeWebhookSources));
+  const connectWithOAuth = (
+    params: { readonly app: AppId; readonly requirement: string },
+    scope: AccountScope,
+    payload: typeof AppAccountTarget.Type & {
+      readonly method: typeof AuthMethodName.Type;
+      readonly label?: string | undefined;
+      readonly client?: OAuthClientSelection | undefined;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const { method, label, client, ...target } = payload;
+      const request = yield* localRequest(config.port, config.browserOrigin).pipe(
+        Effect.mapError(() => new DashboardForbidden()),
+      );
+      const connection = yield* appConnection(params, scope, target);
+      const chosen = yield* connectionClient(connection, { method, client });
+      const signIn = yield* executor.accountConnections.startOAuth({
+        connection: connection.id,
+        method,
+        ...(label === undefined ? {} : { label }),
+        ...(chosen === undefined ? {} : { client: chosen }),
+        redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
+      });
+      return { ...signIn, connection: connection.id };
+    });
   const access = dashboardAccess(config, auth);
   /** Only the dashboard's own runs are reviewed here. The arguments shown and resumed are the saved invocation's. */
   const reviewedTool = (app: AppId, requestId: ApprovalRequestId) =>
@@ -158,19 +239,32 @@ export const dashboard = (
     });
   // Database reads infer dependencies in the shared storage service, including reads in SDK calls.
   const overview = Effect.gen(function* () {
-    const { apps, accounts, health, providers } = yield* Effect.all(
+    const { apps, accounts, providers } = yield* Effect.all(
       {
         apps: executor.apps.list(),
         accounts: Effect.forEach(localOwners, (each) =>
           executor.accounts.list({ owner: each }),
         ).pipe(Effect.map((lists) => lists.flat())),
-        health: executor.accounts.listHealth(),
         providers: Effect.forEach(localOwners, (each) =>
           executor.accounts.providers({ owner: each }),
         ).pipe(Effect.map((lists) => lists.flat())),
       },
       { concurrency: 4 },
     );
+    // An account's checks are those of the apps that link it, in either scope; the inventory
+    // lists the user links, each app and account once.
+    const all = yield* accountLinks(sql, executor);
+    const pairs = (subjectScoped: boolean) => {
+      const seen = new Set<string>();
+      return all.flatMap((link) => {
+        const key = `${link.app}\u0000${link.account}`;
+        if ((subjectScoped && link.subject === null) || seen.has(key)) return [];
+        seen.add(key);
+        return [{ app: link.app, account: link.account }];
+      });
+    };
+    const links = pairs(true);
+    const health = yield* executor.accounts.listHealth({ links: pairs(false) });
     const checks = new Map(health.map((entry) => [entry.account, entry]));
     const definitions = new Map(providers.map((provider) => [provider.id, provider.definition]));
     const display = [];
@@ -186,12 +280,7 @@ export const dashboard = (
         ...(health === undefined ? {} : { health }),
       });
     }
-    const profiles = (yield* Effect.forEach(apps, (app) =>
-      executor.apps.profiles
-        .list({ app: app.id, subject: "local" })
-        .pipe(Effect.mapError(() => new StorageError())),
-    )).flat();
-    return { apps, accounts: display, profiles };
+    return { apps, links, accounts: display };
   });
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {
@@ -216,14 +305,32 @@ export const dashboard = (
         deployments,
       };
     });
+  /** The apps an account is linked to, in either scope. */
+  const linkedApps = (account: AccountId) =>
+    Effect.gen(function* () {
+      const found = yield* executor.accounts.get({ account });
+      const linked = new Set(
+        (yield* accountLinks(sql, executor, found.id)).map((link) => link.app),
+      );
+      return (yield* executor.apps.list()).filter((app) => linked.has(app.id));
+    });
+  /** The app and the accounts a call or listing runs with. */
+  const resolved = (appId: AppId) =>
+    Effect.gen(function* () {
+      const app: App = yield* executor.apps.get({ app: appId });
+      return { app, accounts: yield* callerAccounts(sql, executor, app) };
+    });
   const accountDetail = (accountId: AccountId) =>
     Effect.gen(function* () {
       const account = yield* executor.accounts.get({ account: accountId });
       const provider = yield* executor.accounts
         .provider({ account: accountId })
         .pipe(Effect.catchTag("ProviderNotFound", () => new StorageError()));
-      const apps = yield* executor.apps.list({ account: account.id });
-      const health = yield* executor.accounts.health({ account: account.id });
+      const apps = yield* linkedApps(account.id);
+      const health = yield* executor.accounts.health({
+        account: account.id,
+        apps: apps.map((app) => app.id),
+      });
       // An unreadable grant is unreadable storage to this view.
       const { revocation } = yield* executor.accounts
         .revocation({ account: account.id })
@@ -293,21 +400,10 @@ export const dashboard = (
 
   // Only this app's execution inputs can trigger expensive upstream discovery. The cheap
   // tracked query may rerun after any account write, but credentials never enter a response.
-  const toolInputs = (appId: AppId, profile?: ProfileId) =>
+  const toolInputs = (appId: AppId) =>
     Effect.gen(function* () {
-      const app = yield* executor.apps.get({ app: appId });
-      const selected =
-        profile === undefined
-          ? undefined
-          : yield* executor.apps.profiles.get({ app: appId, profile });
-      const bindings = selected?.accounts ?? {};
-      const ids = [
-        ...new Set(
-          Object.values(bindings).flatMap((selection) =>
-            typeof selection === "string" ? [selection] : selection,
-          ),
-        ),
-      ];
+      const { app, accounts: selections } = yield* resolved(appId);
+      const ids = [...new Set(invocationEntries(selections).flatMap(([, used]) => used))];
       // The fingerprint stands in for the credential bytes: any credential write changes it, so the
       // catalog is listed again exactly when its inputs changed.
       const accounts = yield* Effect.forEach(ids, (id) =>
@@ -326,15 +422,11 @@ export const dashboard = (
           };
         }),
       );
-      return {
-        deployment: app.activeDeployment,
-        selections: bindings,
-        accounts,
-        profile: selected,
-      };
+      return { deployment: app.activeDeployment, selections, accounts };
     });
-  const allTools = (app: AppId, profile?: ProfileId, expectedProfileRevision?: number) =>
+  const allTools = (app: AppId) =>
     Effect.gen(function* () {
+      const { accounts } = yield* resolved(app);
       let cursor: Cursor | undefined;
       let deployment: DeploymentId | undefined;
       const cursors = new Set<Cursor>();
@@ -344,8 +436,7 @@ export const dashboard = (
       do {
         const page = yield* executor.tools.list({
           app,
-          profile,
-          expectedProfileRevision,
+          accounts,
           limit: 2_000,
           ...(cursor === undefined ? {} : { cursor }),
           ...(deployment === undefined ? {} : { deployment }),
@@ -384,12 +475,10 @@ export const dashboard = (
       .handle("liveOverview", () => subscribe(overview))
       .handle("liveApp", ({ params }) => subscribe(appDetail(params.app)))
       .handle("liveAccount", ({ params }) => subscribe(accountDetail(params.account)))
-      .handle("liveTools", ({ params, query }) =>
+      .handle("liveTools", ({ params }) =>
         secureLive((authorize) =>
           reactivity
-            .subscribe(
-              authorize.pipe(Effect.andThen(Effect.result(toolInputs(params.app, query.profile)))),
-            )
+            .subscribe(authorize.pipe(Effect.andThen(Effect.result(toolInputs(params.app)))))
             .pipe(
               Stream.changesWith(
                 (left, right) => JSON.stringify(left.value) === JSON.stringify(right.value),
@@ -400,9 +489,7 @@ export const dashboard = (
                   const result =
                     value._tag === "Failure"
                       ? Result.fail(value.failure)
-                      : yield* Effect.result(
-                          allTools(params.app, query.profile, query.expectedProfileRevision),
-                        );
+                      : yield* Effect.result(allTools(params.app));
                   return { revision, value: result };
                 }),
               ),
@@ -412,6 +499,61 @@ export const dashboard = (
       .handle("overview", () => overview)
       .handle("ownerMigration", () => ownerMigration)
       .handle("app", ({ params }) => appDetail(params.app))
+      // Links change webhook sources and the accounts calls and schedules run with.
+      .handle("appList", ({ params }) =>
+        executor.apps
+          .get(params)
+          .pipe(Effect.flatMap((app) => appAccountLinks(sql, executor, app, "app"))),
+      )
+      .handle("appGet", ({ params }) =>
+        appAccountRequirement(sql, executor, { ...params, scope: "app" }),
+      )
+      .handle("appLink", ({ params }) =>
+        changeLinks(
+          params.app,
+          linkAccount(sql, executor, { ...params, scope: "app" }).pipe(
+            Effect.tap(() => wakeWebhookSources),
+          ),
+        ),
+      )
+      .handle("appUnlink", ({ params }) =>
+        changeLinks(
+          params.app,
+          unlinkAccount(sql, executor, { ...params, scope: "app" }).pipe(
+            Effect.tap(() => wakeWebhookSources),
+          ),
+        ),
+      )
+      .handle("appConnect", ({ params, payload }) => connectWithFields(params, "app", payload))
+      .handle("appConnectOAuth", ({ params, payload }) => connectWithOAuth(params, "app", payload))
+      .handle("userList", ({ params }) =>
+        executor.apps
+          .get(params)
+          .pipe(Effect.flatMap((app) => appAccountLinks(sql, executor, app, "user"))),
+      )
+      .handle("userGet", ({ params }) =>
+        appAccountRequirement(sql, executor, { ...params, scope: "user" }),
+      )
+      .handle("userLink", ({ params }) =>
+        changeLinks(
+          params.app,
+          linkAccount(sql, executor, { ...params, scope: "user" }).pipe(
+            Effect.tap(() => wakeWebhookSources),
+          ),
+        ),
+      )
+      .handle("userUnlink", ({ params }) =>
+        changeLinks(
+          params.app,
+          unlinkAccount(sql, executor, { ...params, scope: "user" }).pipe(
+            Effect.tap(() => wakeWebhookSources),
+          ),
+        ),
+      )
+      .handle("userConnect", ({ params, payload }) => connectWithFields(params, "user", payload))
+      .handle("userConnectOAuth", ({ params, payload }) =>
+        connectWithOAuth(params, "user", payload),
+      )
       .handle("renameApp", ({ params, payload }) =>
         params.app === managedApp
           ? Effect.fail(new AppRenameBlocked(params))
@@ -463,15 +605,33 @@ export const dashboard = (
         }),
       )
       .handle("account", ({ params }) => accountDetail(params.account))
-      .handle("checkAccount", ({ params }) => executor.accounts.check(params))
+      .handle("checkAccount", ({ params }) =>
+        linkedApps(params.account).pipe(
+          Effect.flatMap((apps) =>
+            executor.accounts.check({ ...params, apps: apps.map((app) => app.id) }),
+          ),
+        ),
+      )
       .handle("checkCredentials", ({ params, payload }) =>
         executor.apps.checkCredentials({ ...params, ...payload }),
       )
       .handle("updateAccount", ({ params, payload }) =>
         manage(params.account, executor.accounts.update({ ...params, ...payload })),
       )
+      // An app uses an app link for every call, so it must be unlinked first.
       .handle("disconnectAccount", ({ params }) =>
-        manage(params.account, executor.accounts.remove(params)),
+        manage(
+          params.account,
+          Effect.gen(function* () {
+            const [first, ...rest] = yield* appLinkApps(sql, executor, params.account);
+            if (first !== undefined)
+              return yield* new AccountLinkedToApp({
+                account: params.account,
+                apps: [first, ...rest],
+              });
+            return yield* executor.accounts.remove(params);
+          }),
+        ),
       )
       .handle("importCustomApp", ({ payload }) =>
         Effect.gen(function* () {
@@ -499,34 +659,6 @@ export const dashboard = (
           });
         }),
       )
-      .handle("connectAccount", ({ params, payload: { method, label, fields, ...target } }) =>
-        Effect.gen(function* () {
-          const connection = yield* appConnection(params.app, target);
-          return yield* executor.accountConnections.submit({
-            connection: connection.id,
-            method,
-            ...(label === undefined ? {} : { label }),
-            fields,
-          });
-        }),
-      )
-      .handle("startOAuth", ({ params, payload: { method, label, client, ...target } }) =>
-        Effect.gen(function* () {
-          const request = yield* localRequest(config.port, config.browserOrigin).pipe(
-            Effect.mapError(() => new DashboardForbidden()),
-          );
-          const connection = yield* appConnection(params.app, target);
-          const chosen = yield* connectionClient(connection, { method, client });
-          const signIn = yield* executor.accountConnections.startOAuth({
-            connection: connection.id,
-            method,
-            ...(label === undefined ? {} : { label }),
-            ...(chosen === undefined ? {} : { client: chosen }),
-            redirectUri: new URL(OAuthCallbackPath, requestOrigin(config, request)).href,
-          });
-          return { ...signIn, connection: connection.id };
-        }),
-      )
       .handle("completeOAuth", ({ payload }) =>
         executor.accountConnections.findOAuth(payload).pipe(
           Effect.flatMap((connection) =>
@@ -535,14 +667,15 @@ export const dashboard = (
               callbackUrl: payload.callbackUrl,
             }),
           ),
+          Effect.tap(() => wakeWebhookSources),
         ),
       )
       // The paired browser is the person running the tool, so approval waits for their review.
       .handle("runTool", ({ params, payload }) =>
-        Effect.andThen(
-          browserOnly(config, auth),
-          executor.tools.call({ ...params, ...payload }, { issuer: dashboardRun }),
-        ).pipe(
+        Effect.andThen(browserOnly(config, auth), resolved(params.app)).pipe(
+          Effect.flatMap(({ accounts }) =>
+            executor.tools.call({ ...params, ...payload, accounts }, { issuer: dashboardRun }),
+          ),
           Effect.map((result): BrowserToolRun =>
             result.status === "approval-required"
               ? { status: result.status, requestId: result.requestId }
@@ -592,7 +725,8 @@ export const dashboard = (
         ),
       )
       .handle("tools", ({ params, query }) =>
-        executor.tools.list({ ...params, ...query }).pipe(
+        resolved(params.app).pipe(
+          Effect.flatMap(({ accounts }) => executor.tools.list({ ...params, ...query, accounts })),
           Effect.timeoutOrElse({
             duration: config.mcp.timeoutMs,
             orElse: () => Effect.fail(new ToolDiscoveryTimedOut(params)),
@@ -601,11 +735,7 @@ export const dashboard = (
       ),
   );
   return {
-    handlers: Layer.mergeAll(
-      handlers,
-      localProfileHandlers(executor),
-      localResourceHandlers(executor),
-    ),
+    handlers: Layer.mergeAll(handlers, localResourceHandlers(executor, sql, wakeWebhookSources)),
     access,
   };
 };

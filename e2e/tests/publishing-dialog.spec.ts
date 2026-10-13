@@ -32,8 +32,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
           files: [
             {
               path: "index.ts",
-              content:
-                'import {defineApp} from "apps"; export default defineApp({accounts:{}},{});',
+              content: 'import {defineApp} from "apps"; export default defineApp({},{});',
             },
             {
               path: "package.json",

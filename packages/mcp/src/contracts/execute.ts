@@ -41,21 +41,17 @@ export class ExecutionRejected extends Schema.TaggedError<ExecutionRejected>()(
   { message: Schema.String },
 ) {}
 
-/**
- * An app that needs accounts exposes no tools until the caller has an enabled profile for it.
- * The caller may have no profile, or only disabled or removed ones.
- */
-export const AppProfileRequired = UserFacingError.define({
-  tag: "AppProfileRequired",
+/** An app requirement has no account the caller linked, so the app exposes no tools. */
+export const AppAccountRequired = UserFacingError.define({
+  tag: "AppAccountRequired",
   status: 409,
   fields: { app: Schema.String },
-  title: "Set up an account profile to continue",
-  description: "This app needs an account, and you have no enabled profile for it.",
+  title: "Link an account to continue",
+  description: "This app needs an account, and none is linked to it for you.",
   recovery: {
-    action:
-      "Open the app's Accounts page and connect an account or enable an existing profile, then run execute again.",
+    action: "Open the app's Accounts page and connect or link an account, then run execute again.",
     instructions:
-      "Tell the user this app needs an account profile before its tools can be used. They can connect an account, or enable a profile they already have, on the app's Accounts page. Never substitute another identity automatically. This execution cannot call the app's tools.",
+      "Tell the user this app needs an account before its tools can be used. They can connect an account, or link one they already have, on the app's Accounts page. Never substitute another identity automatically. This execution cannot call the app's tools.",
   },
 });
 
@@ -118,7 +114,7 @@ export const ApprovalUnavailable = UserFacingError.define({
   fields: {
     /**
      * `expired`: the request passed its deadline. `context-changed`: Executor read the app
-     * deployment, profile or accounts and they differ from the reviewed call.
+     * deployment or accounts and they differ from the reviewed call.
      * `context-unconfirmed`: Executor's storage failed while it read them, so it could not compare.
      * `answered`: another answer already claimed it. `ended`: the execution ended before the
      * request could be saved.
@@ -150,7 +146,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call changed",
           description:
-            "The app deployment, profile or accounts changed after this call was saved for approval, so Executor did not resume it.",
+            "The app deployment or accounts changed after this call was saved for approval, so Executor did not resume it.",
           recovery: {
             action: "Run the call again to review it with the current settings.",
             instructions: `Executor resumes only the exact call that was reviewed, and its settings changed while it waited. ${check} Then start a new execute and ask the user to approve its new request.`,
@@ -160,7 +156,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call not confirmed",
           description:
-            "Executor could not read the app deployment, profile or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
+            "Executor could not read the app deployment or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
           recovery: {
             action:
               "Try again in a moment: run the call again and approve its new request. If this continues, check Executor's storage.",
@@ -232,7 +228,6 @@ export const UnavailableApp = Schema.Struct({
   app: Schema.String,
   name: Schema.String,
   reason: Schema.String,
-  profile: Schema.optionalKey(Schema.String),
   /** Only this router's tools are missing; the rest of the app loaded. */
   router: Schema.optionalKey(Schema.String),
 });
@@ -335,13 +330,12 @@ export const SearchInput = Schema.Struct({
   query: Schema.optionalKey(
     Schema.String.annotate({
       description:
-        "Words matched against tool paths, descriptions, input names, and app, profile and router labels. Omit it to list a namespace.",
+        "Words matched against tool paths, descriptions, input names, and app, account and router labels. Omit it to list a namespace.",
     }),
   ),
   namespace: Schema.optionalKey(
     Schema.String.annotate({
-      description:
-        "App slug, such as axiom, or a namespace inside it, such as axiom.profiles.ins_id or acme.issues.",
+      description: "App slug, such as axiom, or a namespace inside it, such as acme.issues.",
     }),
   ),
   limit: Schema.optionalKey(
@@ -352,16 +346,14 @@ export const SearchInput = Schema.Struct({
   offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 /**
- * A namespace that search items share, listed once per result rather than in every item: an app,
- * one of its profiles with its accounts, or a titled router inside either.
+ * A namespace that search items share, listed once per result rather than in every item: an app
+ * with its linked accounts, or a titled router inside it.
  */
 export const SearchNamespace = Schema.Struct({
-  /** The callable prefix of every tool below it, such as tools.axiom.profiles.ins_id. */
+  /** The callable prefix of every tool below it, such as tools.axiom. */
   path: Schema.String,
   app: Schema.String,
-  /** The profile's label. Its tools use that profile's saved accounts. */
-  profile: Schema.optionalKey(Schema.String),
-  /** The profile's account labels, each with its description. */
+  /** The linked accounts its calls use per requirement, with IDs, labels and descriptions. */
   accounts: Schema.optionalKey(Schema.String),
   /** The title of the router that groups these tools. */
   router: Schema.optionalKey(Schema.String),
@@ -377,8 +369,6 @@ export const SearchItem = Schema.Struct({
   input: Schema.String,
   /** The input type was cut; tools.search.describe returns it whole. */
   inputTruncated: Schema.optionalKey(Schema.Literal(true)),
-  /** The same tool, with the same signature, under the app's other profiles. */
-  alsoAt: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 /**
  * One page of ranked matches. `remaining` counts the matches after this page; `next` is the input
@@ -418,7 +408,7 @@ export const DescribeResult = Schema.Struct({
 /** One direct tool call: an exact path from search and the tool's JSON input. */
 export const CallRequest = Schema.Struct({
   path: Schema.String.annotate({
-    description: 'An exact path from search, such as tools.github.profiles["ins_1"].listIssues.',
+    description: "An exact path from search, such as tools.github.issues.list.",
   }),
   input: Schema.Json.annotate({ description: "The tool's input, matching its input type." }),
 });
@@ -500,7 +490,7 @@ export const SearchToolResult = Schema.Struct({
 /** The catalog search a program reaches as tools.search, as its own MCP tool. */
 export const SearchTool = McpTool.make("search", {
   description:
-    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and profile listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
+    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
   parameters: SearchInput,
   success: SearchToolResult,
   failure: CatalogUnavailable,

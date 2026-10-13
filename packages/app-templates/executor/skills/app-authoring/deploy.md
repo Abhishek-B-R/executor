@@ -93,7 +93,7 @@ mkdir hello
 cat > hello/index.ts <<'EOF'
 import { defineApp, object, query, router } from "apps";
 
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
   }),
@@ -224,12 +224,11 @@ return await tools.search({ query: "Executor" });
 ```
 
 Search returns `items` with the exact callable `path`, the first line of the
-`description` and the `input` type on one line. `namespaces` lists each app and
-profile, with its accounts, once. A page holds at most `limit` items, 10 by
+`description` and the `input` type on one line. `namespaces` lists each app,
+with its linked accounts, once. A page holds at most `limit` items, 10 by
 default, and ends sooner at its size budget. `remaining` counts the matches
 after it; pass `next` to `tools.search` for the following page, until `next` is
 null. An item with `inputTruncated` has a longer input type than search shows.
-A tool that several profiles share is one item; `alsoAt` lists its other paths.
 
 Read the whole signature, with the output type, and the whole description before
 relying on a result's shape:
@@ -246,7 +245,7 @@ Use `organization` explicitly in management calls. Never guess `me` or `default`
 and do not search local files for an organization or credentials.
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].apps.deploy({
+return await tools.executor.apps.deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
@@ -270,7 +269,7 @@ and a `package.json` that pins the exact `apps` version `framework.release`
 returns:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>" };
 const { version } = await executor.framework.release({ path });
 const files = [
@@ -327,25 +326,24 @@ Hosted deployment currently creates a new named app and returns the app directly
 It rejects an existing name. Use source commits and deployment by app ID for edits.
 After deployment, start a new execute to discover and call its tools.
 Other hosted operations include `organization.inventory`, `organization.catalog`,
-`apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, profile operations, and
+`apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, `appAccounts` operations, and
 `apps.remove`. Always read their discovered signatures before calling them.
 
-For hosted account setup, create a profile with `profiles.create` first.
-The host derives its owner and subject from the caller. Pass the returned ID to
-the connection request:
+For hosted account setup, request a connection for the requirement. The host
+derives its owner and subject from the caller, and completing it links the new
+account to that requirement. Use `appAccounts.userConnect` for a user
+requirement, which links it for you, and `appAccounts.appConnect` for an app
+requirement, which links it for everyone and needs edit access to the app:
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
-const path = { organization: "<approved-organization-id>", app: "<app-id>" };
-const profile = await executor.profiles.create({
-  path,
-  body: { accounts: {}, idempotencyKey: "vercel-setup" },
-});
-return await executor.accounts.connect({
-  path,
-  body: { profile: profile.id, requirement: "vercel" },
+return await tools.executor.appAccounts.userConnect({
+  path: { organization: "<approved-organization-id>", app: "<app-id>", requirement: "vercel" },
 });
 ```
+
+To use an account you already have, `appAccounts.userGet` (or
+`appAccounts.appGet`) lists the accounts you could link, and
+`appAccounts.userLink` (or `appAccounts.appLink`) links one.
 
 Give the returned `url` to the user. It opens Executor's signed-in browser form;
 credentials and OAuth are completed there. Check progress with
@@ -363,7 +361,7 @@ Use the returned app ID for API arguments and its name-derived slug for the agen
 Send the actual source string in `files[].content`.
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 return await executor.apps.deploy({
   body: {
     owner: "local",
@@ -427,7 +425,7 @@ one does not change the other. Read both when you need to compare pending edits
 with the running app.
 
 ```js
-const executor = tools.executor.profiles["<management-profile-id>"];
+const executor = tools.executor;
 const path = { organization: "<approved-organization-id>", app: "<app-id>" };
 const source = await executor.appManagement.source({ path });
 const entry = source.files.find((file) => file.path === "index.ts");
@@ -461,15 +459,16 @@ commit against `saved.revision.commit`. A stale
 `expected` returns `SourceError` with `reason: "conflict"`. Read working source
 again and reconcile the edits before retrying. Deployment returns `{ app,
 deployment }`, preserves the app ID and data, and never updates the Git branch.
-It has no expected-active-deployment argument. Check profiles after changing
-account requirements; saved selections can become incompatible with new code.
+It has no expected-active-deployment argument. Check the app's linked accounts
+after changing account requirements; an account whose provider no requirement
+uses no longer applies.
 
-Every profile follows the active deployment, so do not update or reconcile a
-profile to pick up new code. The next `execute` lists and calls the new tools.
-A deploy marks each profile's setup `pending` and starts background setup,
-which re-registers its webhooks and schedules, usually within seconds. `pending`
-does not block tool calls. Setup that cannot finish shows `needs-setup` or
-`failed` with its cause.
+Every call follows the active deployment, so nothing needs updating to pick up
+new code. The next `execute` lists and calls the new tools. Activating a
+deployment re-registers each webhook source's subscriptions on it in the
+background, usually within seconds, without blocking tool calls; the app's
+Webhooks tab shows their status. It also deletes the saved settings of schedules
+the new deployment no longer declares.
 
 `apps.deployments` lists retained versions. `apps.source` accepts an optional
 `query.deployment` to read a specific version. `apps.activate` requires

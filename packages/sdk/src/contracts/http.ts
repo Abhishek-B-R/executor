@@ -2,7 +2,6 @@
 import { HttpApi } from "effect/http-api";
 import { AccountConnectionsGroup } from "./account-connection.ts";
 import { OAuthClientsGroup } from "./oauth-clients.ts";
-import { AppProfilesGroup } from "./profiles.ts";
 import { AccountsGroup } from "./account.ts";
 import { AppsGroup } from "./apps.ts";
 import { OwnersGroup } from "./owner.ts";
@@ -20,7 +19,6 @@ export const ExecutorApi = HttpApi.make("executor")
   .add(AccountConnectionsGroup)
   .add(OAuthClientsGroup)
   .add(AppsGroup)
-  .add(AppProfilesGroup)
   .add(AppSkillsGroup)
   .add(ToolsGroup)
   .add(SchedulesGroup)

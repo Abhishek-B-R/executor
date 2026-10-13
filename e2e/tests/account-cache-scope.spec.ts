@@ -12,8 +12,8 @@ import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Scoped = Schema.Struct({ value: Schema.String, token: Schema.String });
 const handle = /^exsec_[0-9a-f]+_$/;
@@ -41,9 +41,9 @@ const service = defineProvider({
   hosts: ["api.account-cache-scope.invalid"],
   auth: { key: secrets({ label: "Key", fields: object({ grant: plain(string()), token: string() }) }) },
 });
-export default defineApp({ accounts: { service: service.many() } }, async (ctx) => {
+export default defineApp({ user: { accounts: { service: service.many() } } }, async (ctx) => {
   const account = (id) => {
-    const found = ctx.accounts.service.find((account) => account.id === id);
+    const found = ctx.user.accounts.service.find((account) => account.id === id);
     if (!found) throw new Error("Missing account");
     return found;
   };
@@ -74,13 +74,15 @@ export default defineApp({ accounts: { service: service.many() } }, async (ctx) 
           token: `secret-${marker}`,
         };
         expect(fields.grant.length).toBeGreaterThan(grantBytes);
+        /** Connect an account from the app, which links it for the owner. */
         const connect = (label: string) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, path);
-            const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            });
+            const pending = yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {},
+            );
             expect(pending.status, JSON.stringify(pending.body)).toBe(200);
             const saved = yield* api.request(
               actors.owner,
@@ -99,17 +101,12 @@ export default defineApp({ accounts: { service: service.many() } }, async (ctx) 
           });
         const first = yield* connect("Synthetic first");
         const second = yield* connect("Synthetic second");
-        const profile = yield* createProfile(actors.owner, path);
-        const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-          service: [first, second],
-        });
-        expect(selected.status, JSON.stringify(selected.body)).toBe(200);
 
         const responses: unknown[] = [];
+        // Both accounts are linked and the call chooses none, so the app receives both.
         const call = (tool: string, id: string) =>
           api
             .request(actors.owner, "POST", `${path}/tools/call`, {
-              profile: profile.id,
               tool,
               input: { id },
             })

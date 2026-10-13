@@ -14,7 +14,7 @@ Read these files in order:
 4. `aesGcmCredentials` from `@executor-js/sdk/core` encrypts account fields with AES-GCM.
 5. `packages/mcp` declares and implements execute, skills, search and the transport;
    `src/implementation/mcp.ts` supplies local SDK access and documentation I/O.
-6. `src/implementation/executor-app.ts` deploys the bundled management app and selects its local API account.
+6. `src/implementation/executor-app.ts` deploys the bundled management app and links its local API account.
 7. `src/contracts/config.ts` defines local paths, port, explicit secrets and MCP limits.
 8. `src/contracts/dashboard.ts` defines the typed dashboard API;
    `src/implementation/dashboard.ts` projects SDK data and `web.ts` serves the UI.
@@ -178,11 +178,11 @@ Bearer authentication for SDK/MCP remains unchanged. Requests must use the exact
 `http://127.0.0.1:<port>` origin and Host; no remote access or CORS is enabled.
 The public HTML and bundled assets contain no key or account data.
 
-Inspect apps, saved account selections, live tools, retained deployments and
+Inspect apps, their linked accounts, live tools, retained deployments and
 source files. The Accounts page shows provider metadata and the apps that use
 each account. It never returns saved credentials. This first dashboard is
-also supports catalog imports and app account selection. Accounts are connected and their
-credentials replaced from an app's Accounts tab, which selects them for that app.
+also supports catalog imports. Accounts are connected and their credentials replaced
+from an app's Accounts tab, which also links and unlinks saved accounts.
 The SDK and MCP expose the underlying operations to other clients.
 
 The React UI lives in `apps/local/web`. Effect Atom reads the shared HTTP API
@@ -236,19 +236,21 @@ return await tools.search({ query: "Executor" });
 ```
 
 Search returns exact callable paths, one-line descriptions and input types;
-`tools.search.describe({ paths })` returns full signatures. The Executor app exposes
-`deployApp`, `addApp`, `listApps`, `getApp`, `listAccounts`,
-`getAccount`, `activateDeployment` and `listTools`. Account selections use
-`apps.profiles` with an explicit profile and expected revision.
-It calls this server's API through an ordinary selected account. The host uses
+`tools.search.describe({ paths })` returns full signatures. The Executor app's
+tools are generated from this server's management API, such as `apps.deploy`,
+`apps.list`, `accounts.list`, `appAccounts.userConnect` and `tools.list`.
+It calls this server's API through its linked account. The host uses
 the existing configured bearer key; it does not create a separate admin key.
 The persisted host-owned app is named `Executor`, with owner `executor-local`.
 Startup restores its bundled source and updates its local account's port/key
 while retaining the account identity. Leave that connection under host control.
 
-All configured apps get an app-ID namespace. Copies with different accounts
-have independent source and deployments. The catalog is evaluated at
-the start of each execute, and tool calls resolve the saved selection again.
+Each app appears once, under `tools[appSlug]`. Calls never choose accounts: each
+uses the accounts linked to the app, the newest one for each plain requirement and
+every one for a many() requirement. Linking or connecting another account for a
+plain requirement replaces the one linked before; it stays saved. Links are kept
+in `local_app_account_links`. Copies have independent source and deployments. The catalog is evaluated at the start of each execute,
+and tool calls resolve their accounts again.
 Run a new execute to discover apps added or configured during a previous one.
 Incomplete or failing apps appear in `unavailableApps` with a safe error tag.
 
@@ -263,9 +265,9 @@ already completed are not rolled back when an execution fails or is cancelled.
 
 - Deploy source, derive provider IDs and retain immutable deployments.
 - Add API-key accounts and read account metadata without returning credentials.
-- Create configured app copies and save independent account selections.
+- Create configured app copies.
 - Validate account existence, provider compatibility, cardinality and duplicates.
-- List live tools and invoke them using a snapshot of saved account selections.
+- List live tools and invoke them with the accounts linked to the app.
 - Activate retained deployments in the same code lineage.
 - Serve MCP execute for app calls and management through the bundled Executor app.
 - Serve a read-only skills tool for deployed app documents, including the Executor app’s `executor`, `code-mode` and `app-authoring` skills.
@@ -273,7 +275,7 @@ already completed are not rolled back when an execution fails or is cancelled.
 - Serve a local dashboard over the same persisted apps and accounts, with catalog imports and account setup.
 
 SDK writes use database transactions. Builds and app execution run outside
-transactions. A failed selection or activation leaves the saved app unchanged.
+transactions. A failed activation leaves the saved app unchanged.
 Unused retained builds can remain after a later database failure; build garbage
 collection is deferred.
 
@@ -324,15 +326,13 @@ the catalog does not already include OAuth. This supplements incomplete API-key
 entries with OAuth while keeping their API-key method. The account form prefers
 OAuth when available. An authentication error alone does not imply OAuth support.
 
-After import, choose a compatible saved account or add one. **Accounts → Add
-account** uses the same form and the provider definitions of installed apps.
-Saving an account and selecting it for an app are separate operations. If account
-selection fails, the saved account remains available and selection can be retried.
+After import, connect an account from the app's **Accounts** tab. Every saved
+account whose provider one of the app's requirements uses is linked to it.
 Account responses never include credentials. If a network failure leaves saving
 uncertain, inspect Accounts before submitting a new account.
 
 On an app page, **Delete app** opens a full-page confirmation. It removes only
-that configured copy and its account selections. Saved accounts, other app
+that configured copy. Saved accounts, other app
 copies, and retained source/builds stay available. The built-in Executor app is
 managed by the local server and cannot be deleted. The same operation is exposed
 as `executor.apps.remove({ app })` and the management app's `removeApp` tool.

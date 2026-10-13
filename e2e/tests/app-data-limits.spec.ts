@@ -22,7 +22,7 @@ const source = {
   content: `import { defineApp, mutation, query, router, number, object, string } from "apps";
 // One statement writes count rows without a slow loop.
 const insert = "INSERT INTO items (grp, n) WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < ?) SELECT 'g', x FROM c";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     count: query({ input: object({}) }, async ({ sql }) =>
       sql.exec("SELECT count(*) AS n FROM items").one().n),
@@ -92,7 +92,7 @@ const withoutDatabase = [
   {
     path: "index.ts",
     content: `import { defineApp, query, router, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ count: query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT 1 AS n").one().n) }),
 });`,
   },

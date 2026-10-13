@@ -13,7 +13,7 @@ import apps from "apps/package.json" with { type: "json" };
 
 const me = OwnerId.make("app-user-me");
 
-/** Deploy one configured app, connect an account for its profile, and call the tool. */
+/** Deploy one configured app, connect an account for it, and call the tool. */
 export async function vercelProjectsReport(executor: Executor) {
   const source = await Effect.runPromise(
     FileSystem.FileSystem.use((fs) =>
@@ -33,18 +33,11 @@ export async function vercelProjectsReport(executor: Executor) {
   if (app.requirements.accounts.vercel === undefined)
     throw new Error("This app must declare a vercel account");
 
-  const profile = await executor.apps.profiles.create({
-    owner: me,
-    subject: "me",
-    idempotencyKey: "work",
-    app: app.id,
-    accounts: {},
-  });
   // Every account is connected for an app requirement. Completing the request saves the
-  // account and selects it for the profile. Products give users the request as a browser link.
+  // account; calls then name it. Products give users the request as a browser link.
   const connection = await executor.accountConnections.create({
     owner: me,
-    target: { app: app.id, profile: profile.id, requirement: "vercel" },
+    target: { app: app.id, requirement: "vercel" },
   });
   const account = await executor.accountConnections.submit({
     connection: connection.id,
@@ -55,12 +48,13 @@ export async function vercelProjectsReport(executor: Executor) {
 
   const projects = await executor.tools.call({
     app: app.id,
-    profile: profile.id,
+    // Each call names its accounts; the product decides which ones the caller may use.
+    accounts: { app: {}, user: { vercel: [account.id] } },
     tool: ToolName.make("listProjects"),
     kind: "query",
     input: {},
   });
-  return { app, profile, account, projects };
+  return { app, account, projects };
 }
 
 /** Local/remote parity; neither function starts work until called. */

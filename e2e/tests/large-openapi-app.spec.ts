@@ -23,7 +23,7 @@ import { largeOpenapiDocument } from "../support/large-openapi.ts";
 const index = `import { defineApp } from "apps";
 import { liveOpenapiRouter } from "apps/openapi";
 import configuration from "./openapi.json";
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ ...configuration, cache, fetch, ...(signal === undefined ? {} : { signal }) }),
 }));`;
 
@@ -49,7 +49,7 @@ import { liveOpenapiRouter } from "apps/openapi";
 import configuration from "./openapi.json";
 // The tools of the Kanji 日本 API, which provider.ts names.
 import "./provider.ts";
-export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => ({
+export default defineApp({}, async ({ cache, fetch, signal }) => ({
   tools: liveOpenapiRouter({ ...configuration, cache, fetch, ...(signal === undefined ? {} : { signal }) }),
 }));`;
 const wideProvider = `export const provider = { name: "Kanji 日本 API", headers: { "X-Note": "東京" } };\n`;

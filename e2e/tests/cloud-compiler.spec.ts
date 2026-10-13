@@ -27,7 +27,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
           {
             path: "index.ts",
             content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Read the active build",input:object({})},async()=>${JSON.stringify(version)}),
 })});`,
           },
@@ -55,7 +55,7 @@ export default defineApp({accounts:{}}, {tools: router({
 import ts from "typescript";
 import * as icons from "lucide-react";
 import React from "react";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Compile large dependencies",input:object({})},
     async()=>({version:ts.version,icons:Object.keys(icons).length,react:React.version})),
 })});`,
@@ -156,7 +156,7 @@ export default defineApp({accounts:{}}, {tools: router({
             {
               path: "index.ts",
               content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
+export default defineApp({}, async (ctx) => ({tools: router({
   inspect:query({description:"List retained files",input:object({})},async()=>ctx.files.map((file)=>file.path)),
 })}));`,
             },
@@ -220,7 +220,7 @@ export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
                   path: "index.ts",
                   content: `import { defineApp, query, object, router } from "apps";
 import stalled from "${stalledPackage}";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Never compiles",input:object({})},async()=>String(stalled)),
 })});`,
                 },
@@ -370,7 +370,7 @@ export default defineApp({accounts:{}}, {tools: router({
 import { defineApp, query, object, router } from "apps";
 import { z } from "zod";
 import manifest from "./package.json";
-export default defineApp({accounts:{}}, { tools: router({
+export default defineApp({}, { tools: router({
    inspect: query({description:"Check the installed dependency and original manifest",input:object({})},
     async () => ({value:z.string().parse("real-package"),version:manifest.dependencies.zod})),
  })});`,
@@ -389,7 +389,7 @@ export default defineApp({accounts:{}}, { tools: router({
           `
 import { defineApp, query, object, router } from "apps";
 import manifest from "./package.json";
-export default defineApp({accounts:{}},{tools: router({
+export default defineApp({},{tools: router({
   inspect:query({description:"Read the original declaration",input:object({})},async()=>manifest.dependencies),
 })});`,
           { "@executor-fixture/unused-package": "0.0.0-synthetic" },
@@ -412,7 +412,7 @@ export default defineApp({accounts:{}},{tools: router({
             {
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));`,
+export default defineApp({}, async () => ({ tools: router({}) }));`,
             },
           ],
         });
@@ -450,7 +450,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));
                     path: "index.ts",
                     content: `import { defineApp, query, object, router } from "apps";
 import { z } from "zod";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Read the build",input:object({})},async()=>z.string().parse("build ${index}")),
 })});`,
                   },

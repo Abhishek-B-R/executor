@@ -8,7 +8,7 @@ import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
-import { ConnectedAccount, createProfile } from "../support/profiles.ts";
+import { ConnectedAccount } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Deployed = Schema.Struct({
@@ -77,7 +77,7 @@ import { defineApp, defineProvider, object, router, secrets, string } from "apps
 const service = defineProvider({ name: "Owner fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
               },
               appsManifest,
@@ -87,13 +87,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         owned.unshift(`/v1/apps/${app.id}`);
         expect(app.owner).toBe("local");
         const provider = app.requirements.accounts.service.provider;
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
-        const requirement = { app: app.id, profile: profile.id, requirement: "service" };
+        const requirement = { app: app.id, requirement: "service" };
 
         // A connection request naming another owner saves the account under the app's owner.
         const link = yield* body(
@@ -144,23 +138,18 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         expect(host).not.toContain(provider);
         expect(yield* providers(elsewhere)).toEqual([]);
 
-        // Listing never spans owners: a read without one is refused with an empty 400, as every
+        // Listing never spans owners: a read without one is refused with `RequestInvalid`, as every
         // SDK route refuses a request its schema rejects, and the Executor app's tools name the
         // missing owner to the agent.
         for (const path of ["/v1/accounts", "/v1/providers"])
-          expect(yield* agent.send("GET", path)).toEqual({ status: 400, body: null });
-        const executorApp = (yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
-          yield* agent.send("GET", "/v1/apps"),
-        )).find((each) => each.slug === "executor");
-        if (executorApp === undefined)
-          return yield* Effect.die("The local Executor app is missing");
-        const [management] = yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String })),
-          yield* agent.send("GET", `/v1/apps/${executorApp.id}/profiles`),
-        );
-        if (management === undefined)
-          return yield* Effect.die("The local Executor profile is missing");
+          expect(yield* agent.send("GET", path)).toEqual({
+            status: 400,
+            body: {
+              _tag: "RequestInvalid",
+              message:
+                "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+            },
+          });
         const client = yield* mcp.connect(target.apiKey, "local-account-owners");
         for (const operation of ["list", "providers"]) {
           const refused = yield* client.use(
@@ -170,7 +159,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
                 {
                   name: "execute",
                   arguments: {
-                    code: `return await tools.executor.profiles[${JSON.stringify(management.id)}].accounts.${operation}({ query: {} });`,
+                    code: `return await tools.executor.accounts.${operation}({ query: {} });`,
                   },
                 },
                 undefined,
@@ -254,7 +243,7 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
               {
                 path: "index.ts",
                 content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({}) });`,
+export default defineApp({}, { tools: router({}) });`,
               },
               appsManifest,
             ],

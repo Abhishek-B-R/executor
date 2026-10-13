@@ -4,9 +4,8 @@ import { ProviderErrorNotice } from "@executor-js/ui/dashboard/provider-error-no
 import { CompactFailure, ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ConnectionFailed, hasConnectionFailure } from "@executor-js/utils/connection-failure";
-import { parseAppSearch } from "../../contracts/navigation.ts";
 import type { ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { DashboardProvider } from "@executor-js/ui/dashboard/context";
 import type {
   AppLinkProps,
@@ -28,19 +27,13 @@ export function useDashboardAtoms() {
   return dashboardAtoms(useOrganizationRoute().organization);
 }
 
-const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
+const AppLink = ({ app, view, tool, ...props }: AppLinkProps) => {
   const { slug: organizationSlug } = useOrganizationRoute();
-  const location = useRouterState({ select: (state) => state.location });
-  const current =
-    location.pathname ===
-    `/org/${encodeURIComponent(organizationSlug)}/apps/${encodeURIComponent(app)}`
-      ? parseAppSearch(location.search).profile
-      : undefined;
   return (
     <Link
       to="/org/$organizationSlug/apps/$appId"
       params={{ organizationSlug, appId: app }}
-      search={{ view, tool, profile: profile ?? current }}
+      search={{ view, tool }}
       {...props}
     />
   );
@@ -65,7 +58,7 @@ export function HostedFailure({ cause, retry, retrying, layout }: FailureProps<H
     return (
       <ProviderErrorNotice
         error={error.value}
-        context="While using this app and selected profile."
+        context="While using this app and its accounts."
         retry={retry}
         retrying={retrying}
         layout={layout}

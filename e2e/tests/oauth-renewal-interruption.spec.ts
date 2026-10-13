@@ -17,13 +17,13 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Read = Schema.Struct({
   service: Schema.Struct({
@@ -131,13 +131,21 @@ const recordedAt = (
   return at;
 };
 
-/** One rotating OAuth account selected by one app profile, with a tool that uses its token. */
-const rotatingAccount = (replacedRefreshTokens: "refused" | "accepted") =>
+/**
+ * One rotating OAuth account linked to one app, with a tool that uses its token. The owner
+ * deploys the app; `user` connects the account and calls the tool. A member uses an app the owner
+ * opened to everyone.
+ */
+const rotatingAccount = (
+  replacedRefreshTokens: "refused" | "accepted",
+  user: "owner" | "member" = "owner",
+) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       evidence = yield* Evidence,
       http = yield* HttpClient.HttpClient;
+    const caller = actors[user];
     const issuer = yield* oauthSetupIssuer;
     const prefix = `/api/organizations/${actors.organization.id}`;
     // Tokens issued inside the host's 30-second renewal window renew on every use, and every
@@ -154,11 +162,15 @@ const rotatingAccount = (replacedRefreshTokens: "refused" | "accepted") =>
       files: [
         {
           path: "index.ts",
-          content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
+          content: `import { defineApp, defineProvider, oauth2, query, object, router, ProviderError } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
-    read: query({ input: object({}) }, async ({ fetch }) => ({ service: await (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
+    read: query({ input: object({}) }, async ({ fetch }) => {
+      const response = await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
+      if (response.status === 401) throw new ProviderError({ reason: "unauthorized", status: 401, accountId: accounts.service.id });
+      return { service: await response.json() };
+    }),
   }),
 }));`,
         },
@@ -168,17 +180,27 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = yield* body(AppProvider, deployed);
     const appPath = `${prefix}/apps/${app.id}`;
+    /** Open the app to every member, or keep it to its creator, the owner. */
+    const audience = (kind: "everyone" | "private") =>
+      Effect.gen(function* () {
+        const access = yield* body(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.owner, "GET", `${appPath}/access`),
+        );
+        const changed = yield* api.request(actors.owner, "PATCH", `${appPath}/access`, {
+          revision: access.revision,
+          audience: { kind },
+        });
+        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+      });
+    if (user === "member") yield* audience("everyone");
 
-    const profile = yield* createProfile(actors.owner, appPath);
     const connection = yield* body(
       Resource,
-      yield* api.request(actors.owner, "POST", `${appPath}/connections`, {
-        requirement: "service",
-        profile: profile.id,
-      }),
+      yield* api.request(caller, "POST", connectionsPath(appPath, "user", "service"), {}),
     );
     const started = yield* api.request(
-      actors.owner,
+      caller,
       "POST",
       `${prefix}/connections/${connection.id}/oauth/start`,
       { method: "oauth", label: "Synthetic rotating account" },
@@ -195,27 +217,21 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
       }),
     ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
     const completed = yield* api.request(
-      actors.owner,
+      caller,
       "POST",
       `${prefix}/connections/${connection.id}/oauth/complete`,
       { callbackUrl },
     );
     expect(completed.status, JSON.stringify(completed.body)).toBe(200);
     const account = yield* body(Resource, completed);
-    // Background profile setup resolves, and so renews, the new account. Let it finish so the
-    // renewals below belong to the calls the scenario makes.
-    yield* api.request(actors.owner, "GET", `${appPath}/profiles/${profile.id}`).pipe(
-      Effect.flatMap((response) => body(SetupStatus, response)),
-      Effect.flatMap((current) =>
-        current.status !== "pending"
-          ? Effect.void
-          : Effect.fail(new Error("Profile setup has not finished")),
-      ),
-      Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+    // Linking the account sets it up as the app's webhook source in the background, which
+    // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+    // the call the scenario makes.
+    yield* settleWebhookSources(caller, appPath, (sources) =>
+      sources.some((source) => source.account === account.id && source.status !== "pending"),
     );
 
-    const read = api.request(actors.owner, "POST", `${appPath}/tools/call`, {
-      profile: profile.id,
+    const read = api.request(caller, "POST", `${appPath}/tools/call`, {
       tool: "read",
       input: {},
     });
@@ -291,6 +307,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
     return {
       issuer,
       metrics,
+      audience,
       read,
       renewed,
       heldBeyond,
@@ -512,6 +529,56 @@ const slowLiveRenewal = Effect.gen(function* () {
 });
 
 /**
+ * The caller loses app access while their call waits for a slow renewal. App access was checked
+ * before the renewal; it is checked again once the renewal settles, so the app's code never runs
+ * for a caller who can no longer use the app.
+ */
+const appAccessEndsDuringRenewal = Effect.gen(function* () {
+  const context = "app access ends during a renewal";
+  const { issuer, metrics, audience, read, heldBeyond } = yield* rotatingAccount(
+    "refused",
+    "member",
+  );
+  yield* issuer.configure({ hold: "refresh-issued" });
+  const before = yield* metrics;
+  const call = yield* Effect.forkChild(read);
+  yield* heldBeyond(before.held, context);
+  // The owner makes the app private to its creator while the member's renewal is held.
+  yield* audience("private");
+  yield* issuer.configure({ hold: null });
+  yield* issuer.release;
+  const response = yield* Fiber.join(call);
+  expect(response.status, `${context}: ${JSON.stringify(response.body)}`).not.toBe(200);
+  const after = yield* metrics;
+  expect(after.refreshesIssued - before.refreshesIssued, context).toBe(1);
+  // The renewed credentials never reached the app's code, so it read nothing from the service.
+  expect(after.resourceRequests, context).toEqual(before.resourceRequests);
+
+  // The same holds when the service refuses a token mid-call: a query is repeated with renewed
+  // credentials only while its caller can still use the app. Tokens without a stated lifetime are
+  // not renewed ahead, so the call starts with the saved token and renews once it is refused.
+  const refusal = "app access ends during a renewal after a refused token";
+  yield* audience("everyone");
+  yield* issuer.configure({ expiresIn: null });
+  expect((yield* read).status, refusal).toBe(200);
+  expect((yield* read).status, refusal).toBe(200);
+  yield* issuer.expireAccessTokens;
+  yield* issuer.configure({ hold: "refresh-issued" });
+  const refused = yield* metrics;
+  const retried = yield* Effect.forkChild(read);
+  yield* heldBeyond(refused.held, refusal);
+  yield* audience("private");
+  yield* issuer.configure({ hold: null });
+  yield* issuer.release;
+  const repeated = yield* Fiber.join(retried);
+  expect(repeated.status, `${refusal}: ${JSON.stringify(repeated.body)}`).not.toBe(200);
+  const settled = yield* metrics;
+  expect(settled.refreshesIssued - refused.refreshesIssued, refusal).toBe(1);
+  // Only the refused read reached the service; the query was not repeated.
+  expect(settled.resourceRequests.GET - refused.resourceRequests.GET, refusal).toBe(1);
+});
+
+/**
  * The caller that started a renewal disconnects while the service is answering, as a timed-out
  * agent or test does. The process stays up, so it must still save the rotated token it receives.
  */
@@ -666,6 +733,9 @@ layer(HostedLive, { excludeTestServices: true })("OAuth renewal interruption", (
   );
   it.effect(scenarios.oauthRenewalSlowLiveHolder.title, (context) =>
     withHostedCase(context, slowLiveRenewal),
+  );
+  it.effect(scenarios.oauthRenewalAppAccessEnds.title, (context) =>
+    withHostedCase(context, appAccessEndsDuringRenewal),
   );
   it.effect(scenarios.oauthRenewalCallerDisconnects.title, (context) =>
     withHostedCase(context, callerDisconnects),

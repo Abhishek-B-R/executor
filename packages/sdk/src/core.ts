@@ -13,6 +13,15 @@ export { bearerChallenge, bearerResourceMetadata } from "./implementation/oauth-
 export { subscribeAppQuery } from "./implementation/live.ts";
 export { toolCallSpan } from "./implementation/tool-call-overhead.ts";
 export {
+  plainAccount,
+  invocationAccounts,
+  linkedRequirements,
+  resolveLinkedAccounts,
+  type LinkedAccounts,
+  type RequirementLink,
+  type LinkedRequirement,
+} from "./implementation/linked-accounts.ts";
+export {
   runtimeAdapter,
   toEffectRuntime,
   createAppRuntime,

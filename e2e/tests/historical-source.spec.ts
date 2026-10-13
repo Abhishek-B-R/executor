@@ -12,7 +12,7 @@ import { appsManifest } from "../support/apps-release.ts";
 const files = [
   {
     path: "index.ts",
-    content: `import {defineApp,object,query, router} from 'apps'; export default defineApp({accounts:{}},{tools: router({
+    content: `import {defineApp,object,query, router} from 'apps'; export default defineApp({},{tools: router({
   hello:query({input:object({})},async()=>"historical snapshot"),
 })});`,
   },

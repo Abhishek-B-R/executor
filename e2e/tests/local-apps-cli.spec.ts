@@ -215,7 +215,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* fs.makeDirectory(`${source}/.git`);
         yield* fs.writeFileString(
           `${source}/index.ts`,
-          'import { defineApp, router } from "apps";\nimport { label } from "./lib/label.ts";\nexport default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));\nvoid label;\n',
+          'import { defineApp, router } from "apps";\nimport { label } from "./lib/label.ts";\nexport default defineApp({}, async () => ({ tools: router({}) }));\nvoid label;\n',
         );
         yield* fs.writeFileString(`${source}/lib/label.ts`, 'export const label = "cli";\n');
         yield* fs.writeFileString(`${source}/node_modules/ignored/index.js`, "ignored\n");

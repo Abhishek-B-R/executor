@@ -9,7 +9,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { AccountId } from "@executor-js/sdk";
 import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
-import { selectedIds, accountNeedsSignIn } from "../../contracts/dashboard.ts";
+import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
 import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
@@ -121,10 +121,7 @@ function AccountsList({
           </div>
           {accounts.map((account) => {
             const apps = data.apps.filter((app) =>
-              data.profiles.some(
-                (profile) =>
-                  profile.app === app.id && selectedIds(profile.accounts).includes(account.id),
-              ),
+              data.links.some((link) => link.app === app.id && link.account === account.id),
             );
             return (
               <div

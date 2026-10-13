@@ -1,8 +1,8 @@
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
+import { linkedAccountIds } from "../support/app-accounts.ts";
 import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -85,7 +85,7 @@ layer(TestLive, { excludeTestServices: true })("Local OAuth", (it) => {
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Local reporting",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["reports:read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
               },
               appsManifest,
             ],
@@ -118,16 +118,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           ),
         );
         expect(setup.scopes).toEqual(["reports:read"]);
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
         const issued = yield* session.send(
           "POST",
           "/account-connect/api/requests",
-          { owner: "local", target: { app: app.id, profile: profile.id, requirement: "service" } },
+          { owner: "local", target: { app: app.id, requirement: "service" } },
           headers,
         );
         expect(issued.status).toBe(200);
@@ -191,6 +185,8 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         );
         saved = completed.state.account.id;
         expect(completed.state.account.label).toBe("Default");
+        // Connecting for the app links the new account to it.
+        expect(yield* linkedAccountIds(agent, `/dashboard/api/apps/${app.id}`)).toEqual([saved]);
         // The limited connection page sits outside the dashboard, so nothing asks for a name.
         expect(
           yield* browser.use("The connection link does not ask for a name", (page) =>
@@ -211,7 +207,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             "/account-connect/api/requests",
             {
               owner: "local",
-              target: { app: app.id, profile: profile.id, requirement: "service" },
+              target: { app: app.id, requirement: "service" },
               account: saved,
             },
             headers,
@@ -274,7 +270,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Sample service",auth:{oauth:oauth2({discover:${JSON.stringify(discovery.origin + "/mcp")}})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
               },
               appsManifest,
             ],
@@ -288,22 +284,12 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             .send("DELETE", `/v1/apps/${discoveryApp.id}`, undefined, headers)
             .pipe(Effect.orDie),
         );
-        const discoveryProfile = yield* createProfile(
-          agent,
-          `/v1/apps/${discoveryApp.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
         const discoveryRequest = yield* session.send(
           "POST",
           "/account-connect/api/requests",
           {
             owner: "local",
-            target: {
-              app: discoveryApp.id,
-              profile: discoveryProfile.id,
-              requirement: "service",
-            },
+            target: { app: discoveryApp.id, requirement: "service" },
           },
           headers,
         );

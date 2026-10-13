@@ -562,7 +562,7 @@ export const previewItems = (
     const integration = snapshot.integrations.find(
       (candidate) => candidate.slug === row.integration,
     );
-    // Profiles are created oldest first, so the first is the app's default.
+    // Connections are linked oldest first, so their links keep v1's order.
     const older = snapshot.connections.filter(
       (other) => other.integration === row.integration && other.created_ms < row.created_ms,
     );
@@ -628,7 +628,7 @@ export const previewItems = (
       label: toolkit.data.name,
       context: null,
       host: null,
-      // Its connection selects the apps and profiles these become.
+      // Its connection selects the apps and linked accounts these become.
       dependsOn: [...new Set(reached.map((connection) => connection.integration))]
         .flatMap((slug) => {
           const integration = snapshot.integrations.find((candidate) => candidate.slug === slug);

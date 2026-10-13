@@ -1,7 +1,7 @@
 /**
  * Every write in every organization wakes Cloud's schedule coordinator after its response, and the
  * coordinator has one alarm. A wake must never move that alarm later: while wakes keep arriving
- * less than a second apart, due schedules and requested profile setup still run.
+ * less than a second apart, due schedules and requested webhook source setup still run.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Duration, Effect, Exit, Fiber, Option, Schedule, Schema } from "effect";
@@ -10,24 +10,34 @@ import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App } from "../support/contracts.ts";
+import { App, Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { removeAppWhenStopped, webhookSources } from "../support/webhook-sources.ts";
+import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
 
-/** `tick` is next due an hour after it is enabled; `load` stays paused and only takes writes. */
-const source = `import { defineApp, mutation, interval, object, router } from "apps";
+/**
+ * `tick` is next due an hour after it is enabled; `load` stays paused and only takes writes.
+ * Linking an account registers its webhook source in the background. The requirement accepts any
+ * number of accounts, so `tick` runs the same before and after one is linked.
+ */
+const source = `import { defineApp, defineProvider, secrets, mutation, userInterval, object, string, router } from "apps";
+const service = defineProvider({ name: "Wake fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
+const incoming = { account: { user: "service" }, config: object({}), state: object({}),
+  register: async () => ({}), unregister: async () => {}, handle: async () => new Response(null, { status: 204 }) };
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { tick: interval({ minutes: 60 }, tick, {}), load: interval({ minutes: 60 }, tick, {}) } }));`;
+export default defineApp({ user: { accounts: { service: service.many() } } }, async () => ({ tools: router({ tick }), webhooks: { incoming }, schedules: { tick: userInterval({ minutes: 60 }, tick, {}), load: userInterval({ minutes: 60 }, tick, {}) } }));`;
 
 const Runs = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, status: Schema.String }),
 );
-const SetupStatus = Schema.Struct({ status: Schema.String });
 
 /** Writes that each wake the coordinator once. CI stages saw about 14 a second. */
 const wakeEvery = "200 millis";
-/** Run Now and profile setup must both finish this long after they are sent, requests included. */
+/**
+ * Run Now and the linked account's webhook source setup must both finish this long after they are
+ * sent, requests included.
+ */
 const deadlineMs = 20_000;
 /**
  * A wake arms the coordinator's alarm a second out. A pause this long between wakes lets that
@@ -77,10 +87,18 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
           });
           expect(deployed.status).toBe(200);
           const app = yield* body(App, deployed);
-          yield* Effect.addFinalizer(() =>
-            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-          );
           const path = `${prefix}/apps/${app.id}`;
+          const created: { account?: string } = {};
+          // Unlinking removes the webhook source; the app is removable once its webhook stops.
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              if (created.account !== undefined)
+                yield* unlinkAccount(actors.owner, path, "service", created.account);
+              yield* removeAppWhenStopped(actors.owner, path);
+              if (created.account !== undefined)
+                yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
+            }).pipe(Effect.orDie),
+          );
           const loadPath = `${path}/schedules/load`;
           // Enabling the hourly schedule leaves the coordinator's next planned wake an hour away.
           expect(
@@ -160,18 +178,34 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             );
             outcome.ran = yield* Clock.currentTimeMillis;
           });
+          // Connecting an account from the app links it, which requests its webhook source setup.
           const setUp = Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, path);
+            const connection = yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(path, "user", "service"),
+              {},
+            );
+            expect(connection.status, JSON.stringify(connection.body)).toBe(200);
+            const saved = yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${(yield* body(Resource, connection)).id}/submit`,
+              { method: "key", label: "Wake fixture", fields: { token: "synthetic-wake" } },
+            );
+            expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+            const account = (yield* body(Resource, saved)).id;
+            created.account = account;
             let status = "pending";
             yield* until(
-              api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-                Effect.flatMap((response) => body(SetupStatus, response)),
-                Effect.map((current) => {
-                  status = current.status;
+              webhookSources(actors.owner, path).pipe(
+                Effect.map((sources) => {
+                  status =
+                    sources.find((source) => source.account === account)?.status ?? "pending";
                   return status !== "pending";
                 }),
               ),
-              "Profile setup has not finished",
+              "Webhook source setup has not finished",
             );
             outcome.setUp = yield* Clock.currentTimeMillis;
             return status;
@@ -221,7 +255,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             report.verdict = "starved";
             const pending = [
               outcome.ran === undefined ? "The due schedule has not run" : null,
-              outcome.setUp === undefined ? "profile setup has not finished" : null,
+              outcome.setUp === undefined ? "webhook source setup has not finished" : null,
             ].filter((reason) => reason !== null);
             return yield* Effect.fail(
               new Error(

@@ -3,13 +3,12 @@
  * its review answers only the dashboard's own runs. Its copy claims only what Executor did: app
  * code can report that a call needs approval after it has already written somewhere.
  */
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Page } from "playwright";
-import { Api, body, type Session } from "../support/api.ts";
+import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -54,7 +53,7 @@ const either = jsonSchema({
     { type: "object", properties: { email: { type: "string" } }, required: ["email"] },
   ],
 });
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     echo: query({ input: object({ message: string() }) }, async (_, input) => {
       if (input.message === "fail") throw new Error("Synthetic tool failure");
@@ -118,7 +117,7 @@ Response.json = (body, init) =>
         { status: 409 },
       )
     : json(body, init);
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     publish: mutation({ input: object({}) }, async () => {
       await fetch(${JSON.stringify(receipt)}, { method: "POST" });
@@ -176,13 +175,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
           browser = yield* Browser,
           session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        const agent: Session = {
-          ...session,
-          send: (method, path, data, extra = {}) => {
-            const { origin: _origin, ...rest } = extra;
-            return session.send(method, path, data, { ...rest, ...headers });
-          },
-        };
         const response = yield* session.send(
           "POST",
           "/v1/apps/deploy",
@@ -201,12 +193,6 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
         yield* Effect.addFinalizer(() =>
           session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(
-          agent,
-          `/v1/apps/${app.id}`,
-          { owner: "local", subject: "local" },
-          headers,
-        );
         const pairing = yield* session.send("POST", "/auth/pair", undefined, headers);
         const { url } = yield* body(Schema.Struct({ url: Schema.String }), pairing);
         yield* browser.use("Pair the local browser", (page) => page.goto(url));
@@ -214,7 +200,7 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
           page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
         );
         yield* browser.use("Open the tool in the Tools tab", (page) =>
-          page.goto(`/apps/${app.id}?view=tools&profile=${profile.id}&tool=echo`),
+          page.goto(`/apps/${app.id}?view=tools&tool=echo`),
         );
         yield* browser.use("The runner is ready", (page) =>
           page.getByRole("button", { name: "Run tool", exact: true }).waitFor(),
@@ -224,10 +210,11 @@ layer(TestLive, { excludeTestServices: true })("Local tool runner", (it) => {
             Promise.all([
               formatTab(page, "Form").getAttribute("aria-selected"),
               page.getByLabel("Message", { exact: true }).inputValue(),
-              page.getByText("Running as", { exact: false }).textContent(),
+              // The app needs no account, so the runner names none.
+              page.getByText("Running as", { exact: false }).count(),
             ]),
           ),
-        ).toEqual(["true", "", "Running as Default"]);
+        ).toEqual(["true", "", 0]);
         yield* browser.use("Run the tool", (page) =>
           page
             .getByLabel("Message", { exact: true })
