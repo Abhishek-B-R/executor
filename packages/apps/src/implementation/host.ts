@@ -922,23 +922,31 @@ function dispatch(
               // An MCP server's failure is not the app's own error; keep its server's answer.
               const mcp = parseMcpError(error, secrets);
               const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
+              // A router found, while running it, that its source no longer has the tool.
+              const removed = Schema.is(HostToolNotFound)(error)
+                ? request.operation === "call"
+                  ? new HostToolNotFound()
+                  : new HostOperationNotFound()
+                : undefined;
               return Effect.fail(
-                Option.isSome(provider)
-                  ? leavingProviderError(provider.value, secrets, "call")
-                  : Option.isSome(response)
-                    ? new OpenapiResponseError({
-                        code: response.value.code,
-                        status: response.value.status,
-                        message: response.value.message,
-                        ...(response.value.recovery === undefined
-                          ? {}
-                          : { recovery: response.value.recovery }),
-                      })
-                    : Option.isSome(mcp)
-                      ? mcp.value
-                      : Option.isSome(failure)
-                        ? failure.value
-                        : new HostOperationFailed(failureDetail(error, secrets)),
+                removed !== undefined
+                  ? removed
+                  : Option.isSome(provider)
+                    ? leavingProviderError(provider.value, secrets, "call")
+                    : Option.isSome(response)
+                      ? new OpenapiResponseError({
+                          code: response.value.code,
+                          status: response.value.status,
+                          message: response.value.message,
+                          ...(response.value.recovery === undefined
+                            ? {}
+                            : { recovery: response.value.recovery }),
+                        })
+                      : Option.isSome(mcp)
+                        ? mcp.value
+                        : Option.isSome(failure)
+                          ? failure.value
+                          : new HostOperationFailed(failureDetail(error, secrets)),
               );
             }),
             Effect.withSpan("app.operation.execute", {

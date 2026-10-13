@@ -806,6 +806,17 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  liveOpenapiRetired: {
+    fixtures: "actors",
+    file: "live-openapi.spec.ts",
+    title:
+      "Live OpenAPI reports an operation its upstream removed as an unknown tool after one shared recheck",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   liveOpenapiYaml: {
     fixtures: "actors",
     file: "live-openapi-yaml.spec.ts",

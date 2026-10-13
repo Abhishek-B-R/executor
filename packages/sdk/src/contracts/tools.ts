@@ -1200,7 +1200,17 @@ export const routerFailure = (
 
 const toolNotFound = ({ tool }: { readonly tool: ToolName }): RefusalCopy => {
   const description = `The app does not expose a tool named “${tool}”.`;
-  return { message: description, title: "Tool not found", description };
+  const recovery = {
+    action: "Search the app’s tools again and call one it lists.",
+    instructions:
+      "The tool may have been removed or renamed since its name was found, such as when the API behind an app drops an operation. Search the app’s tools for the current name before calling again.",
+  };
+  return {
+    message: `${description} It may have been removed or renamed: search the app’s tools again and call one it lists.`,
+    title: "Tool not found",
+    description,
+    recovery,
+  };
 };
 /**
  * This evaluated app does not expose the named tool. With `mayHaveWritten`, the app's reply to a
