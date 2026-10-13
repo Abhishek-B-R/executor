@@ -1068,8 +1068,11 @@ const serviceHosts = (port: number) => ({
  * OpenAPI integrations whose requests depend on how v1 read them, against a loopback service
  * that records what it receives: a YAML specification with a repeated key, operations that name
  * their own server, a webhook, a method without a name, a public API, one whose operations call
- * two hosts of one service, one whose operations call two services, and one on two HTTPS hosts of
- * one service whose account check picks a server variable that turns it to plain HTTP.
+ * two hosts of one service, one whose operations call two services, one on two HTTPS hosts of
+ * one service whose account check picks a server variable that turns it to plain HTTP, one whose
+ * operation names a server that uses the document server's variable without declaring it, one
+ * whose two document servers declare that variable differently, and one whose server uses a
+ * variable no server declares.
  */
 const seedRequests = (organization: string, user: string, slug: string, origin: string) =>
   Effect.gen(function* () {
@@ -1079,6 +1082,8 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
     const uploadsKeyItem = `connection:user:uploads_${suffix}:main:token`;
     const mixedKeyItem = `connection:user:mixed_${suffix}:main:token`;
     const downgradedKeyItem = `connection:user:downgraded_${suffix}:main:token`;
+    const regionalKeyItem = `connection:user:regional_${suffix}:main:token`;
+    const layeredKeyItem = `connection:user:layered_${suffix}:main:token`;
     const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
     yield* emulators.v1VaultObject(vaultName(userScope, keyItem), "synthetic-requests-key");
     yield* emulators.v1VaultObject(vaultName(userScope, uploadsKeyItem), "synthetic-uploads-key");
@@ -1087,6 +1092,8 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
       vaultName(userScope, downgradedKeyItem),
       "synthetic-downgraded-key",
     );
+    yield* emulators.v1VaultObject(vaultName(userScope, regionalKeyItem), "synthetic-regional-key");
+    yield* emulators.v1VaultObject(vaultName(userScope, layeredKeyItem), "synthetic-layered-key");
     const hosts = serviceHosts(Number(new URL(origin).port));
     // js-yaml, which v1 parsed with, keeps the last of a repeated key.
     const requests = [
@@ -1212,6 +1219,59 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
         },
       },
     });
+    // Like Sentry's API: the document's server declares a region variable, and one operation names
+    // the same server URL without declaring it, so the operation uses the document's default.
+    const regionalServer = `http://{region}.synthetic-service.localhost:${new URL(origin).port}/regional`;
+    const regional = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic regional", version: "1" },
+      servers: [
+        {
+          url: regionalServer,
+          variables: { region: { default: "api", enum: ["api", "uploads"] } },
+        },
+      ],
+      paths: {
+        "/items": { get: { operationId: "list", tags: ["items"], responses: ok } },
+        "/models": {
+          get: {
+            operationId: "models",
+            tags: ["items"],
+            servers: [{ url: regionalServer }],
+            responses: ok,
+          },
+        },
+      },
+    });
+    // Two document servers declare the region with different defaults, and the first has no URL.
+    // An operation's server that omits the declaration takes the first document server's, as the
+    // app's router does, even though that server's empty URL is never called.
+    const layeredServer = `http://{region}.synthetic-service.localhost:${new URL(origin).port}/layered`;
+    const layered = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic layered", version: "1" },
+      servers: [
+        { url: "", variables: { region: { default: "api" } } },
+        { url: layeredServer, variables: { region: { default: "uploads" } } },
+      ],
+      paths: {
+        "/items": {
+          get: {
+            operationId: "list",
+            tags: ["items"],
+            servers: [{ url: layeredServer }],
+            responses: ok,
+          },
+        },
+      },
+    });
+    // No server declares the variable, so no host can be named.
+    const unresolved = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic unresolved", version: "1" },
+      servers: [{ url: "https://{tenant}.unresolved.example.com/api" }],
+      paths: { "/items": { get: { operationId: "list", tags: ["items"], responses: ok } } },
+    });
     const downgradedServer = {
       url: "{scheme}://uploads.downgraded.example.com/uploads",
       variables: { scheme: { default: "https" } },
@@ -1280,6 +1340,31 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
           args: { server: { url: downgradedServer.url, variables: { scheme: "http" } } },
         },
       },
+      {
+        slug: `regional_${suffix}`,
+        name: "Regional",
+        text: regional,
+        template: [
+          { slug: "", kind: "apikey", placements: [{ carrier: "header", name: "X-Api-Key" }] },
+        ],
+        operations: { "items.list": ["get", "/items"], "items.models": ["get", "/models"] },
+      },
+      {
+        slug: `layered_${suffix}`,
+        name: "Layered",
+        text: layered,
+        template: [
+          { slug: "", kind: "apikey", placements: [{ carrier: "header", name: "X-Api-Key" }] },
+        ],
+        operations: { "items.list": ["get", "/items"] },
+      },
+      {
+        slug: `unresolved_${suffix}`,
+        name: "Unresolved",
+        text: unresolved,
+        template: [],
+        operations: { "items.list": ["get", "/items"] },
+      },
     ];
     const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
     yield* writeRows("v1-database.json", [
@@ -1332,6 +1417,8 @@ const seedRequests = (organization: string, user: string, slug: string, origin: 
         [`uploads_${suffix}`, uploadsKeyItem],
         [`mixed_${suffix}`, mixedKeyItem],
         [`downgraded_${suffix}`, downgradedKeyItem],
+        [`regional_${suffix}`, regionalKeyItem],
+        [`layered_${suffix}`, layeredKeyItem],
       ].map(([integration, item]) =>
         row(
           "insert into connection (tenant, owner, subject, integration, name, template, item_ids) values ($1, 'user', $2, $3, 'main', '', $4::json)",
@@ -3207,9 +3294,13 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           "Status",
           "Uploads",
           "Downgraded",
+          "Regional",
+          "Layered",
           "main · Requests",
           "main · Uploads",
           "main · Downgraded",
+          "main · Regional",
+          "main · Layered",
         ])
           expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
         // An account's credentials go to one service's hosts, so an API whose operations call
@@ -3224,6 +3315,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           status: "failed",
           reason:
             "Its operations call uploads.mixed.example.com over plain HTTP, and an imported app sends an account's credentials to more than one host only over HTTPS.",
+        });
+        // A server URL whose variable no server declares names no host to send to.
+        expect(results.get("Unresolved")).toMatchObject({
+          status: "failed",
+          reason: "Its server URL uses {tenant}, which no server defines.",
         });
         expect(results.get("main · Mixed")).toMatchObject({
           status: "failed",
@@ -3320,6 +3416,71 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           expect(reached?.url).toBe(path);
           expect(reached?.headers["x-api-key"]).toBe("synthetic-uploads-key");
         }
+
+        // An operation's server that uses the document server's variable without declaring it takes
+        // the document's default, so the app sends every operation to one host with the key.
+        const regionalSource = yield* call(
+          "Read the regional app's source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${appId("Regional")}/source`,
+        );
+        expect(regionalSource.status, JSON.stringify(regionalSource.body)).toBe(200);
+        const regionalProvider = (yield* decode(Source, regionalSource)).files.find(
+          (file) => file.path === "provider.ts",
+        )?.content;
+        expect(regionalProvider).toContain(`hosts: [${JSON.stringify(hosts.api)}]`);
+        expect(regionalProvider).not.toContain("{region}");
+        for (const [tool, path] of [
+          ["items.list", "/regional/items"],
+          ["items.models", "/regional/models"],
+        ] as const) {
+          const sent = yield* call(
+            `Call the regional ${tool}`,
+            "POST",
+            `/api/organizations/${target.id}/apps/${appId("Regional")}/tools/call`,
+            {
+              profile: profileOf("Regional")?.id,
+              tool,
+              kind: "query",
+              input: { accountId: accountOf("Regional"), input: {} },
+            },
+          );
+          expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+          const reached = (yield* upstream.received).at(-1);
+          expect(reached?.host).toBe(hosts.api);
+          expect(reached?.url).toBe(path);
+          expect(reached?.headers["x-api-key"]).toBe("synthetic-regional-key");
+        }
+
+        // With two document servers, the operation's server takes the first one's declaration,
+        // whose URL is empty, not the second's: the app names and calls only that host.
+        const layeredSource = yield* call(
+          "Read the layered app's source",
+          "GET",
+          `/api/organizations/${target.id}/apps/${appId("Layered")}/source`,
+        );
+        expect(layeredSource.status, JSON.stringify(layeredSource.body)).toBe(200);
+        const layeredProvider = (yield* decode(Source, layeredSource)).files.find(
+          (file) => file.path === "provider.ts",
+        )?.content;
+        expect(layeredProvider).toContain(`hosts: [${JSON.stringify(hosts.api)}]`);
+        expect(layeredProvider).not.toContain(hosts.uploads);
+        const layeredSent = yield* call(
+          "Call the layered items.list",
+          "POST",
+          `/api/organizations/${target.id}/apps/${appId("Layered")}/tools/call`,
+          {
+            profile: profileOf("Layered")?.id,
+            tool: "items.list",
+            kind: "query",
+            input: { accountId: accountOf("Layered"), input: {} },
+          },
+        );
+        expect(layeredSent.status, JSON.stringify(layeredSent.body)).toBe(200);
+        const layeredReached = (yield* upstream.received).at(-1);
+        expect(layeredReached?.host).toBe(hosts.api);
+        expect(layeredReached?.url).toBe("/layered/items");
+        expect(layeredReached?.headers["x-api-key"]).toBe("synthetic-layered-key");
 
         // An account check whose server variable turns one of the app's HTTPS hosts to plain HTTP
         // would carry the account's key there, so the app is imported without it: its provider

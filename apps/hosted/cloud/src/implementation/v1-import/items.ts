@@ -579,9 +579,8 @@ export const generate = (
         // account's credentials on every one. The app does the same when those servers are one
         // service's hosts, and declares each of them for the account's credentials.
         const servers = operationBaseUrls(decoded.config, prepared.document);
-        if (servers === undefined || servers.length === 0)
-          return yield* fail("Its API has no absolute base URL.");
-        const allowed = credentialOrigins(servers);
+        if (!servers.ok) return yield* fail(servers.reason);
+        const allowed = credentialOrigins(servers.urls);
         if (!allowed.ok)
           return yield* fail(
             `Its operations call hosts of different services (${allowed.hosts.join(", ")}), and an imported app sends an account's credentials only to one service's hosts.`,
