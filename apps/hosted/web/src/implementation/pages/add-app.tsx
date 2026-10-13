@@ -1,55 +1,33 @@
-import { useMcpOrigin } from "../resource-origin.ts";
-import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { useAtomMount } from "@effect/atom-react";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
-import { CatalogPage as Catalog, CatalogInstall } from "@executor-js/ui/dashboard/catalog";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
-import type { App } from "@executor-js/sdk";
-import { useState } from "react";
+import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
-/** Integration templates install into the same organization-owned app records. */
+/** Catalog apps install into the same organization-owned app records. */
 export function AddAppPage() {
-  const mcpOrigin = useMcpOrigin();
   const atoms = useDashboardAtoms();
   useAtomMount(atoms.catalog);
   const { slug: organizationSlug } = useOrganizationRoute();
-  const navigate = useNavigate();
-  const [selection, setSelection] = useState<CatalogEntry>();
-  const installed = (app: App) =>
-    navigate({
-      to: "/org/$organizationSlug/apps/$appId",
-      search: { view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" },
-      params: { organizationSlug, appId: app.id },
-    });
-  const back = () => {
-    reportBrowserUsage({ area: "apps", action: "install", outcome: "cancelled" });
-    setSelection(undefined);
-  };
-  if (selection)
-    return (
-      <CatalogInstall
-        mutation={atoms.install}
-        Failure={HostedFailure}
-        key={selection.id}
-        entry={selection}
-        endpoint={`${mcpOrigin}/mcp`}
-        onBack={back}
-        onInstalled={installed}
-      />
-    );
   return (
     <Catalog
       query={atoms.catalog}
       Failure={HostedFailure}
-      onSelect={(entry) => {
-        reportBrowserUsage({ area: "apps", action: "select_template", outcome: "started" });
-        setSelection(entry);
-      }}
+      mutation={atoms.install}
+      InstallFailure={HostedFailure}
+      inventory={atoms.inventory}
+      open={(app) => (
+        <Link
+          to="/org/$organizationSlug/apps/$appId"
+          search={{ view: Object.keys(app.requirements.accounts).length ? "accounts" : "overview" }}
+          params={{ organizationSlug, appId: app.id }}
+        >
+          Open
+        </Link>
+      )}
       back={
         <Link
           to="/org/$organizationSlug/apps"

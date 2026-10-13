@@ -1,4 +1,4 @@
-/** Add app lists integration templates only and never reads the public registry. */
+/** Add app lists official catalog apps only and never reads the public registry. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { Api, body, SessionClients } from "../support/api.ts";
@@ -47,10 +47,10 @@ layer(TestLive, { excludeTestServices: true })("Add app and the public registry"
         const addApp = `${origin}/org/${organization.slug}/apps/add`;
 
         yield* browser.use("Open Add app", (page) => page.goto(addApp));
-        yield* browser.use("Integration templates are listed", (page) =>
+        yield* browser.use("Catalog apps are listed", (page) =>
           page.locator(".catalog-row").first().waitFor(),
         );
-        yield* browser.checkpoint("Add app lists integration templates");
+        yield* browser.checkpoint("Add app lists catalog apps");
         yield* browser.use("Search for the published app", (page) =>
           page.getByPlaceholder("Search apps…").fill(registryPublication.name),
         );

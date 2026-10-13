@@ -2436,10 +2436,10 @@ export const scenarios = plan({
       local: na("Shared error views and SDK are exercised through hosted APIs."),
     },
   },
-  catalogAgentSetup: {
+  catalogOfficialApps: {
     fixtures: "actors",
-    file: "catalog-agent-setup.spec.ts",
-    title: "Catalog services without quick add copy an agent setup prompt",
+    file: "catalog-official-apps.spec.ts",
+    title: "Add app lists official apps and installs one's own source as a copy",
     targets: {
       "self-host": scheduled,
       cloud: na("The shared catalog view and install rule are exercised through self-host."),
@@ -6587,7 +6587,7 @@ export const scenarios = plan({
   },
   addAppRegistry: {
     file: "add-app-registry.spec.ts",
-    title: "Add app lists integration templates and never reads the public registry",
+    title: "Add app lists catalog apps and never reads the public registry",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud serves the registry from its own database instead of a remote origin."),

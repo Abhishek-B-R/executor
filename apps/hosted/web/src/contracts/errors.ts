@@ -179,7 +179,7 @@ const errorMessage = Match.type<HostedError>().pipe(
       "The webhook could not run. Check its definition, settings, and connected accounts.",
     StorageError: () => "Your data could not load. Try again.",
     AccountNotFound: () => "This account is no longer available in this organization.",
-    CatalogUnavailable: () => "integrations.sh could not be reached. Try again.",
+    CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
     FeedbackDisabled: ({ message }) => message,
     HttpClientError: () =>

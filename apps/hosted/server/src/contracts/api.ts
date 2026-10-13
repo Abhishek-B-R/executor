@@ -34,7 +34,7 @@ import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
 
-/** Process liveness only; this does not probe integrations.sh or future storage. */
+/** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
 /** The Effect snapshot's OpenAPI types omit OAuth2; hosted documents retain that standard scheme explicitly. */

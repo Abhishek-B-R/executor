@@ -37,8 +37,8 @@ versions pinned in `e2e/npm-packages.json`, from archives that `e2e:prepare`
 downloads once and checks against their integrity. It refuses any other package with
 a 404 that names the lock. When a scenario declares a new package, add it to the
 roots in `scripts/e2e-npm-packages.ts`, then run
-`node scripts/e2e-npm-packages.ts --update`. Self-host and local read the
-integrations.sh feed and the public app registry from a loopback copy
+`node scripts/e2e-npm-packages.ts --update`. Self-host and local read a
+synthetic official app feed and the public app registry from a loopback copy
 (`support/public-catalogs.ts`), through `EXECUTOR_CATALOG_URL` and
 `EXECUTOR_REGISTRY_URL`. A scenario that checks interoperation with a real
 third-party service, such as `remoteMcpCloudflare`, runs only in Cloud tests on main.

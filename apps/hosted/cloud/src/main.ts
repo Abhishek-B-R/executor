@@ -124,6 +124,7 @@ import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 
+import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
 import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
@@ -168,6 +169,8 @@ export default Api.make(
         ...(yield* authRateLimitSwitchBindings),
         // A deployed stage identifies Executor to authorization servers by its own document.
         ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
+        // Every deployed stage lists production's official app feed.
+        ...(origin === undefined ? {} : yield* appCatalogBinding),
       },
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
@@ -394,6 +397,10 @@ export default Api.make(
 
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+    // The official app feed Add app lists; without it, only the built-in Executor app is listed.
+    const catalogFeedUrl = Option.getOrUndefined(
+      yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
+    );
     // Only /openapi.json and preparing the Executor catalog app read the document.
     // Clients and the Executor app call the API at its canonical origin.
     const apiOrigin = auth.resourceOrigins.api[0];
@@ -407,7 +414,9 @@ export default Api.make(
       HttpRouter.provideRequest(yield* cloudSourceFormatter),
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
-      HttpRouter.provideRequest(catalogLive(document.document, egress, clientMetadata, apiOrigin)),
+      HttpRouter.provideRequest(
+        catalogLive(document.document, egress, clientMetadata, apiOrigin, catalogFeedUrl),
+      ),
       Layer.provide(schedules.layer),
       Layer.provide(billing),
       Layer.provide(removals),

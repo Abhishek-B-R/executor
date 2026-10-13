@@ -300,11 +300,12 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 ### Add apps and accounts
 
-The local dashboard can import OpenAPI and MCP apps from the public integrations.sh
-catalog. **Apps → Add app** generates ordinary `index.ts`, `provider.ts`,
-`request.ts`, and `operations.json` source and deploys it through the SDK. Choose
-an unused app name; this flow never replaces an existing app. API definitions
-are fetched at import time, not when a tool runs.
+**Apps → Add app** lists Executor's official apps from the feed at
+`EXECUTOR_CATALOG_URL` (the feed's `index.json`; without it the list is empty).
+Choosing one installs the app's own source as a copy, the way a published app is
+installed, and then asks for an account through the app's own providers. Choose
+an unused app name; this flow never replaces an existing app. See
+[catalog imports](../../../notes/catalog-imports.md).
 
 **Apps → Add app → Custom app** also accepts MCP, GraphQL, and OpenAPI URLs.
 These templates generate source and deploy through the same SDK. API keys are

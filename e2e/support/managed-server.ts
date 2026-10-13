@@ -85,7 +85,7 @@ export const startManagedServer = (
     );
     // The suite's loopback registry serves this checkout's apps release; see npm-registry.ts.
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
-    // The run's loopback integrations.sh feed and app registry; see public-catalogs.ts.
+    // The run's loopback official app feed and app registry; see public-catalogs.ts.
     const catalogs = yield* Config.NonEmptyString("E2E_PUBLIC_CATALOGS").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
@@ -154,7 +154,7 @@ export const startManagedServer = (
       ...(Option.isSome(npmRegistry) ? { EXECUTOR_NPM_REGISTRY: npmRegistry.value } : {}),
       ...(Option.isSome(catalogs)
         ? {
-            EXECUTOR_CATALOG_URL: `${catalogs.value}/api.json`,
+            EXECUTOR_CATALOG_URL: `${catalogs.value}/catalog/index.json`,
             EXECUTOR_REGISTRY_URL: catalogs.value,
           }
         : {}),

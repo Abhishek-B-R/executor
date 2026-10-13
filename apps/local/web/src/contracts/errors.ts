@@ -247,7 +247,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Check the local server's credential configuration.",
       ),
     CatalogUnavailable: () =>
-      message("Catalog unavailable", "integrations.sh could not be reached. Try again."),
+      message("Catalog unavailable", "The app catalog could not be reached. Try again."),
     AppDeploymentChanged: () =>
       message("App changed", "Reload its source before updating or activating a deployment."),
     AppSlugTaken: () =>

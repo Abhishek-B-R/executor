@@ -4,9 +4,9 @@ import type { AppLinkProps, AccountLinkProps } from "@executor-js/ui/contracts/d
 import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { dashboardAtoms } from "../contracts/dashboard-bindings.ts";
-import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
+import { catalogIconsAtom } from "@executor-js/ui/contracts/icons";
 
-const iconDomains = catalogIconDomainsAtom(dashboardAtoms.catalog);
+const catalogIcons = catalogIconsAtom(dashboardAtoms.catalog);
 
 const AppLink = ({ app, view, tool, profile, ...props }: AppLinkProps) => {
   const location = useRouterState({ select: (state) => state.location });
@@ -29,7 +29,7 @@ const AccountLink = ({ account, ...props }: AccountLinkProps) => (
 /** Typed navigation and local data are supplied outside the shared UI. */
 export function LocalDashboard({ children }: { readonly children: ReactNode }) {
   return (
-    <DashboardProvider iconDomains={iconDomains} AppLink={AppLink} AccountLink={AccountLink}>
+    <DashboardProvider catalogIcons={catalogIcons} AppLink={AppLink} AccountLink={AccountLink}>
       {children}
     </DashboardProvider>
   );

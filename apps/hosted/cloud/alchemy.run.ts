@@ -38,7 +38,8 @@ import {
   ResumeAppDomains,
 } from "./src/infrastructure/app-domain-lifecycle.ts";
 import { appDomainControlSecret } from "./src/infrastructure/app-domain-control.ts";
-import { cloudOrigin } from "./src/infrastructure/stage.ts";
+import { cloudOrigin, productionStage, stageName } from "./src/infrastructure/stage.ts";
+import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
 import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
 import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
 
@@ -91,6 +92,8 @@ export default Alchemy.Stack(
     if (!(yield* AlchemyContext).dev) {
       yield* Marketing;
       yield* testStageRoleHostRecords;
+      // Production serves the official app feed every deployed stage reads.
+      if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
       // A test stage plays v1's edge itself; production's edge is v1's.
       if (Option.isSome(yield* testStageEdge)) yield* Edge;
     }

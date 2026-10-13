@@ -4,36 +4,47 @@ import { Atom } from "effect/reactivity";
 import { useOptionalDashboard } from "./context.tsx";
 import { useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { appIconSources, faviconUrl, type AppIconSources } from "../../contracts/icons.ts";
+import {
+  appIconSources,
+  catalogIconSources,
+  faviconUrl,
+  type AppIconSources,
+} from "../../contracts/icons.ts";
 import { providerDisplayUrl } from "../../contracts/dashboard.ts";
 import type { App } from "@executor-js/sdk";
+import type { CatalogIcon } from "@executor-js/catalog/contracts";
 import { Input } from "@executor-js/ui/components/input";
 import { cn } from "@executor-js/ui/lib/utils";
-const noDomains = Atom.make(new Map<string, string | null>());
-/** Share the old product's domain-derived logos and retain a neutral fallback on image failure. */
+const noIcons = Atom.make(new Map<string, readonly CatalogIcon[] | null>());
+
+/**
+ * An app's own icons when given or known to the catalog by name, otherwise the old product's
+ * domain-derived logo, with a neutral fallback on image failure.
+ */
 export function ProviderIcon({
   name,
   url,
+  icons,
   large = false,
   declared = null,
 }: {
   readonly name: string;
   readonly url?: string | null | undefined;
+  readonly icons?: readonly CatalogIcon[] | undefined;
   readonly large?: boolean;
   /** An app's own icon, shown before the domain logo. */
   readonly declared?: AppIconSources | null;
 }) {
   const dashboard = useOptionalDashboard();
-  const domains = useAtomValue(dashboard ? dashboard.iconDomains : noDomains);
+  const catalogIcons = useAtomValue(dashboard ? dashboard.catalogIcons : noIcons);
   const [failed, setFailed] = useState<readonly string[]>([]);
   const normalized = name.toLowerCase().trim();
   const size = large ? 24 : 17;
-  const domain =
-    url ??
-    domains.get(normalized) ??
-    (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
+  const catalog = icons ?? catalogIcons.get(normalized) ?? undefined;
+  const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
   const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
-  const own = declared !== null && !failed.includes(declared.light) ? declared : null;
+  const sources = declared ?? catalogIconSources(catalog);
+  const own = sources !== null && !failed.includes(sources.light) ? sources : null;
   const icon = own === null && source !== null && !failed.includes(source) ? source : null;
   const fail = (key: string) => () =>
     setFailed((current) => (current.includes(key) ? current : [...current, key]));
