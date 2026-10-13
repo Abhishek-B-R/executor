@@ -23,7 +23,7 @@ import { Button } from "../components/button.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 import { CopyButton } from "./code.tsx";
-import { ProviderIcon } from "./common.tsx";
+import { AppIcon } from "./common.tsx";
 import { QueryView, useQuery } from "./context.tsx";
 import { cn } from "../lib/utils.ts";
 
@@ -423,7 +423,7 @@ function PublishDialog<E>({
                 publication.manifest.description ? "items-start" : "items-center",
               )}
             >
-              <ProviderIcon name={publication.manifest.name} large />
+              <AppIcon app={app} large />
               <div className={cn("min-w-0", publication.manifest.description && "py-0.5")}>
                 <p className="break-words text-base font-semibold tracking-tight">
                   {publication.manifest.name}

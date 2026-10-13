@@ -109,6 +109,7 @@ export {
   type RouterOptions,
 } from "./implementation/router.ts";
 export type { RouterIcon } from "./contracts/router.ts";
+export type { AppIcon } from "./contracts/icons.ts";
 export { dynamicSkills } from "./implementation/dynamic-skills.ts";
 export type { HostedTool as OperationDescription } from "./contracts/host.ts";
 

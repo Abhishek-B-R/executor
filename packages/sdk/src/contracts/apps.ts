@@ -57,6 +57,8 @@ export const AppRequirements = Schema.Struct({
   accounts: Schema.Record(Schema.NonEmptyString, AccountRequirement),
   /** The events the app emits, read without evaluating it. */
   events: DeclaredRequirements.fields.events,
+  /** The icons the app declares on `defineApp`, recorded at build without evaluating it. */
+  icons: DeclaredRequirements.fields.icons,
 });
 
 export type AppRequirements = typeof AppRequirements.Type;

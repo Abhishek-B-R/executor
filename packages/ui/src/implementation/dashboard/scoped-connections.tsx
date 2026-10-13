@@ -46,8 +46,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
 import { Skeleton } from "../components/skeleton.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 import { QueryView } from "./context.tsx";
-import { ProviderIcon } from "./common.tsx";
-import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+import { AppIcon } from "./common.tsx";
 import {
   appChoices,
   ConnectionAppRow,
@@ -859,16 +858,11 @@ function ConnectionAccessList({
       <div className="divide-y">
         {visible.slice(0, count).map((selection) => {
           const app = byId.get(selection.id);
-          const provider =
-            app === undefined ? undefined : Object.values(app.requirements.accounts)[0]?.definition;
           const names = selection.tools.kind === "selected" ? selection.tools.names : [];
           return (
             <div key={selection.id}>
               <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-                <ProviderIcon
-                  name={provider?.name ?? selection.name}
-                  url={providerDisplayUrl(provider)}
-                />
+                <AppIcon app={app} name={selection.name} />
                 <span className="min-w-0 flex-1 basis-48">
                   <span className="block truncate text-[13px] font-medium">{selection.name}</span>
                   <span className="block truncate text-xs text-muted-foreground">

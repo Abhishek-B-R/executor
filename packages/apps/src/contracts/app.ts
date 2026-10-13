@@ -73,6 +73,8 @@ export interface App<Slots extends AccountSlots, Def extends AppDefinition<never
   readonly accounts: Slots;
   /** Declared beside the accounts, so a host lists them without evaluating the app. */
   readonly events?: Readonly<Record<string, import("./events.ts").AppEvent>>;
+  /** Declared beside the accounts and checked when the module loads. */
+  readonly icons?: import("./icons.ts").AppIcons;
   readonly evaluate: (context: BoundContext<Slots>) => Effect.Effect<Def, unknown>;
 }
 

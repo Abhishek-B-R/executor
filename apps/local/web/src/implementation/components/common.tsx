@@ -15,6 +15,7 @@ import {
 } from "../../contracts/errors.ts";
 import { Link, useParams } from "@tanstack/react-router";
 export {
+  AppIcon,
   ProviderIcon,
   SearchInput,
   LoadingRows,

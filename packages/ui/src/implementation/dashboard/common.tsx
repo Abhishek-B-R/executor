@@ -4,7 +4,9 @@ import { Atom } from "effect/reactivity";
 import { useOptionalDashboard } from "./context.tsx";
 import { useState, type ReactNode } from "react";
 import { useAtomValue } from "@effect/atom-react";
-import { faviconUrl } from "../../contracts/icons.ts";
+import { appIconSources, faviconUrl, type AppIconSources } from "../../contracts/icons.ts";
+import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+import type { App } from "@executor-js/sdk";
 import { Input } from "@executor-js/ui/components/input";
 import { cn } from "@executor-js/ui/lib/utils";
 const noDomains = Atom.make(new Map<string, string | null>());
@@ -13,10 +15,13 @@ export function ProviderIcon({
   name,
   url,
   large = false,
+  declared = null,
 }: {
   readonly name: string;
   readonly url?: string | null | undefined;
   readonly large?: boolean;
+  /** An app's own icon, shown before the domain logo. */
+  readonly declared?: AppIconSources | null;
 }) {
   const dashboard = useOptionalDashboard();
   const domains = useAtomValue(dashboard ? dashboard.iconDomains : noDomains);
@@ -28,7 +33,10 @@ export function ProviderIcon({
     domains.get(normalized) ??
     (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
   const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
-  const icon = source !== null && !failed.includes(source) ? source : null;
+  const own = declared !== null && !failed.includes(declared.light) ? declared : null;
+  const icon = own === null && source !== null && !failed.includes(source) ? source : null;
+  const fail = (key: string) => () =>
+    setFailed((current) => (current.includes(key) ? current : [...current, key]));
   return (
     <span
       className={cn(
@@ -38,21 +46,61 @@ export function ProviderIcon({
       )}
       aria-hidden
     >
-      {icon ? (
+      {own ? (
+        // The browser picks the variant for the color scheme, so the server renders the same
+        // markup. A srcset ends a URL at whitespace, which a data URI may hold escaped.
+        <picture className="contents">
+          {own.dark !== own.light && (
+            <source
+              media="(prefers-color-scheme: dark)"
+              srcSet={own.dark.replace(/\s/gu, encodeURIComponent)}
+            />
+          )}
+          <img
+            src={own.light}
+            alt=""
+            width={size}
+            height={size}
+            referrerPolicy="no-referrer"
+            data-icon="app"
+            onError={fail(own.light)}
+          />
+        </picture>
+      ) : icon ? (
         <img
           src={icon}
           alt=""
           width={size}
           height={size}
           referrerPolicy="no-referrer"
-          onError={() =>
-            setFailed((current) => (current.includes(icon) ? current : [...current, icon]))
-          }
+          onError={fail(icon)}
         />
       ) : (
         <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
       )}
     </span>
+  );
+}
+
+/** The icon the app declares on `defineApp`, or its first provider's logo when it declares none. */
+export function AppIcon({
+  app,
+  name,
+  large = false,
+}: {
+  readonly app: App | undefined;
+  /** Shown for the fallback when the app is unavailable. */
+  readonly name?: string;
+  readonly large?: boolean;
+}) {
+  const provider = app && Object.values(app.requirements.accounts)[0]?.definition;
+  return (
+    <ProviderIcon
+      name={provider?.name ?? app?.name ?? name ?? "App"}
+      url={providerDisplayUrl(provider)}
+      large={large}
+      declared={appIconSources(app?.requirements.icons)}
+    />
   );
 }
 

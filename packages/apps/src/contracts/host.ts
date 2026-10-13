@@ -56,6 +56,7 @@ export {
 export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 export * from "./events.ts";
+export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";
 export * from "./placement.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";

@@ -7,14 +7,14 @@ import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, ArrowRight02Icon, Key01Icon } from "@hugeicons/core-free-icons";
-import { providerDisplayUrl, type Inventory, type QueryProps } from "../../contracts/dashboard.ts";
+import type { Inventory, QueryProps } from "../../contracts/dashboard.ts";
 import {
   accountSelectionIssues,
   selectedIds,
   accountNeedsSignIn,
 } from "../../contracts/dashboard.ts";
 
-import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { AppIcon, Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
 /** A card for each configured app and its selected accounts. */
@@ -137,10 +137,7 @@ function AppsList({
                 >
                   <div className="app-card-heading flex items-center justify-between gap-3 max-[600px]:contents">
                     <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px] max-[600px]:contents max-[600px]:[&_>_.provider-icon]:row-span-2">
-                      <ProviderIcon
-                        name={provider?.name ?? app.name}
-                        url={providerDisplayUrl(provider)}
-                      />
+                      <AppIcon app={app} />
                       <div className="max-[600px]:col-start-2 max-[600px]:row-start-1 max-[600px]:self-end">
                         <strong title={app.name}>{app.name}</strong>
                       </div>

@@ -24,7 +24,7 @@ build through `execute`; source then travels as data inside tool calls.
 | Task                                                         | Reference                                              |
 | ------------------------------------------------------------ | ------------------------------------------------------ |
 | Start a new UI with storage from a checked example           | [starter.md](starter.md)                               |
-| Declare queries, mutations, schemas, approvals or app skills | [tools.md](tools.md)                                   |
+| Declare queries, mutations, schemas, approvals, skills, icon | [tools.md](tools.md)                                   |
 | Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)                                 |
 | Build a React UI and subscribe to data                       | [ui.md](ui.md)                                         |
 | Store, query or modify app data                              | [storage.md](storage.md)                               |

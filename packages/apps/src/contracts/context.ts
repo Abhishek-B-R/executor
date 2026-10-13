@@ -3,12 +3,18 @@ import type { WorkflowControls } from "./workflows.ts";
 import type { AccountSlots, BoundContext } from "./app.ts";
 import type { Sql, SqlReader } from "./sql.ts";
 import type { AnyEventDeclaration, EventEmitter } from "../implementation/events.ts";
+import type { AppIcon } from "./icons.ts";
 
 /** Requirements are pure values; selected accounts and SQL access belong to invocations. */
 export interface AppRequirements {
   readonly accounts: AccountSlots;
   /** Events this app emits, by name, such as `issue.opened`. */
   readonly events?: Readonly<Record<string, AnyEventDeclaration>>;
+  /**
+   * Images a dashboard shows for the app, such as its logo in light and dark variants. Each `src`
+   * is base64 `data:image/...` or an `https:` URL; at most 8 icons and 32 KiB in total.
+   */
+  readonly icons?: ReadonlyArray<AppIcon>;
 }
 
 /** The emitter for an app's declared events. */

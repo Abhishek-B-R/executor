@@ -17,8 +17,7 @@ import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import type { AppLinkProps } from "../../contracts/dashboard.ts";
 import type { AppView } from "../../contracts/dashboard.ts";
-import { providerDisplayUrl } from "../../contracts/dashboard.ts";
-import { ProviderIcon } from "./common.tsx";
+import { AppIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
 import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
 import { cn } from "../lib/utils.ts";
@@ -98,7 +97,6 @@ export function AppDetailLayout({
   readonly setupPicker?: ReactNode;
   readonly children: ReactNode;
 }) {
-  const provider = app && Object.values(app.requirements.accounts)[0]?.definition;
   useDocumentTitle(productTitle(app?.name ?? "App"));
   return (
     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
@@ -108,11 +106,7 @@ export function AppDetailLayout({
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-4 max-[740px]:min-w-0 max-[740px]:flex-1 max-[740px]:gap-y-2 max-[740px]:py-1.5">
           <div className="flex min-w-0 flex-1 items-center gap-4 max-[740px]:gap-2.5 max-[740px]:[&_.provider-icon-large]:size-8 max-[740px]:[&_.provider-icon-large]:rounded-[7px] max-[740px]:[&_.provider-icon-large_img]:size-5">
-            <ProviderIcon
-              name={provider?.name ?? app?.name ?? "App"}
-              url={providerDisplayUrl(provider)}
-              large
-            />
+            <AppIcon app={app} large />
             <h1
               className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-lg"
               title={app?.name}

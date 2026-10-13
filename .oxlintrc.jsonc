@@ -28,6 +28,7 @@
         "packages/apps/src/contracts/protocols/**",
         "packages/apps/src/contracts/provider.ts",
         "packages/apps/src/contracts/failure.ts",
+        "packages/apps/src/contracts/icons.ts",
         "packages/app-cache/src/contracts/cache.ts",
       ],
       "rules": { "executor/exportable-schema-pattern": "off" },

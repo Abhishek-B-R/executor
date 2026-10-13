@@ -1,6 +1,6 @@
 import { useId, type ReactNode } from "react";
 import type { AccountId, App, Profile } from "@executor-js/sdk";
-import { providerDisplayUrl, selectedIds, type AccountSummary } from "../../contracts/dashboard.ts";
+import { selectedIds, type AccountSummary } from "../../contracts/dashboard.ts";
 import {
   connectionTargetKey,
   connectionTargetLabel,
@@ -22,7 +22,7 @@ import {
 } from "../components/select.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
-import { ProviderIcon } from "./common.tsx";
+import { AppIcon } from "./common.tsx";
 import { accountContexts } from "./account-group.tsx";
 import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
 
@@ -159,7 +159,6 @@ export function ConnectionAppRow({
 }) {
   const id = useId();
   const { app } = choices;
-  const provider = Object.values(app.requirements.accounts)[0]?.definition;
   const issue = selection === undefined ? undefined : selectionIssue(choices, selection);
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
   const setTools = (tools: ConnectionTools) => {
@@ -183,7 +182,7 @@ export function ConnectionAppRow({
               if (checked !== true) onExpandedChange(false);
             }}
           />
-          <ProviderIcon name={provider?.name ?? app.name} url={providerDisplayUrl(provider)} />
+          <AppIcon app={app} />
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-medium" title={app.name}>
               {app.name}

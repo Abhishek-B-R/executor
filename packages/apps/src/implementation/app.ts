@@ -19,6 +19,7 @@ import { declaredOperations, nativeRouter, type RouterDeclaration } from "./rout
 import { decoderOf, isSchema, type Schema } from "./schema.ts";
 import { nativeEvent } from "./events.ts";
 import type { AppEvent } from "../contracts/events.ts";
+import { appIconsProblem } from "../contracts/icons.ts";
 
 type PromiseCatalog<Catalog> =
   Catalog extends Readonly<Record<string, object>>
@@ -228,9 +229,17 @@ export const defineApp = <
             return [name, native];
           }),
         );
+  // Icons are read at build without evaluating the app, so invalid ones fail its build here.
+  const iconsProblem =
+    requirements.icons === undefined ? undefined : appIconsProblem(requirements.icons);
+  if (iconsProblem !== undefined)
+    throw new TypeError(`The app's icons are invalid: ${iconsProblem}`);
   const native: NativeApp<Requirements["accounts"], EffectDefinition<Def>> = {
     accounts: requirements.accounts,
     ...(events === undefined ? {} : { events }),
+    ...(requirements.icons === undefined || requirements.icons.length === 0
+      ? {}
+      : { icons: requirements.icons }),
     evaluate: (context) =>
       factory(context).pipe(Effect.map((value) => adaptDefinition<Requirements, Def>(value))),
   };

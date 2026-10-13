@@ -17,6 +17,7 @@ import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import { captureTelemetry, owned, type InvocationTelemetry } from "@executor-js/telemetry";
 import { appInvocationFetch } from "./network.ts";
 import type { AccountSlots, BoundContext } from "../contracts/app.ts";
+import type { AppIcons } from "../contracts/icons.ts";
 import {
   DeclaredProvider,
   DeclaredRequirements,
@@ -201,6 +202,7 @@ function requirements(
   slots: AccountSlots,
   sql: boolean,
   events: Readonly<Record<string, AppEvent>> | undefined,
+  icons: AppIcons | undefined,
 ) {
   return Effect.gen(function* () {
     const accounts = new Map<string, DeclaredRequirements["accounts"][string]>();
@@ -224,6 +226,7 @@ function requirements(
               "The app's event declarations are invalid",
             ),
           }),
+      ...(icons === undefined ? {} : { icons }),
     }).pipe(
       Effect.mapError((cause) =>
         declarationInvalid("The app's account declarations are invalid", cause),
@@ -385,7 +388,7 @@ function dispatch(
       const secrets = accountSecrets(context.accounts);
       // The build's migrations, not a flag, decide whether the app has a database.
       const ownsSql = hasMigrations(context.files ?? []);
-      const declared = yield* requirements(native.accounts, ownsSql, native.events);
+      const declared = yield* requirements(native.accounts, ownsSql, native.events, native.icons);
       if (request.operation === "requirements")
         return yield* safe(
           () => Schema.decodeUnknownEffect(JsonValue)(declared),

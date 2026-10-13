@@ -32,6 +32,7 @@ import { FailureDetail, UpstreamError } from "../failure.ts";
 import { AccountCheckResult, OAuth2Config } from "../provider.ts";
 import { ProviderError } from "../provider-error.ts";
 import { RouterIcon } from "../router.ts";
+import { AppIcons } from "../icons.ts";
 import { Placements } from "../placement.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { AccountId, JsonObject, JsonValue } from "../schema.ts";
@@ -192,6 +193,8 @@ export const DeclaredRequirements = Schema.Struct({
   sql: Schema.optionalKey(Schema.Literal(true)),
   /** The events the app declares, so a host lists them without evaluating the app. */
   events: Schema.optionalKey(DeclaredEvents),
+  /** The icons the app declares, so a host shows them without evaluating the app. */
+  icons: Schema.optionalKey(AppIcons),
 });
 /** Parsed declared account requirements. */
 export type DeclaredRequirements = typeof DeclaredRequirements.Type;

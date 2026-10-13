@@ -2,14 +2,14 @@
 
 /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
 export const executorSkillDigests: Readonly<Record<string, string>> = {
-  "app-authoring/SKILL.md": "96780baf35e693f2af7b28f438046d5924ee5a332f7cc6ca35d168a8da24b72d",
+  "app-authoring/SKILL.md": "c1f87b852bf7b4fc4533970c1076be603f7566c8bc7686ef987776f708f39241",
   "app-authoring/accounts.md": "8b11e1b66d94083557f2419a2c2dfddccecc1f336954bf579cbfb2b65bb73f65",
   "app-authoring/deploy.md": "346e52d124bbf4ff5df8e9c460536eecb6dcf38e8659153b4b1f55a22904385b",
   "app-authoring/events.md": "202bde87c2320af9706828063c6aaeeac0c9b8661971f610220f2a49293e3561",
   "app-authoring/integrations.md": "9efd9b21b52065082e4659296a2b324074fead161871d071fc56eefb70062708",
   "app-authoring/starter.md": "3e5b2f55da9aed2a6c0ff95d4c1982d1da6aa206fd404d6b5f1fb0b7c2880077",
   "app-authoring/storage.md": "da2f45549232df5adc778e37d57ae0d4e31a4c864361fb19c6b2fe2e10c64090",
-  "app-authoring/tools.md": "65c4151698ce8f0eb60fbdf121afcca29983168ec93460f84e01a161966d15c6",
+  "app-authoring/tools.md": "f9e22645a25b43e5caeac94e1d3c6523cde49256e7595987da2c0b7fb3a8d897",
   "app-authoring/ui.md": "5484559c272464e1562eda2f7956f5fca41e1e22d104d71e412db9cd57911460",
   "app-authoring/webhooks.md": "b7f43ad7af7fe1093cdc957cdec5f43bc98115d3c3237af1788cdd68d7fd9fce",
   "app-authoring/workflows.md": "9e517eaf6f461ac07fd2d29a03f0d545e79cfcbcfedbed5b8432e7b41392257b",

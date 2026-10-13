@@ -578,6 +578,101 @@
             ]
           },
           "isOptional": true
+        },
+        {
+          "name": "icons",
+          "type": {
+            "_tag": "Arrays",
+            "rest": [
+              {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "src",
+                    "type": {
+                      "_tag": "String",
+                      "checks": [
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isPattern",
+                            "payload": {
+                              "source": "^(?:data:image\\/(?:svg\\+xml|png|webp|jpeg);base64,[A-Za-z0-9+/]*={0,2}|https:\\/\\/\\S+)$",
+                              "flags": "u"
+                            }
+                          }
+                        },
+                        {
+                          "_tag": "Filter",
+                          "representation": {
+                            "id": "effect/schema/isMaxLength",
+                            "payload": {
+                              "maxLength": 32768
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "isOptional": false
+                  },
+                  {
+                    "name": "mimeType",
+                    "type": {
+                      "_tag": "String"
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "sizes",
+                    "type": {
+                      "_tag": "Arrays",
+                      "rest": [
+                        {
+                          "_tag": "String"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "theme",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Literal",
+                          "literal": "light"
+                        },
+                        {
+                          "_tag": "Literal",
+                          "literal": "dark"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              }
+            ],
+            "checks": [
+              {
+                "_tag": "Filter",
+                "representation": {
+                  "id": "effect/schema/isMaxLength",
+                  "payload": {
+                    "maxLength": 8
+                  }
+                }
+              },
+              {
+                "_tag": "Filter",
+                "annotations": {
+                  "message": "An app's icons total at most 32768 characters"
+                }
+              }
+            ]
+          },
+          "isOptional": true
         }
       ]
     },

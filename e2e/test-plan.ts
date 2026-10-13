@@ -891,6 +891,16 @@ export const scenarios = plan({
       local: na("Hosted deployment API scenario"),
     },
   },
+  appIcons: {
+    fixtures: "actors",
+    file: "app-icons.spec.ts",
+    title: "Apps show the icons they declare on defineApp, in the light or dark variant",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted deployment API scenario; the local overview carries the same requirements"),
+    },
+  },
   dynamicOnlyApp: {
     fixtures: "actors",
     file: "dynamic-only-app.spec.ts",
