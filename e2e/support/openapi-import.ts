@@ -290,7 +290,7 @@ export const credentialEchoUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${server.address.port}` };
 });
 
-/** Deploy a public app with the given `index.ts`; it is deleted when the scenario ends. */
+/** Deploy an app with the given `index.ts`; it is deleted when the scenario ends. */
 export const deployPublicApp = (index: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -305,6 +305,11 @@ export const deployPublicApp = (index: string) =>
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
     const profile = yield* createProfile(actors.owner, path);
     return {
+      api,
+      actors,
+      organization: `/api/organizations/${actors.organization.id}`,
+      path,
+      profile,
       tools: api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`),
       tool: (name: string) =>
         api.request(actors.owner, "GET", `${path}/tools/${name}?profile=${profile.id}`),

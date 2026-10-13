@@ -2,6 +2,8 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { Resource } from "../support/contracts.ts";
+import { selectProfileAccounts } from "../support/profiles.ts";
 import {
   clientCredentialsScheme,
   credentialEchoUpstream,
@@ -284,6 +286,62 @@ export default defineApp({ accounts: {} }, async ({ cache, fetch, signal }) => (
 `;
 };
 
+/**
+ * Stripe's shape: an expandable field is an ID or the object, and the `x-expansionResources`
+ * extension names the object with a `$ref` the converter leaves as written. Each account's
+ * schemas are nested under its branch of the merged tool, which must not read the extension.
+ */
+const expandable = (origin: string) => {
+  const customer = { $ref: "#/components/schemas/customer" };
+  const expansion = { "x-expansionResources": { oneOf: [customer] } };
+  const document = {
+    openapi: "3.0.0",
+    info: { title: "Charges", version: "1" },
+    servers: [{ url: origin }],
+    security: [{ bearerAuth: [] }],
+    components: {
+      securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+      schemas: {
+        customer: { type: "object", properties: { id: { type: "string" } } },
+        charge: {
+          type: "object",
+          properties: { customer: { anyOf: [{ type: "string" }, customer], ...expansion } },
+        },
+      },
+    },
+    paths: {
+      "/v1/charges": {
+        get: {
+          operationId: "GetCharges",
+          parameters: [{ name: "customer", in: "query", schema: { type: "string", ...expansion } }],
+          responses: {
+            "200": {
+              description: "OK",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/charge" } } },
+            },
+          },
+        },
+      },
+    },
+  };
+  return `import { accountRouter, defineApp, defineProvider, object, secrets, string } from "apps";
+import { liveOpenapiRouter } from "apps/openapi";
+const charges = defineProvider({
+  name: "Charges fixture",
+  auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
+});
+export default defineApp({ accounts: { charges: charges.many() } }, async ({ accounts, cache, fetch, signal }) => ({
+  tools: await accountRouter(accounts.charges, (account) => liveOpenapiRouter({
+    source: { document: ${JSON.stringify(document)} },
+    allowedOrigin: ${JSON.stringify(origin)},
+    securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+    methods: { key: [{ scheme: "bearerAuth", field: "token", part: "value", prefix: "" }] },
+    oauth: [], cache, fetch, signal, account,
+  }), { signal }),
+}));
+`;
+};
+
 layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => {
   it.effect(scenarios.liveOpenapiAlternatives.title, (context) =>
     withHostedCase(
@@ -447,6 +505,60 @@ layer(HostedLive, { excludeTestServices: true })("Live OpenAPI import", (it) => 
         );
         // It still offers a custom tool, for the operation that needs other authentication.
         expect(failure("jobs")?.message?.endsWith(customTool)).toBe(true);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.liveOpenapiExtensions.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const upstream = yield* credentialEchoUpstream;
+        const app = yield* deployPublicApp(expandable(upstream.origin));
+        yield* selectProfileAccounts(app.actors.owner, app.path, app.profile.id, { charges: [] });
+        const connection = yield* body(
+          Resource,
+          yield* app.api.request(app.actors.owner, "POST", `${app.path}/connections`, {
+            requirement: "charges",
+            profile: app.profile.id,
+          }),
+        );
+        const account = yield* body(
+          Resource,
+          yield* app.api.request(
+            app.actors.owner,
+            "POST",
+            `${app.organization}/connections/${connection.id}/submit`,
+            { method: "key", label: "Synthetic charges", fields: { token: "synthetic-charges" } },
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          app.api
+            .request(app.actors.owner, "DELETE", `${app.organization}/accounts/${account.id}`)
+            .pipe(Effect.orDie),
+        );
+
+        const listed = yield* app.tools;
+        expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+        expect((yield* body(Catalog, listed)).items.map((tool) => tool.name)).toEqual([
+          "charges.getCharges",
+        ]);
+        // The extension is kept as the definition wrote it, outside the schemas that validate.
+        const described = yield* app.tool("charges.getCharges");
+        expect(described.status, JSON.stringify(described.body)).toBe(200);
+        expect(JSON.stringify(described.body)).toContain(
+          '"x-expansionResources":{"oneOf":[{"$ref":"#/components/schemas/customer"}]}',
+        );
+        const called = yield* app.call("charges.getCharges", "query", {
+          accountId: account.id,
+          input: { query: { customer: "cus_1" } },
+        });
+        expect(called.status, JSON.stringify(called.body)).toBe(200);
+        expect(yield* body(Schema.Json, called)).toEqual({
+          method: "GET",
+          url: "/v1/charges?customer=cus_1",
+          authorization: "Bearer synthetic-charges",
+        });
       }),
     ),
   );
