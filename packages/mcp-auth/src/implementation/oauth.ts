@@ -19,7 +19,7 @@ import {
 } from "better-auth/api";
 import { Clock, Effect, Option, Schema } from "effect";
 import { authCall, parse, runAuth } from "./auth-call.ts";
-import { deviceAuthorizationPlugin } from "./device-authorization.ts";
+import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
 import {
   ConnectionId,
   Grant,
@@ -221,7 +221,16 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     clientRegistrationRequirePKCE: true,
     // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
     // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
-    rateLimit: { register: { window: 60, max: 60 } },
+    // Better Auth's count resets only after a whole window without requests, so a device client
+    // polling at its interval adds every poll until approval. The default twenty failed sign-ins
+    // approved after about a hundred seconds; allow one request's full polling beside that.
+    rateLimit: {
+      register: { window: 60, max: 60 },
+      token: {
+        window: 60,
+        max: 20 + (settings.deviceAuthorization ? devicePollsPerRequest : 0),
+      },
+    },
     grantTypes: ["authorization_code", "refresh_token"],
     disableJwtPlugin: true,
     accessTokenExpiresIn: accessTokenSeconds,

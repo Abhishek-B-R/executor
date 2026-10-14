@@ -35,6 +35,8 @@ import { authCall, parse, runAuth } from "./auth-call.ts";
 /** How long a person has to approve a request, and the polling interval the client starts with. */
 const requestSeconds = 600;
 const pollSeconds = 5;
+/** The most token requests one device request's client makes polling at the interval. */
+export const devicePollsPerRequest = requestSeconds / pollSeconds;
 /** Requests outlive their expiry this long so a late poll learns `expired_token`. */
 const expiredSeconds = 600;
 const deviceAuthorizationPath = "/oauth2/device-authorization";

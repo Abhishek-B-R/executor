@@ -286,6 +286,11 @@ const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 type Endpoints = Effect.Success<ReturnType<typeof discover>>;
 const fail = (reason: LoginFailed["reason"]) => () => new LoginFailed({ reason });
 const TokenError = Schema.Struct({ error: Schema.String });
+/** Seconds a rate-limited response asks to wait, in delta-seconds; Better Auth names its own header. */
+const retryAfter = (headers: Readonly<Record<string, string | undefined>>) => {
+  const seconds = Number(headers["retry-after"] ?? headers["x-retry-after"]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+};
 
 /**
  * Whether a browser opened here reaches the person signing in. Over SSH it would open on the
@@ -374,9 +379,12 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
       ),
     );
     const deadline = (yield* Clock.currentTimeMillis) + started.expires_in * 1000;
-    const wait = (interval: number): Effect.Effect<typeof Token.Type, LoginFailed> =>
+    const wait = (
+      interval: number,
+      delay = interval,
+    ): Effect.Effect<typeof Token.Type, LoginFailed> =>
       Effect.gen(function* () {
-        yield* Effect.sleep(Duration.seconds(interval));
+        yield* Effect.sleep(Duration.seconds(delay));
         if ((yield* Clock.currentTimeMillis) >= deadline)
           return yield* new LoginFailed({ reason: "expired" });
         const response = yield* HttpClient.execute(poll).pipe(
@@ -389,6 +397,10 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
             Effect.flatMap(Schema.decodeUnknownEffect(Token)),
             Effect.mapError(fail("token")),
           );
+        // A per-address limit in front of the token endpoint answers without an OAuth error. Slow
+        // down as `slow_down` asks, waiting at least as long as the limit names.
+        if (response.status === 429)
+          return yield* wait(interval + 5, Math.max(interval + 5, retryAfter(response.headers)));
         const { error } = yield* response.json.pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(TokenError)),
           Effect.mapError(fail("token")),

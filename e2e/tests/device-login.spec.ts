@@ -382,6 +382,19 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
 
         // A code nobody issued is not found.
         expect((yield* decide("BBBB-BBBB", true)).status).toBe(404);
+
+        // A person may take the full ten minutes to approve: 120 polls at the advertised interval.
+        // The per-address limit's count resets only after a quiet window, so steady polling
+        // counts as these back-to-back polls do. Each poll answers with RFC 8628's errors, never
+        // the address limit, which has no OAuth error body.
+        const waiting = yield* start;
+        const statuses = new Set<number>();
+        for (let index = 0; index < waiting.expires_in / waiting.interval; index++) {
+          const answer = yield* poll(waiting.device_code, "waiting");
+          statuses.add(answer.status);
+          expect(["authorization_pending", "slow_down"]).toContain(yield* errorOf(answer));
+        }
+        expect([...statuses]).toEqual([400]);
       }),
     ),
   );

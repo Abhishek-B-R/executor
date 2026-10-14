@@ -277,15 +277,19 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
       Effect.gen(function* () {
         const locks = yield* cloudLocks;
         yield* forgetTokenCount(locks);
-        // The token endpoint allows twenty requests a minute from one address.
-        const responses = yield* Effect.forEach(Array.from({ length: 21 }), () => tokenRequest, {
-          concurrency: 1,
-        });
+        // The token endpoint allows one device sign-in's 120 polls and twenty other requests in a
+        // minute from one address.
+        const allowed = 140;
+        const responses = yield* Effect.forEach(
+          Array.from({ length: allowed + 1 }),
+          () => tokenRequest,
+          { concurrency: 1 },
+        );
         expect(responses.map(({ status }) => status)).toEqual([
-          ...Array.from({ length: 20 }, () => 400),
+          ...Array.from({ length: allowed }, () => 400),
           429,
         ]);
-        const limited = responses[20]!;
+        const limited = responses[allowed]!;
         yield* retryAfter(60)(limited.retryAfter);
         const server = (traceId: string) =>
           traceSpans(traceId, (spans) =>
@@ -300,7 +304,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
           "auth.token.rate_limited": "true",
           "auth.token.refresh_family_revoked": "false",
         });
-        expect((yield* server(responses[19]!.traceId)).tags).toMatchObject({
+        expect((yield* server(responses[allowed - 1]!.traceId)).tags).toMatchObject({
           "http.response.status_code": "400",
           "auth.token.grant_type": "refresh_token",
           "auth.token.rate_limited": "false",
