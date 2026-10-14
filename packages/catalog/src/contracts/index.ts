@@ -10,6 +10,7 @@ export {
   CatalogRecovery,
   CatalogUnavailable,
   PreparedApp,
+  officialCatalogUrl,
 } from "./catalog.ts";
 export type { Catalog, CatalogHost, CatalogSource } from "./catalog.ts";
 export { CustomAppInput, ImportUrl } from "./imports.ts";

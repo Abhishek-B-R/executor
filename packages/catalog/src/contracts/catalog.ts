@@ -50,6 +50,8 @@ export const PreparedApp = Schema.Struct({
   origin: Schema.optionalKey(AppCopyOrigin),
 });
 export type PreparedApp = typeof PreparedApp.Type;
+/** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
+export const officialCatalogUrl = "https://catalog.executor.sh/index.json";
 /**
  * The feed's index, as `scripts/feed.ts` in the integrations repository writes it. Icon `src` and
  * `source` are relative to the index's own URL; `source` is always `apps/<id>.json`, which installs

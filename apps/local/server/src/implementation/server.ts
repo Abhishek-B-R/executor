@@ -45,6 +45,7 @@ import {
   remoteRegistry,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
+import { officialCatalogUrl } from "@executor-js/catalog";
 import {
   Config,
   Effect,
@@ -437,8 +438,8 @@ export const localApi = (
         auth,
         egress,
         {
-          catalogFeedUrl: Option.getOrUndefined(
-            yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
+          catalogFeedUrl: yield* Config.String("EXECUTOR_CATALOG_URL").pipe(
+            Config.withDefault(officialCatalogUrl),
           ),
           managedApp: managed.app,
           managedAccount: managed.account,
