@@ -26,6 +26,7 @@ const Setup = Schema.Struct({
   mode: Schema.Literals(["automatic", "client-required"]),
   clients: Schema.Array(Schema.Struct({ id: Schema.String })),
 });
+const Registered = Schema.Struct({ client: Schema.Struct({ id: Schema.String }) });
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
   authorizationUrl: Schema.String,
@@ -260,23 +261,56 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             },
           ),
         );
+        // A client registered for the service is another one to sign in with, but a reconnect still
+        // keeps the account's own. The service publishes no metadata, so its token endpoint names it.
+        const registered = yield* body(
+          Registered,
+          yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
+            issuer: issuer.origin + "/token",
+            clientId: "synthetic-registered-client",
+            clientSecret: "synthetic-registered-secret",
+          }),
+        );
+        expect(yield* setup()).toEqual({
+          mode: "client-required",
+          clients: [{ id: registered.client.id }],
+        });
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
         );
-        // The account's own client is the only one to sign in with, so it is used without a
-        // choice; replacing it stays under Advanced.
+        // A reconnect uses the account's own client without asking; replacing it, with a
+        // registered client or entered details, stays under Advanced.
         expect(
-          yield* browser.use("A reconnect with one client offers no choice", (page) =>
+          yield* browser.use("A reconnect offers no client choice up front", (page) =>
             page
               .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
               .waitFor({ state: "visible" })
               .then(() => page.getByRole("combobox", { name: "OAuth client" }).count()),
           ),
         ).toBe(0);
+        yield* browser.checkpoint("Reconnect with another client available");
         yield* browser.use("A reconnect keeps its account's client by default", (page) =>
           page
             .getByText("Advanced", { exact: true })
             .click()
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor({ state: "visible" }),
+            ),
+        );
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "DELETE",
+            `${prefix}/oauth-clients/${registered.client.id}`,
+          )).status,
+        ).toBe(200);
+        yield* browser.use("Reopen the reconnect without the registered client", (page) =>
+          page
+            .reload()
+            .then(() => page.getByText("Advanced", { exact: true }).click())
             .then(() =>
               page
                 .getByRole("combobox", { name: "OAuth client" })

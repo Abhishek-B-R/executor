@@ -474,11 +474,22 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         ).toBe(0);
         yield* browser.use("Reopen the same connection link", (page) => page.goto(connectionUrl));
         yield* ready("Reconnect Sample service");
+        // A reconnect keeps its account's client without asking; replacing it is under Advanced.
+        expect(
+          yield* browser.use("A reconnect offers no client choice up front", (page) =>
+            page.getByRole("combobox", { name: "OAuth client" }).count(),
+          ),
+        ).toBe(0);
         yield* browser.use("A reconnect keeps its account's client", (page) =>
           page
-            .getByRole("combobox", { name: "OAuth client" })
-            .filter({ hasText: "Current client" })
-            .waitFor(),
+            .getByText("Advanced", { exact: true })
+            .click()
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor(),
+            ),
         );
         yield* capture("Reconnect-current-client");
         yield* chooseClient("Enter client details");
