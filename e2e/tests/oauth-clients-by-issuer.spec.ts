@@ -18,8 +18,8 @@ import { withApps } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const DeployedApp = Schema.Struct({
   id: Schema.String,
@@ -86,7 +86,7 @@ const service = defineProvider({
   },
 });
 
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
   },
   {
@@ -193,13 +193,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients by issuer", (it)
 
         const connection = (app: string) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
             return (yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+                {},
+              ),
             )).id;
           });
         const start = (id: string) =>

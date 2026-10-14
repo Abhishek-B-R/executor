@@ -11,8 +11,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const App = Schema.Struct({
@@ -138,13 +138,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -448,7 +449,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2 } from "apps";
 const service=defineProvider({name:"Path service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/v1/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({}));`,
               },
               appsManifest,
             ],
@@ -502,7 +503,7 @@ export default defineApp({accounts:{service}},async()=>({}));`,
                 path: "index.ts",
                 content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Unusable metadata service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
               },
               appsManifest,
             ],

@@ -14,11 +14,11 @@ import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const BatchAnswer = Schema.Struct({ id: Schema.Number, status: Schema.Number });
 const Read = Schema.Struct({
@@ -55,7 +55,7 @@ const backgroundRenewalAfterBatch = Effect.gen(function* () {
         path: "index.ts",
         content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     read: query({ input: object({}) }, async ({ fetch }) => ({ service: await (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json() })),
   }),
@@ -68,13 +68,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
   expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
   const app = yield* body(AppProvider, deployed);
   const appPath = `${prefix}/apps/${app.id}`;
-  const profile = yield* createProfile(actors.owner, appPath);
   const connection = yield* body(
     Resource,
-    yield* api.request(actors.owner, "POST", `${appPath}/connections`, {
-      requirement: "service",
-      profile: profile.id,
-    }),
+    yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
   );
   const started = yield* api.request(
     actors.owner,
@@ -100,19 +96,15 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
     { callbackUrl },
   );
   expect(completed.status, JSON.stringify(completed.body)).toBe(200);
-  // Background profile setup resolves, and so renews, the new account. Let it finish first.
-  yield* api.request(actors.owner, "GET", `${appPath}/profiles/${profile.id}`).pipe(
-    Effect.flatMap((response) => body(SetupStatus, response)),
-    Effect.flatMap((current) =>
-      current.status !== "pending"
-        ? Effect.void
-        : Effect.fail(new Error("Profile setup has not finished")),
-    ),
-    Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+  const account = yield* body(Resource, completed);
+  // Connecting from the app links the account, which sets it up as the app's webhook source in
+  // the background. That resolves, and so renews, the new account. Let it finish first.
+  yield* settleWebhookSources(actors.owner, appPath, (sources) =>
+    sources.some((source) => source.account === account.id && source.status !== "pending"),
   );
 
   // The skill catalog is evaluated once and kept, then left to turn stale.
-  const listed = yield* api.request(actors.owner, "GET", `${appPath}/skills?profile=${profile.id}`);
+  const listed = yield* api.request(actors.owner, "GET", `${appPath}/skills`);
   expect(listed.status, JSON.stringify(listed.body)).toBe(200);
   yield* Effect.sleep(catalogTurnsStale);
 
@@ -128,7 +120,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           group: "skills",
           endpoint: "list",
           params: { organization, app: app.id },
-          query: { profile: profile.id },
+          query: {},
         },
       ],
     }),
@@ -154,7 +146,6 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
   // renewal to save and use its token; the call after it renews from the saved grant. The service
   // refuses replaced refresh tokens, so neither call may present one.
   const read = api.request(actors.owner, "POST", `${appPath}/tools/call`, {
-    profile: profile.id,
     tool: "read",
     input: {},
   });

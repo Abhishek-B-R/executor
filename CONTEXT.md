@@ -69,8 +69,26 @@ changes the running code, not stored app data. Configured copies can select
 deployments from the same code lineage.
 
 **Account slot**:
-An app-wide named requirement. A provider requires one account; provider.many()
-accepts zero or more. Selected account IDs are saved on the configured app.
+An app-wide named requirement, in one scope. A provider requires one account;
+provider.many() accepts zero or more. A name is used once across both scopes.
+
+**User account**:
+An account filling a user requirement (`ctx.user.accounts`): linked by each
+caller for themselves.
+
+**App account**:
+An account filling an app requirement (`ctx.app.accounts`): linked for everyone
+by people who can edit the app, and used through the app by every caller and
+its background work.
+
+**App link**:
+One `(app, requirement, account)` with no subject, set by someone who can edit
+the app and use the account. It fills an app requirement for everyone.
+
+**User link**:
+One `(app, requirement, account)` for one member, set by that member. It fills a
+user requirement for their calls. A plain requirement keeps one link per scope
+(and member): linking another replaces it. `.many()` keeps every link.
 
 **Owner**:
 The opaque product identity to which an account, configured app or deployment

@@ -1,9 +1,11 @@
 /**
  * The v1 import (`notes/v1-import.md`): preview, start, one item per request, finish. Every
- * request checks that the caller is the v1 workspace's single active member, by verified email,
- * and that the workspace is on a free plan. The import copies: v1 keeps working, and the moved
- * flag (`moved-flag.ts`) is not used. Nothing is written to v1 except, when an import finishes,
- * where the workspace went on its WorkOS organization (`moved-notice.ts`).
+ * request checks that the caller is the v1 workspace's single active member, by verified email.
+ * Preview and start also check that the workspace is on a free plan; once an import has started,
+ * its items and its finish rely on that check instead of asking Autumn again. The import copies:
+ * v1 keeps working, and the moved flag (`moved-flag.ts`) is not used. Nothing is written to v1
+ * except, when an import finishes, where the workspace went on its WorkOS organization
+ * (`moved-notice.ts`).
  */
 import { organizationOwner } from "@executor-js/hosted-server";
 import { AppId, OAuthGrantImport } from "@executor-js/sdk/core";
@@ -30,8 +32,8 @@ import {
   importAccount,
   importArtifact,
   importIntegration,
-  importProfile,
   importToolkit,
+  linkConnectionAccount,
   mapLookup,
   type ItemContext,
 } from "./items.ts";
@@ -72,8 +74,8 @@ export const makeV1Import = (settings: V1SourceSettings) =>
         return { source, store: makeImportStore(request.sql) };
       });
 
-    /** The caller's WorkOS user for this v1 workspace, or why they cannot import it. */
-    const eligible = (request: V1ImportRequest, organization: V1OrganizationId) =>
+    /** The caller's WorkOS user when they are the v1 workspace's single member, or why not. */
+    const member = (request: V1ImportRequest, organization: V1OrganizationId) =>
       Effect.gen(function* () {
         const { source, store } = yield* open(request);
         const user = yield* store.user(request.user);
@@ -90,9 +92,20 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           return yield* new V1ImportNotEligible({ reason: "multiple_members" });
         if (members[0] !== memberships.user)
           return yield* new V1ImportNotEligible({ reason: "not_member" });
-        if (yield* source.paid(organization))
-          return yield* new V1ImportNotEligible({ reason: "paid" });
         return { source, store, member: memberships.user };
+      });
+
+    /**
+     * The caller's WorkOS user for this v1 workspace, or why they cannot import it. Starting is
+     * the decision to import, so only preview and start ask Autumn for the plan. A started
+     * import's items and finish need only `member`.
+     */
+    const eligible = (request: V1ImportRequest, organization: V1OrganizationId) =>
+      Effect.gen(function* () {
+        const found = yield* member(request, organization);
+        if (yield* found.source.paid(organization))
+          return yield* new V1ImportNotEligible({ reason: "paid" });
+        return found;
       });
 
     const resultOf = (
@@ -115,10 +128,14 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               ? { status: "skipped", reason: found.reason ?? "There is nothing to import." }
               : { status: "failed", reason: found.reason ?? "It could not be imported." };
       if (item.kind !== "connection") return asResult(row(item.kind));
-      // A connection is imported once its account and its profile are.
+      // A connection is imported once its account is saved and linked to its app, which its
+      // `profile` row records (see `mapLookup`). A row from before profiles were removed names
+      // its profile; the account it selected is the connection's result.
       const account = row("connection");
       if (account?.status === "failed") return asResult(account);
-      return asResult(row("profile")) ?? (account === undefined ? null : asResult(account));
+      const linked = row("profile");
+      if (linked?.status === "imported" && linked.v2_kind === "profile") return asResult(account);
+      return asResult(linked) ?? (account === undefined ? null : asResult(account));
     };
 
     const previewOf = (
@@ -240,7 +257,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
 
     const finish: typeof V1Import.Service.finish = (request, organization) =>
       Effect.gen(function* () {
-        const { source, store, member } = yield* eligible(request, organization);
+        const { source, store, member: user } = yield* member(request, organization);
         const started = yield* store.find("organization", organization);
         if (started?.status !== "imported" || started.v2_id === null)
           return yield* new V1ImportNotStarted();
@@ -262,27 +279,27 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           request,
           store,
           organization,
-          yield* source.snapshot(organization, member),
+          yield* source.snapshot(organization, user),
         );
       }).pipe(Effect.withSpan("v1Import.finish"));
 
     const item: typeof V1Import.Service.item = (request, organization, key) =>
       Effect.gen(function* () {
-        const { source, store, member } = yield* eligible(request, organization);
+        const { source, store, member: user } = yield* member(request, organization);
         const started = yield* store.find("organization", organization);
         const target =
           started?.status === "imported" && started.v2_id !== null
             ? yield* store.target(started.v2_id)
             : undefined;
         if (target === undefined) return yield* new V1ImportNotStarted();
-        const snapshot = yield* source.snapshot(organization, member);
+        const snapshot = yield* source.snapshot(organization, user);
         const firstParty = firstPartyClients(request);
         const planned = previewItems(snapshot, firstParty).find(
           (candidate) => candidate.kind === key.kind && candidate.id === key.id,
         );
         if (planned === undefined) return yield* new V1ImportItemNotFound();
-        // A connection's attempt is its profile row: a public app's connection and one whose
-        // account failed record no account row.
+        // A connection's attempt is its `profile` row, which records its link: a public app's
+        // connection and one whose account failed record no account row.
         for (const dependency of planned.dependsOn)
           if (
             (yield* store.find(
@@ -296,6 +313,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
           executor: request.executor,
           connections: request.connections,
           store,
+          sql: request.sql,
           source,
           snapshot,
           target,
@@ -411,9 +429,21 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               integration === undefined
                 ? undefined
                 : yield* store.find("integration", integration.row_id);
-            const profileRow = yield* store.find("profile", key.id);
-            if (profileRow?.status === "imported" && profileRow.v2_id !== null)
-              return { status: "imported" as const, v2Id: profileRow.v2_id };
+            // The `profile` row records the connection's link (see `mapLookup`). One from before
+            // profiles were removed names its profile; the account it selected is the result.
+            const linkedRow = yield* store.find("profile", key.id);
+            if (linkedRow?.status === "imported" && linkedRow.v2_id !== null) {
+              const saved = yield* store.find("connection", key.id);
+              return {
+                status: "imported" as const,
+                v2Id:
+                  linkedRow.v2_kind === "profile" &&
+                  saved?.status === "imported" &&
+                  saved.v2_id !== null
+                    ? saved.v2_id
+                    : linkedRow.v2_id,
+              };
+            }
             return yield* Effect.gen(function* () {
               if (!plan.ok) return yield* new ItemFailed({ reason: plan.reason });
               if (appRow?.status !== "imported" || appRow.v2_id === null)
@@ -422,7 +452,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
                 owner,
                 app: appRow.v2_id as Parameters<typeof executor.apps.get>[0]["app"],
               });
-              // A public app needs no account or profile. When the app takes accounts, a
+              // A public app needs no account or link. When the app takes accounts, a
               // connection without credentials gets an account of the app's fixed ones.
               if (
                 plan.value.access.kind === "none" &&
@@ -435,10 +465,10 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               const accountRow = yield* store.find("connection", key.id);
               const account =
                 accountRow?.status === "imported" && accountRow.v2_id !== null
-                  ? (accountRow.v2_id as Parameters<typeof importProfile>[3])
+                  ? (accountRow.v2_id as Parameters<typeof linkConnectionAccount>[2])
                   : yield* importAccount(context, plan.value, app, record("connection", hash));
-              const profile = yield* importProfile(context, row, app, account);
-              const result: MapResult = { status: "imported", v2Kind: "profile", v2Id: profile };
+              yield* linkConnectionAccount(context, app, account);
+              const result: MapResult = { status: "imported", v2Kind: "account", v2Id: account };
               yield* record("profile", hash)(result);
               return outcome(result);
             }).pipe(Effect.catch(failed("profile", hash)));
@@ -494,7 +524,7 @@ export const makeV1Import = (settings: V1SourceSettings) =>
               yield* record("toolkit", hash)(result);
               return outcome(result);
             }
-            // The connection follows the apps and profiles imported since; saving it again is safe.
+            // The connection follows the apps and accounts imported since; saving it again is safe.
             return yield* importToolkit(context, toolkit).pipe(
               Effect.tap(record("toolkit", hash)),
               Effect.map(outcome),

@@ -5,16 +5,18 @@
  * once, and the listing in memory shares one object per distinct entry among its tools.
  */
 import { Effect, Schema } from "effect";
-import { ProfileRevision } from "../contracts/profiles.ts";
-import { DeploymentId, Json, type JsonObject, ProfileId } from "../contracts/shared.ts";
+import { AppAccounts } from "../contracts/apps.ts";
+import { DeploymentId, Json, type JsonObject } from "../contracts/shared.ts";
 import { Tool, ToolRouter } from "../contracts/tools.ts";
 import type { ToolListing } from "./listings.ts";
 
-const Catalog = Schema.Struct({
-  deployment: DeploymentId,
-  profile: Schema.optionalKey(ProfileId),
-  profileRevision: Schema.optionalKey(ProfileRevision),
-});
+/**
+ * What the listing was evaluated with. Texts kept before 4.0.13 named a profile instead of
+ * accounts; they are kept under declaration keys of that time, which no current read computes.
+ * Texts kept before account scopes named one flat record and fail to decode, so they are read
+ * as missing and evaluated again.
+ */
+const Catalog = Schema.Struct({ deployment: DeploymentId, accounts: AppAccounts });
 /** The schemas of a tool whose `$defs` entries can be shared. */
 const SchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
 type SchemaKey = typeof SchemaKey.Type;

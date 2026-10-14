@@ -1,7 +1,5 @@
-import { ProfileId, ProfileErrors } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { requireAccount } from "./account-grants.ts";
-import { ConnectionDestination } from "./resource-access.ts";
 import { AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
 /** Account metadata and connection flows for an authenticated organization. */
@@ -18,10 +16,10 @@ import {
   AccountConnectionId,
   AccountConnectionNotFound,
   AccountConnectionClosed,
+  AccountConnectionRefused,
   AccountConnectionTargetChanged,
   AccountFieldsInput,
   AccountFieldsInvalid,
-  AccountSelectionInvalid,
   AppId,
   AppNotFound,
   AuthMethodInvalid,
@@ -49,13 +47,30 @@ import {
   RequireOrganization,
 } from "./organization.ts";
 import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
+
+/** The account is linked to apps for everyone; it cannot be deleted until it is unlinked. */
+export const AccountLinkedToApp = UserFacingError.define({
+  tag: "AccountLinkedToApp",
+  status: 409,
+  fields: { account: AccountId, apps: Schema.NonEmptyArray(AppId) },
+  title: "This account is linked to an app for everyone",
+  description:
+    "An app uses this account for everyone who uses the app, so it can't be deleted while it is linked.",
+  recovery: {
+    action: "Ask someone who can edit each app to unlink the account, then delete it.",
+    instructions:
+      "Read the app accounts of each named app with appAccounts.appList and unlink this account with appAccounts.appUnlink, or ask someone who can edit the app to. Link a replacement first if the app still needs one. Then delete the account.",
+  },
+});
+/** Parsed AccountLinkedToApp failure. */
+export type AccountLinkedToApp = typeof AccountLinkedToApp.Type;
 
 const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
 const connection = { ...params, connection: AccountConnectionId };
 // Reading a connection also verifies ownership of its optional target app.
 const connectionErrors = [
-  ...ProfileErrors,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
@@ -67,6 +82,7 @@ const completionErrors = [
   ...connectionErrors,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
   CredentialsError,
 ] as const;
 const prefix = "/api/organizations/:organization";
@@ -150,6 +166,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       success: Schema.Struct({ account: AccountId }),
       error: [
         StorageError,
+        AccountLinkedToApp,
         AccountWebhooksActive,
         AccountWorkflowsActive,
         AccountNotFound,
@@ -180,26 +197,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
       .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
-        "Check how an OAuth method will connect before the user signs in. scopes are the permissions sign-in will ask the provider for, and userScopes the ones Slack's user_scope asks for the user's own token; the connection form lists them too. Tell the user what will be requested before giving them the connection link. Without declared scopes, an MCP sign-in asks for the scopes the server's challenge names, which can be narrower than the ones it advertises. For other access, declare scopes on the app's provider and deploy it, then connect without account: declaring scopes changes the provider, so this creates a new account and selects it for the profile. The old account keeps its credentials and stays selected wherever else it is used. Pass account only to replace credentials for an unchanged provider. clients lists the registered OAuth clients the caller may connect with; clients outside the caller's audience are not listed.",
-      ),
-  )
-  .add(
-    HttpApiEndpoint.post("connect", `${prefix}/apps/:app/connections`, {
-      params: app,
-      payload: Schema.Struct({
-        requirement: Schema.NonEmptyString,
-        profile: ProfileId,
-        destination: Schema.optional(ConnectionDestination),
-        /** Replace this account's credentials instead of adding an account. */
-        account: Schema.optional(AccountId),
-      }),
-      success: BrowserAccountConnection,
-      error: [...connectionErrors, AccountSelectionInvalid],
-    })
-      .annotate(RequiredAction, "manage")
-      .annotate(
-        OpenApi.Description,
-        "Create a connection request and return the url of the browser form where the user enters credentials or signs in. For an OAuth method of the returned provider, oauthSetup with provider.id and the method name lists the permissions sign-in will request.",
+        "Check how an OAuth method will connect before the user signs in. scopes are the permissions sign-in will ask the provider for, and userScopes the ones Slack's user_scope asks for the user's own token; the connection form lists them too. Tell the user what will be requested before giving them the connection link. Without declared scopes, an MCP sign-in asks for the scopes the server's challenge names, which can be narrower than the ones it advertises. For other access, declare scopes on the app's provider and deploy it, then connect without account (appAccounts.userConnect or appAccounts.appConnect): declaring scopes changes the provider, so this creates a new account and links it to the requirement. The old account keeps its credentials and stays linked wherever else it is used. Pass account only to replace credentials for an unchanged provider. clients lists the registered OAuth clients the caller may connect with; clients outside the caller's audience are not listed.",
       ),
   )
   .add(
@@ -265,7 +263,6 @@ export const HostedOAuthCallback = Schema.Struct({
   organizationSlug: OrganizationSlug,
   connection: AccountConnectionId,
   app: AppId,
-  profile: ProfileId,
   redirectUri: HttpUrl,
   reconnect: Schema.Boolean,
 });

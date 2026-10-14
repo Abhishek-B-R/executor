@@ -219,6 +219,9 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     allowDynamicClientRegistration: true,
     allowUnauthenticatedClientRegistration: true,
     clientRegistrationRequirePKCE: true,
+    // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
+    // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
+    rateLimit: { register: { window: 60, max: 60 } },
     grantTypes: ["authorization_code", "refresh_token"],
     disableJwtPlugin: true,
     accessTokenExpiresIn: accessTokenSeconds,

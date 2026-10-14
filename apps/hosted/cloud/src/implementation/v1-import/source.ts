@@ -9,7 +9,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { AutumnClient, type AutumnOptions } from "../../contracts/autumn.ts";
 import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
-import { autumnLive } from "../autumn-client.ts";
+import { autumnLive, autumnReads } from "../autumn-client.ts";
 import { freePlans } from "../v1-membership.ts";
 import {
   ArtifactRow,
@@ -30,9 +30,10 @@ import {
 export interface V1Blobs {
   /** The item's failure reason when a blob is absent. */
   readonly missing: string;
+  /** The blob's stored bytes. */
   readonly get: (
     key: ReturnType<typeof blobKey>,
-  ) => Effect.Effect<Option.Option<string>, V1ImportUnavailable>;
+  ) => Effect.Effect<Option.Option<Uint8Array>, V1ImportUnavailable>;
 }
 
 export interface V1SourceSettings {
@@ -248,7 +249,10 @@ export const makeV1Source = (settings: V1SourceSettings) =>
           }),
         ),
       );
-    /** v1's Postgres `blob` table, which v1 uses when it has no R2 binding. */
+    /**
+     * v1's Postgres `blob` table, which v1 uses when it has no R2 binding. Its `value` is `text` in a
+     * UTF-8 database, so the stored bytes are the value's UTF-8 encoding.
+     */
     const postgresBlobs: V1Blobs = {
       missing: "v1's stored specification is missing.",
       get: (key) =>
@@ -258,13 +262,15 @@ export const makeV1Source = (settings: V1SourceSettings) =>
             const rows = yield* sql`
               select value from blob where namespace = ${key.namespace} and key = ${key.key}
             `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Values)));
-            return Option.fromNullishOr(rows[0]?.value);
+            return Option.fromNullishOr(rows[0]?.value).pipe(
+              Option.map((value) => new TextEncoder().encode(value)),
+            );
           }),
         ).pipe(unavailable("blob")),
     };
     const blobs = settings.blobs === "postgres" ? postgresBlobs : settings.blobs;
     const autumn = AutumnClient.pipe(
-      Effect.provide(autumnLive(settings.billing)),
+      Effect.provide(autumnLive(settings.billing, autumnReads.patient)),
       Effect.provideService(HttpClient.HttpClient, http),
     );
     return {

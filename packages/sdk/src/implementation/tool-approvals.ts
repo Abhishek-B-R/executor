@@ -20,14 +20,12 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-/** A pending call as its encrypted record holds it, read again on resume. */
+/**
+ * A pending call as its encrypted record holds it, read again on resume. Requests saved before
+ * accounts were named per call carry installation keys; decoding ignores them.
+ */
 export const ApprovalPayload = Schema.Struct({
-  invocation: ToolInvocation.pipe(
-    Schema.encodeKeys({
-      profile: "installation",
-      profileRevision: "installationRevision",
-    }),
-  ),
+  invocation: ToolInvocation,
   originalInput: Json,
   issuer: Schema.optional(ToolApprovalIssuer),
 });

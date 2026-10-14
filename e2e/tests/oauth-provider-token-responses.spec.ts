@@ -4,17 +4,18 @@
  * an empty scope. Declared options read Slack's nested user grant and send JSON token requests.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "vitest";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer, type TokenShape } from "../support/oauth-setup-issuer.ts";
 import { appsManifest } from "../support/apps-release.ts";
-import { createProfile } from "../support/profiles.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Redirect = Schema.Struct({
@@ -30,7 +31,6 @@ const Echo = Schema.Struct({
   authorization: Schema.NullOr(Schema.String),
 });
 const ScopeEcho = Schema.Struct({ ...Echo.fields, scope: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const client = { clientId: "token-shape-client", clientSecret: "synthetic-manual-secret" };
 
 /** Slack's `oauth.v2.access` answer for a bot install with token rotation. */
@@ -108,7 +108,7 @@ const dpop =
 
 /**
  * Deploy an app whose only query presents the account's token to the issuer, with helpers that
- * sign a new profile in and call that query. With `scope`, the provider declares a response that
+ * sign a new account in and call that query with it. With `scope`, the provider declares a response that
  * requires a string `scope` and the query echoes the scope app code sees.
  */
 const serviceApp = (
@@ -147,7 +147,7 @@ const serviceApp = (
           path: "index.ts",
           content: `import { defineApp, defineProvider, oauth2, query, object, string, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: ${method} } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({ read: query({ input: object({}) }, async ({ fetch }) => {
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({ read: query({ input: object({}) }, async ({ fetch }) => {
   const result = await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
   return ${echo};
 }) }) }));
@@ -162,16 +162,17 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
       api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
     );
 
-    /** Sign a new profile's account in through the issuer and complete the callback. */
+    /** Sign a new account in through the issuer and complete the callback, linking it to the app. */
     const signIn = (label: string) =>
       Effect.gen(function* () {
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         const started = yield* api.request(
           actors.owner,
@@ -203,41 +204,45 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           `${prefix}/connections/${connection.id}/oauth/complete`,
           { callbackUrl },
         );
+        let account: string | undefined;
         if (completed.status === 200) {
-          const account = yield* body(Resource, completed);
+          account = (yield* body(Resource, completed)).id;
+          const saved = account;
           yield* Effect.addFinalizer(() =>
-            api
-              .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
-              .pipe(Effect.orDie),
+            api.request(actors.owner, "DELETE", `${prefix}/accounts/${saved}`).pipe(Effect.orDie),
           );
-          // Selecting the account queues profile setup, whose live read of the app resolves the
-          // account and may renew its token. Wait until it is done so each call below is the
-          // only renewal the issuer sees.
-          yield* api
-            .request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile.id}`)
-            .pipe(
-              Effect.flatMap((response) => body(SetupStatus, response)),
-              Effect.flatMap((current) =>
-                current.status !== "pending"
-                  ? Effect.void
-                  : Effect.fail(new Error(`${label}: profile setup has not finished`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-            );
+          // Linking the account sets it up as the app's webhook source in the background, which
+          // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+          // the call the scenario makes.
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${app.id}`, (sources) =>
+            sources.some((source) => source.account === saved && source.status !== "pending"),
+          );
         }
         expect((yield* issuer.metrics).tokenExchanges, label).toBe(exchanges + 1);
-        return { profile, completed, failure: yield* body(Failure, completed) };
+        return { account, completed, failure: yield* body(Failure, completed) };
       });
 
-    /** Call the app's query, which presents the account's access token to the issuer. */
-    const read = (signedIn: { readonly profile: { readonly id: string } }) =>
+    /**
+     * Call the app's query, which presents the account's access token to the issuer. Each sign-in
+     * links its account to the app in place of the one before, so the call uses the signed-in one.
+     */
+    const read = (signedIn: { readonly account: string | undefined }) =>
       Effect.gen(function* () {
+        if (signedIn.account === undefined)
+          return yield* Effect.die("The sign-in saved no account");
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          signedIn.account,
+        ]);
         const before = (yield* issuer.metrics).refreshes;
         const response = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${app.id}/tools/call`,
-          { profile: signedIn.profile.id, tool: "read", kind: "query", input: {} },
+          {
+            tool: "read",
+            kind: "query",
+            input: {},
+          },
         );
         return { response, refreshes: (yield* issuer.metrics).refreshes - before };
       });
@@ -486,7 +491,7 @@ const jsonTokenRequests = (context: TestContext) =>
           `call ${call}: ${JSON.stringify((yield* issuer.metrics).refreshChecks)}`,
         ).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
       }
-      // The exchange and every renewal, including any during profile setup, were JSON.
+      // The exchange and every renewal were JSON.
       const types = (yield* issuer.metrics).tokenContentTypes.slice(sent);
       expect(types.length).toBeGreaterThanOrEqual(3);
       expect(types).toEqual(types.map(() => "application/json"));

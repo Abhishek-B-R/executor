@@ -19,6 +19,8 @@ import {
   nameConnectedAccount,
 } from "../support/name-account.ts";
 import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice, linkedLabels } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -70,7 +72,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read","offline_access"]})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
                 },
                 appsManifest,
               ],
@@ -371,9 +373,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           nameConnectedAccount(page, "Work reports"),
         );
         yield* browser.use("Wait for the saved account", (page) =>
-          page.getByRole("radio", { name: "Work reports", exact: true, checked: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
         );
         yield* capture("Account-connected");
+        // With an account linked, connecting another from the list would replace it.
         yield* click("Connect new account");
         yield* ready("Connect Sample service");
         expect(
@@ -402,26 +405,27 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
         )).accounts.find((account) => account.label === "Work reports")?.id;
         if (accountId === undefined) return yield* Effect.die("The saved account is missing");
-        const [profile] = yield* body(
-          Schema.Array(Schema.Struct({ id: Schema.String })),
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles`),
+        // Connecting from the app linked the account to it. Credentials are replaced only through
+        // an app the account is linked to.
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toContain(
+          accountId,
         );
-        if (profile === undefined) return yield* Effect.die("The connected profile is missing");
-        // Credentials are replaced only through an app that selects the account.
         const onAccount = (url: URL) =>
           url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
-          url.searchParams.get("view") === "accounts" &&
-          url.searchParams.get("profile") === profile.id;
+          url.searchParams.get("view") === "accounts";
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${accountId}`).pipe(Effect.orDie),
         );
         const reconnectAccount = () =>
           Effect.flatMap(
-            api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-              account: accountId,
-            }),
+            api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {
+                account: accountId,
+              },
+            ),
             (response) => body(Resource, response),
           );
         const reconnect = yield* reconnectAccount();
@@ -470,11 +474,22 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         ).toBe(0);
         yield* browser.use("Reopen the same connection link", (page) => page.goto(connectionUrl));
         yield* ready("Reconnect Sample service");
+        // A reconnect keeps its account's client without asking; replacing it is under Advanced.
+        expect(
+          yield* browser.use("A reconnect offers no client choice up front", (page) =>
+            page.getByRole("combobox", { name: "OAuth client" }).count(),
+          ),
+        ).toBe(0);
         yield* browser.use("A reconnect keeps its account's client", (page) =>
           page
-            .getByRole("combobox", { name: "OAuth client" })
-            .filter({ hasText: "Current client" })
-            .waitFor(),
+            .getByText("Advanced", { exact: true })
+            .click()
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor(),
+            ),
         );
         yield* capture("Reconnect-current-client");
         yield* chooseClient("Enter client details");
@@ -587,7 +602,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Sample service",auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read"]})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
             },
             appsManifest,
           ],
@@ -616,7 +631,10 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
             )).account.label;
           });
         const appPath = `/org/${actors.organization.slug}/apps/${app.id}`;
-        /** Connect from the app's Accounts tab and return with the naming dialog open. */
+        /**
+         * Connect from the app's Accounts tab and return with the naming dialog open. With an
+         * account linked, connecting another replaces it.
+         */
         const connect = () =>
           Effect.gen(function* () {
             yield* browser.use("Connect a new account from the list", (page) =>
@@ -679,7 +697,7 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         expect(afterClose.url.pathname).toBe(appPath);
         expect(afterClose.url.searchParams.get("view")).toBe("accounts");
         yield* browser.use("The account keeps its default name in the app", (page) =>
-          page.getByRole("radio", { name: "Default", exact: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Default").waitFor({ state: "visible" }),
         );
         expect(yield* label(first)).toBe("Default");
 
@@ -693,8 +711,13 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         expect(afterSave.count).toBe(0);
         expect(afterSave.url.pathname).toBe(appPath);
         yield* browser.use("The app shows the saved name", (page) =>
-          page.getByRole("radio", { name: "Work reports", exact: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
         );
+        expect(
+          yield* browser.use("The second account replaced the first", (page) =>
+            linkedLabels(page, "Sample service"),
+          ),
+        ).toEqual(["Work reports"]);
         expect(yield* label(second)).toBe("Work reports");
         expect(yield* label(first)).toBe("Default");
         yield* browser.checkpoint("Named OAuth account in the app");

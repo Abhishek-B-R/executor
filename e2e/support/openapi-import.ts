@@ -9,7 +9,6 @@ import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
 import { appsManifest } from "./apps-release.ts";
-import { createProfile } from "./profiles.ts";
 
 const ok = {
   "200": { description: "OK", content: { "application/json": { schema: { type: "object" } } } },
@@ -290,7 +289,7 @@ export const credentialEchoUpstream = Effect.gen(function* () {
   return { origin: `http://127.0.0.1:${server.address.port}` };
 });
 
-/** Deploy a public app with the given `index.ts`; it is deleted when the scenario ends. */
+/** Deploy an app with the given `index.ts`; it is deleted when the scenario ends. */
 export const deployPublicApp = (index: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
@@ -303,14 +302,16 @@ export const deployPublicApp = (index: string) =>
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const path = `${prefix}/${(yield* body(App, deployed)).id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
-    const profile = yield* createProfile(actors.owner, path);
+    // Its tools run with the caller's linked accounts; an app without requirements needs none.
     return {
-      tools: api.request(actors.owner, "GET", `${path}/tools?profile=${profile.id}`),
-      tool: (name: string) =>
-        api.request(actors.owner, "GET", `${path}/tools/${name}?profile=${profile.id}`),
+      api,
+      actors,
+      organization: `/api/organizations/${actors.organization.id}`,
+      path,
+      tools: api.request(actors.owner, "GET", `${path}/tools`),
+      tool: (name: string) => api.request(actors.owner, "GET", `${path}/tools/${name}`),
       call: (tool: string, kind: "query" | "mutation", input: unknown) =>
         api.request(actors.owner, "POST", `${path}/tools/call`, {
-          profile: profile.id,
           tool,
           kind,
           input,

@@ -41,21 +41,17 @@ export class ExecutionRejected extends Schema.TaggedError<ExecutionRejected>()(
   { message: Schema.String },
 ) {}
 
-/**
- * An app that needs accounts exposes no tools until the caller has an enabled profile for it.
- * The caller may have no profile, or only disabled or removed ones.
- */
-export const AppProfileRequired = UserFacingError.define({
-  tag: "AppProfileRequired",
+/** An app requirement has no account the caller linked, so the app exposes no tools. */
+export const AppAccountRequired = UserFacingError.define({
+  tag: "AppAccountRequired",
   status: 409,
   fields: { app: Schema.String },
-  title: "Set up an account profile to continue",
-  description: "This app needs an account, and you have no enabled profile for it.",
+  title: "Link an account to continue",
+  description: "This app needs an account, and none is linked to it for you.",
   recovery: {
-    action:
-      "Open the app's Accounts page and connect an account or enable an existing profile, then run execute again.",
+    action: "Open the app's Accounts page and connect or link an account, then run execute again.",
     instructions:
-      "Tell the user this app needs an account profile before its tools can be used. They can connect an account, or enable a profile they already have, on the app's Accounts page. Never substitute another identity automatically. This execution cannot call the app's tools.",
+      "Tell the user this app needs an account before its tools can be used. They can connect an account, or link one they already have, on the app's Accounts page. Never substitute another identity automatically. This execution cannot call the app's tools.",
   },
 });
 
@@ -118,7 +114,7 @@ export const ApprovalUnavailable = UserFacingError.define({
   fields: {
     /**
      * `expired`: the request passed its deadline. `context-changed`: Executor read the app
-     * deployment, profile or accounts and they differ from the reviewed call.
+     * deployment or accounts and they differ from the reviewed call.
      * `context-unconfirmed`: Executor's storage failed while it read them, so it could not compare.
      * `answered`: another answer already claimed it. `ended`: the execution ended before the
      * request could be saved.
@@ -150,7 +146,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call changed",
           description:
-            "The app deployment, profile or accounts changed after this call was saved for approval, so Executor did not resume it.",
+            "The app deployment or accounts changed after this call was saved for approval, so Executor did not resume it.",
           recovery: {
             action: "Run the call again to review it with the current settings.",
             instructions: `Executor resumes only the exact call that was reviewed, and its settings changed while it waited. ${check} Then start a new execute and ask the user to approve its new request.`,
@@ -160,7 +156,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call not confirmed",
           description:
-            "Executor could not read the app deployment, profile or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
+            "Executor could not read the app deployment or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
           recovery: {
             action:
               "Try again in a moment: run the call again and approve its new request. If this continues, check Executor's storage.",
@@ -232,7 +228,6 @@ export const UnavailableApp = Schema.Struct({
   app: Schema.String,
   name: Schema.String,
   reason: Schema.String,
-  profile: Schema.optionalKey(Schema.String),
   /** Only this router's tools are missing; the rest of the app loaded. */
   router: Schema.optionalKey(Schema.String),
 });
@@ -335,13 +330,12 @@ export const SearchInput = Schema.Struct({
   query: Schema.optionalKey(
     Schema.String.annotate({
       description:
-        "Words matched against tool paths, descriptions, input names, and app, profile and router labels. Omit it to list a namespace.",
+        "Words matched against tool paths, descriptions, input names, and app, account and router labels. Omit it to list a namespace.",
     }),
   ),
   namespace: Schema.optionalKey(
     Schema.String.annotate({
-      description:
-        "App slug, such as axiom, or a namespace inside it, such as axiom.profiles.ins_id or acme.issues.",
+      description: "App slug, such as axiom, or a namespace inside it, such as acme.issues.",
     }),
   ),
   limit: Schema.optionalKey(
@@ -352,16 +346,14 @@ export const SearchInput = Schema.Struct({
   offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 /**
- * A namespace that search items share, listed once per result rather than in every item: an app,
- * one of its profiles with its accounts, or a titled router inside either.
+ * A namespace that search items share, listed once per result rather than in every item: an app
+ * with its linked accounts, or a titled router inside it.
  */
 export const SearchNamespace = Schema.Struct({
-  /** The callable prefix of every tool below it, such as tools.axiom.profiles.ins_id. */
+  /** The callable prefix of every tool below it, such as tools.axiom. */
   path: Schema.String,
   app: Schema.String,
-  /** The profile's label. Its tools use that profile's saved accounts. */
-  profile: Schema.optionalKey(Schema.String),
-  /** The profile's account labels, each with its description. */
+  /** The linked accounts its calls use per requirement, with IDs, labels and descriptions. */
   accounts: Schema.optionalKey(Schema.String),
   /** The title of the router that groups these tools. */
   router: Schema.optionalKey(Schema.String),
@@ -377,8 +369,6 @@ export const SearchItem = Schema.Struct({
   input: Schema.String,
   /** The input type was cut; tools.search.describe returns it whole. */
   inputTruncated: Schema.optionalKey(Schema.Literal(true)),
-  /** The same tool, with the same signature, under the app's other profiles. */
-  alsoAt: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 /**
  * One page of ranked matches. `remaining` counts the matches after this page; `next` is the input
@@ -415,6 +405,41 @@ export const DescribeResult = Schema.Struct({
     Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
   ),
 });
+/** One direct tool call: an exact path from search and the tool's JSON input. */
+export const CallRequest = Schema.Struct({
+  path: Schema.String.annotate({
+    description: "An exact path from search, such as tools.github.issues.list.",
+  }),
+  input: Schema.Json.annotate({ description: "The tool's input, matching its input type." }),
+});
+/**
+ * One call, or several independent calls that run concurrently. The union sits below the top
+ * level because several MCP clients reject a tool input schema that is itself a union.
+ */
+export const CallInput = Schema.Struct({
+  calls: Schema.Union([CallRequest, Schema.Array(CallRequest).check(Schema.isMinLength(1))]),
+});
+/** How one direct call ended. A failed call does not stop the others in its batch. */
+export const CallOutcome = Schema.Union([
+  Schema.Struct({ path: Schema.String, ok: Schema.Literal(true), value: Schema.Json }),
+  Schema.Struct({
+    path: Schema.String,
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      kind: CodeMode.DiagnosticKind,
+      message: Schema.String,
+      response: Schema.optionalKey(McpErrorResponse),
+    }),
+    /** The closest tool paths, when the path names no tool. */
+    matches: Schema.optionalKey(Schema.Array(Schema.String)),
+  }),
+]);
+export type CallOutcome = typeof CallOutcome.Type;
+/** Search, describe and call read the catalog directly; a failure here is the caller's whole listing. */
+export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
+  "CatalogUnavailable",
+  { message: Schema.String },
+) {}
 /** Server-controlled execution budgets; clients cannot override them. */
 export const McpLimits = Schema.Struct({
   timeoutMs: Schema.Int.check(Schema.isGreaterThan(0)),
@@ -440,7 +465,7 @@ export const searchPageBytes = (limits: McpLimits) => Math.floor(limits.maxOutpu
 /** Execute programs over the host-provided app catalog. */
 export const ExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps; find their tools with tools.search inside it and full signatures with tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. If approval-required or input-required is returned, show it to the user and call resume with their answer; never run the program's source again. External effects are not rolled back on error or cancellation. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ExecuteInput,
   success: McpExecutionResult,
@@ -450,9 +475,63 @@ export const ExecuteTool = McpTool.make("execute", {
 /** Native-mode execution obtains policy decisions through server-initiated MCP requests. */
 export const NativeExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps; find their tools with tools.search inside it and full signatures with tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
+    "Run a JavaScript program over Executor apps, for work where one result feeds another call or a large result should be filtered before it reaches you; for one or a few independent calls, use call instead. Find tools with the search tool or tools.search inside the program, and full signatures with describe or tools.search.describe({ paths }). First read the Executor app's executor skill with the skills tool. Never ask the user for secrets in chat; accounts connect through Executor's secure links. Approvals and tool input open the MCP client's own prompt, and execute continues the same program. Earlier tool calls may already have completed and are not rolled back; never rerun the program automatically after an error. Send feedback with the Executor app's feedback.submit tool when Executor gets in your way or something works especially well.",
   dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
 }).annotate(McpTool.Meta, ExecutionResultMeta);
+
+/** Search reports the apps it could not load beside its matches, as execute results do. */
+export const SearchToolResult = Schema.Struct({
+  ...SearchResult.fields,
+  unavailableApps: Schema.Array(UnavailableApp),
+});
+/** The catalog search a program reaches as tools.search, as its own MCP tool. */
+export const SearchTool = McpTool.make("search", {
+  description:
+    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
+  parameters: SearchInput,
+  success: SearchToolResult,
+  failure: CatalogUnavailable,
+})
+  .annotate(McpTool.Readonly, true)
+  .annotate(McpTool.Destructive, false);
+/** Full signatures for exact paths, as tools.search.describe returns them in a program. */
+export const DescribeTool = McpTool.make("describe", {
+  description:
+    "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from search. Unknown paths are listed in missing with the closest paths.",
+  parameters: DescribeInput,
+  success: DescribeResult,
+  failure: CatalogUnavailable,
+})
+  .annotate(McpTool.Readonly, true)
+  .annotate(McpTool.Destructive, false);
+
+/** Shared by every delivery mode; each appends how pending interactions are answered. */
+export const callDescription =
+  "Call Executor app tools directly by exact path from search. Pass one {path, input} as calls, or an array of independent calls to run them concurrently; results come back in the same order, each with ok and its value or error. Use execute instead when one call's output feeds another, or to filter a large result before it reaches you. Results over the output limit are refused, not cut. Never ask the user for secrets in chat; accounts connect through Executor's secure links.";
+/** Call tools without a program. Pending interactions return as from execute. */
+export const CallTool = McpTool.make("call", {
+  description: `${callDescription} If approval-required or input-required is returned, show it to the user and call resume with their answer; never repeat the call to continue it.`,
+  dependencies: [HttpServerRequest.HttpServerRequest],
+  parameters: CallInput,
+  success: McpExecutionResult,
+  failure: ExecutionRejected,
+}).annotate(McpTool.Meta, ExecutionResultMeta);
+/**
+ * Native-mode calls. The tool is marked destructive and open-world, so the MCP client confirms each
+ * call before it runs; that confirmation answers the apps' approval policies, which are not asked
+ * again. Tool input still opens the client's own prompt.
+ */
+export const NativeCallTool = McpTool.make("call", {
+  description: `${callDescription} Your MCP client confirms each call before it runs, so approvals do not ask again. Tool input opens the client's own prompt, and the call continues.`,
+  dependencies: [HttpServerRequest.HttpServerRequest, McpSchema.McpRequestContext],
+  parameters: CallInput,
+  success: McpExecutionResult,
+  failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpTool.Readonly, false)
+  .annotate(McpTool.Destructive, true)
+  .annotate(McpTool.OpenWorld, true);

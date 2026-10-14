@@ -73,7 +73,7 @@ export const makeMcpSession = Effect.fn(function* ({
         "executor.mcp.isolate.kept_bytes": kept.bytes,
       };
     });
-    // What each caller's last tool call read, by app and profile (CallStateCache).
+    // What each caller's last tool call read, by app and named accounts (CallStateCache).
     const callState = new Map<string, CallState>();
     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(

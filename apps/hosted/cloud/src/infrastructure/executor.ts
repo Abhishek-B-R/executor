@@ -2,11 +2,7 @@
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
-import {
-  clientMetadataSetting,
-  firstPartyOAuthClients,
-  hostedOAuthClientName,
-} from "@executor-js/hosted-server";
+import { firstPartyOAuthClients, hostedOAuthClientName } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import {
   createExecutor,
@@ -34,6 +30,7 @@ import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from ".
 import { cloudEmulators } from "./emulators.ts";
 import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
 import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
+import { cloudClientMetadata } from "./client-metadata.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -82,7 +79,7 @@ export const cloudExecutor = Effect.fn(function* (
   const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
-  const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
+  const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
   const firstPartyClients = yield* cloudFirstPartyOAuthClients.pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
@@ -115,7 +112,8 @@ export const cloudExecutor = Effect.fn(function* (
         Effect.suspend(() =>
           closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
         );
-      return yield* createExecutor({
+      const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
+      const executor = yield* createExecutor({
         database: storage,
         secret: key,
         origin,
@@ -129,12 +127,18 @@ export const cloudExecutor = Effect.fn(function* (
             Effect.provideContext(services),
           ),
         },
-        hooks: yield* hostedResourceLifecycle.pipe(Effect.provideContext(services)),
+        hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
-          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          // The document lists a callback on its own origin, which its sign-ins send.
+          ...(Option.isSome(clientMetadata)
+            ? {
+                clientMetadataUrl: clientMetadata.value.url,
+                clientMetadataRedirectUri: clientMetadata.value.redirectUri,
+              }
+            : {}),
           // Entered clients saved before sign-ins moved to `executor.sh` keep the callback they name.
           ...(Option.isSome(accountSignIns.callbacks)
             ? {
@@ -166,6 +170,8 @@ export const cloudExecutor = Effect.fn(function* (
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
       }).pipe(Effect.provide(BrowserCrypto.layer));
+      yield* lifecycle.attach(executor);
+      return executor;
     }).pipe(
       Effect.mapError(() => new StorageError()),
       Effect.withSpan("runtime.cloud.executor.initialize"),

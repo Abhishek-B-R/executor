@@ -100,7 +100,7 @@ const mcpAppFiles = (url: string, timeoutMs?: number) => [
     path: "index.ts",
     content: `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
   },
 ];
 
@@ -113,7 +113,7 @@ const githubSkillsApp = (
   options = "",
 ) => `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { githubSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => githubSkills({
     repo: "synthetic/missing-skills",
@@ -137,7 +137,7 @@ const wellKnownSkillsApp = (
   fetch = "",
 ) => `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(url)}, signal: ctx.signal${fetch} }) }),
 }));`;
@@ -294,7 +294,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
             path: "index.ts",
             content: `import { defineApp } from "apps";
 import { McpError } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new McpError({ phase: "discover", reason: "request", status: 404, session: true });
 });`,
           },
@@ -303,7 +303,7 @@ export default defineApp({ accounts: {} }, async () => {
           {
             path: "index.ts",
             content: `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new TypeError("Synthetic failure in the factory");
 });`,
           },
@@ -317,7 +317,7 @@ export default defineApp({ accounts: {} }, async () => {
             path: "index.ts",
             content: `import { defineApp, mutation, object, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   approved: mutation({ input: object({}), approval: always() }, async () => "approved"),
 }) }));`,
           },

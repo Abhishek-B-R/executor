@@ -11,7 +11,6 @@ import {
   type AppId,
   type DeploymentId,
   type OwnerId,
-  type ProfileId,
   type ToolName,
 } from "../contracts/shared.ts";
 import { ToolRouter, ToolSearchListing, type ToolSearchScope } from "../contracts/tools.ts";
@@ -24,7 +23,8 @@ export interface SearchListingRow {
   readonly owner: OwnerId;
   readonly app: AppId;
   readonly deployment: DeploymentId;
-  readonly profile: ProfileId | undefined;
+  /** The digest of the account set the listing was evaluated with; see `toolSearchTarget`. */
+  readonly target: string;
   readonly at: number;
   readonly digest: string;
   readonly routers: ReadonlyArray<ToolRouter>;
@@ -46,7 +46,8 @@ export interface SearchToolRow {
 export interface RankedTarget {
   readonly listing: ToolSearchListing;
   readonly app: AppId;
-  readonly profile?: ProfileId | undefined;
+  /** The digest of the target's account set; see `toolSearchTarget`. */
+  readonly target: string;
   readonly labels: ReadonlyArray<string>;
   readonly scopes: ReadonlyArray<ToolSearchScope>;
   readonly below?: string | undefined;
@@ -86,7 +87,7 @@ const batchRows = 500;
 const batchChars = 1_000_000;
 
 /**
- * How long a listing stays after a newer one of its app and profile was written. An execution
+ * How long a listing stays after a newer one of its app and account set was written. An execution
  * searches the listings discovery named for its whole life: at most five minutes of running
  * (`defaultMcpLimits.timeoutMs`) plus the time it waits on approvals, each of which expires
  * after fifteen minutes. An hour covers the run and three approvals in a row; a search after
@@ -106,13 +107,13 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
     })`;
   /**
    * The targets' rows the scopes permit. Each target's listing must be a row for its app and
-   * profile, so a listing named for another target finds nothing.
+   * account set, so a listing named for another target finds nothing.
    */
   const targets = (input: ReadonlyArray<RankedTarget>) => ({
     values: sql.csv(
       input.map(
         (target, index) =>
-          sql`(${index}::int, ${target.listing}::text, ${target.app}::text, ${target.profile ?? null}::text, ${target.labels.join(" ")}::text, ${target.labels.length}::int)`,
+          sql`(${index}::int, ${target.listing}::text, ${target.app}::text, ${target.target}::text, ${target.labels.join(" ")}::text, ${target.labels.length}::int)`,
       ),
     ),
     permitted: sql.or(
@@ -159,7 +160,9 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
     });
   /**
    * Mark the target's other listings evaluated before this one superseded, and delete those
-   * superseded for longer than an execution may still search them.
+   * superseded for longer than an execution may still search them. Listings without a target were
+   * kept per profile before 4.0.13, or by the previous server during its deploy; no target is
+   * theirs, so each write of the app supersedes and then removes them like its own.
    *
    * Cleanup locks the expired listing rows first and deletes their rows and them by those ids.
    * `revive` and writers update or lock the same listing row, so each either takes it first, and
@@ -168,7 +171,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
    */
   const supersede = (row: SearchListingRow, now: number) =>
     Effect.gen(function* () {
-      const target = sql`app = ${row.app} and profile is not distinct from ${row.profile ?? null}::text`;
+      const target = sql`app = ${row.app} and (target = ${row.target} or target is null)`;
       yield* sql`update executor_tool_search_listings set superseded = ${now}
         where ${target} and listing <> ${row.listing} and superseded is null and at < ${row.at}`;
       const expired = yield* sql`select listing from executor_tool_search_listings
@@ -202,10 +205,10 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
       return kept ?? (yield* claim(listing));
     });
   return {
-    /** The kept rows of a listing, if any. */
-    listing: (listing: ToolSearchListing) =>
+    /** The kept rows of a listing of this target, if any. */
+    listing: (listing: ToolSearchListing, target: string) =>
       sql`select at::float8 as at, digest, routers, superseded::float8 as superseded
-        from executor_tool_search_listings where listing = ${listing}`.pipe(
+        from executor_tool_search_listings where listing = ${listing} and target = ${target}`.pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Kept))),
         Effect.map((rows) => rows[0]),
         failed,
@@ -245,14 +248,14 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
           owner: row.owner,
           app: row.app,
           deployment: row.deployment,
-          profile: row.profile ?? null,
+          target: row.target,
           at: row.at,
           digest: row.digest,
           routers,
           superseded: null,
         };
         yield* sql`select pg_advisory_xact_lock(
-          hashtext(${row.app}::text), hashtext(coalesce(${row.profile ?? null}::text, '')))`;
+          hashtext(${row.app}::text), hashtext(${row.target}::text))`;
         const kept = yield* claim(listing);
         if (kept !== undefined) {
           if (kept.at >= row.at) {
@@ -361,11 +364,11 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
                 from hits join df using (term) cross join stats
                 group by hits.ordinal, hits.id, hits.name, hits.signature)`;
         const [page] =
-          yield* sql`with t(ordinal, listing, app, profile, labels, length) as (values ${values}),
+          yield* sql`with t(ordinal, listing, app, target, labels, length) as (values ${values}),
           present as (
             select t.ordinal from t
             join executor_tool_search_listings l
-              on l.listing = t.listing and l.app = t.app and l.profile is not distinct from t.profile),
+              on l.listing = t.listing and l.app = t.app and l.target = t.target),
           scope as materialized (
             select t.ordinal, t.app, s.id, s.name, s.signature, string_to_array(s.terms, ' ') as own,
               string_to_array(t.labels, ' ') as labels, s.length + t.length as length

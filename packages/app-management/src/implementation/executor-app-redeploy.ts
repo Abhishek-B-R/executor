@@ -1,9 +1,8 @@
 /**
- * Redeploy Executor apps built on an `apps` release before beta.10 on this host's release, once.
+ * Redeploy Executor apps built on an `apps` release before beta.10 on the target release, once.
  * Only `dependencies.apps` in `package.json` changes; every other file, the app's identity, data,
- * accounts and profiles stay as they are, as with any redeploy of the same app.
+ * accounts and links stay as they are, as with any redeploy of the same app.
  */
-import { appsVersion } from "@executor-js/app-templates";
 import {
   JsonObject,
   sourceFilesEqual,
@@ -21,6 +20,7 @@ import { pinnedBeforeDeploy } from "./framework-pin.ts";
 import {
   executorAppRedeployFixedRelease,
   executorAppRedeployMessage,
+  executorAppRedeployTargetRelease,
   type ExecutorAppRedeployOutcome,
 } from "../contracts/executor-app-redeploy.ts";
 
@@ -139,7 +139,7 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
     if (pin === undefined) return "other-pin" as const;
     const order = compareReleases(pin, executorAppRedeployFixedRelease);
     if (order === undefined || order >= 0) return "current" as const;
-    const next = repinned(running.files, pin, appsVersion);
+    const next = repinned(running.files, pin, executorAppRedeployTargetRelease);
 
     // Main must hold the running source, the redeployed source, the running source under only the
     // framework pin committed before a template upgrade deployed it, or an earlier deployment's
@@ -180,9 +180,11 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
     const deployed = yield* host.executor.apps.deploy({ ...target, files: next }).pipe(
       Effect.map((result) => result.app),
       Effect.catchTag("DeploymentBuildFailed", (error) =>
-        Effect.logWarning("Executor app does not build on this release", listed.id, error).pipe(
-          Effect.as(undefined),
-        ),
+        Effect.logWarning(
+          "Executor app does not build on the target release",
+          listed.id,
+          error,
+        ).pipe(Effect.as(undefined)),
       ),
     );
     if (deployed === undefined) return "build-failed" as const;
@@ -195,7 +197,7 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
           ...target,
           expected: workspace.revision.commit,
           files: next,
-          message: executorAppRedeployMessage(pin, appsVersion),
+          message: executorAppRedeployMessage(pin, executorAppRedeployTargetRelease),
         })
         .pipe(
           Effect.catchTag("SourceError", (error) =>

@@ -12,8 +12,8 @@ import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
@@ -66,13 +66,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth saved client rejection",
           },
         ) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
             const connection = (yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app}`, "user", "service"),
+                {},
+              ),
             )).id;
             if (client !== undefined) {
               // The service knows the registered client before the user reaches it.

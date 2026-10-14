@@ -5,6 +5,7 @@ import { Effect, Exit, Option, Redacted, Schema, Cause } from "effect";
 import {
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
   OAuthCompletionFailed,
   oauthCompletionRecovery,
   type OAuthCompletionRecovery,
@@ -80,7 +81,8 @@ export function OAuthCallbackPage() {
             error,
             (value) =>
               Schema.is(AccountConnectionClosed)(value) ||
-              Schema.is(AccountConnectionTargetChanged)(value),
+              Schema.is(AccountConnectionTargetChanged)(value) ||
+              Schema.is(AccountConnectionRefused)(value),
           )
             ? ("setup" as const)
             : ("restart" as const),
@@ -129,7 +131,7 @@ export function OAuthCallbackPage() {
           });
         return fail(resolved.cause);
       }
-      const { organizationSlug, connection, app, profile, reconnect } = resolved.value;
+      const { organizationSlug, connection, app, reconnect } = resolved.value;
       // The organization's pages key their state by the route's slug reference.
       const organization = organizationSlug;
       const context = {
@@ -155,7 +157,7 @@ export function OAuthCallbackPage() {
       await navigate({
         to: "/org/$organizationSlug/apps/$appId",
         params: { organizationSlug, appId: app },
-        search: { view: "accounts", profile },
+        search: { view: "accounts" },
       });
     })();
   }, [registry, navigate]);
@@ -241,7 +243,7 @@ function OAuthRecoveryActions({
         <Link
           to="/org/$organizationSlug/apps/$appId"
           params={{ organizationSlug: context.organizationSlug, appId: context.app }}
-          search={{ view: "accounts", profile: context.profile }}
+          search={{ view: "accounts" }}
         >
           Back to app
         </Link>

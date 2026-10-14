@@ -25,6 +25,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /**
  * `workerd --version` prints the release date of the workerd the checkout pins, which the image
@@ -258,14 +259,14 @@ for (const mode of ["explicit", "local", "railway"] as const)
                 content: `import { defineApp, defineProvider, secrets, string, query, mutation, workflow, object, router } from "apps";
 import isNumber from "is-number";
 const service = defineProvider({ name: "Release test", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
   tools: router({
     check: query({ input: object({}) }, async () => isNumber("2") && accounts.service.fields.token === "synthetic-release-token"),
     messages: query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT body FROM messages ORDER BY seq").toArray().map(row => row.body)),
     save: mutation({ input: object({ body: string() }) }, async ({ sql }, input) => { sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body; }),
   }),
   workflows: { check: workflow({ input: object({}) }, async (ctx) =>
-    ctx.step.do("credential", async (step) => step.accounts.service.fields.token === "synthetic-release-token")) }
+    ctx.step.do("credential", async (step) => step.user.accounts.service.fields.token === "synthetic-release-token")) }
 }));`,
               },
               {
@@ -299,18 +300,9 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         const app = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ id: Schema.String, slug: Schema.String }),
         )(yield* driver("deployment response", () => deployed.json()));
-        const profileResponse = yield* request(
-          `${prefix}/apps/${app.id}/profiles`,
-          { accounts: {}, idempotencyKey: randomUUID() },
-          cookie,
-        );
-        expect(profileResponse.status).toBe(200);
-        const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-          yield* driver("profile response", () => profileResponse.json()),
-        );
         const connectionResponse = yield* request(
-          `${prefix}/apps/${app.id}/connections`,
-          { requirement: "service", profile: profile.id },
+          connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+          {},
           cookie,
         );
         expect(connectionResponse.status).toBe(200);
@@ -323,6 +315,10 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           cookie,
         );
         expect(connected.status).toBe(200);
+        // Connecting from the app links the account to it; calls use it.
+        yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
+          yield* driver("connected account", () => connected.json()),
+        );
         const token =
           mode === "explicit"
             ? yield* Effect.gen(function* () {
@@ -360,7 +356,6 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
         const saved = yield* request(
           `${prefix}/apps/${app.id}/tools/call`,
           {
-            profile: profile.id,
             tool: "save",
             kind: "mutation",
             input: { body: "Retained app data" },
@@ -814,14 +809,14 @@ http.createServer((request, response) => {
 
           const called = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "check", kind: "query", input: {} },
+            { tool: "check", kind: "query", input: {} },
             cookie,
           );
           expect(called.status).toBe(200);
           expect(yield* driver("query response", () => called.json())).toBe(true);
           const workflow = yield* request(
             `${prefix}/apps/${app.id}/workflow-runs`,
-            { profile: profile.id, workflow: "check", input: {}, key: randomUUID() },
+            { workflow: "check", input: {}, key: randomUUID() },
             cookie,
           );
           expect(
@@ -875,7 +870,7 @@ http.createServer((request, response) => {
                       {
                         name: "execute",
                         arguments: {
-                          code: `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].check({})`,
+                          code: `return await tools[${JSON.stringify(app.slug)}].check({})`,
                         },
                       },
                       undefined,
@@ -894,7 +889,7 @@ http.createServer((request, response) => {
           }
           const messages = yield* request(
             `${prefix}/apps/${app.id}/tools/call`,
-            { profile: profile.id, tool: "messages", kind: "query", input: {} },
+            { tool: "messages", kind: "query", input: {} },
             cookie,
           );
           expect(messages.status).toBe(200);
@@ -1099,7 +1094,7 @@ it.live("released image keeps its collector out of apps' reach with private fetc
             {
               path: "index.ts",
               content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({ url: string(), body: string() }) }, async (ctx, input) => {
       try {
@@ -1121,19 +1116,10 @@ export default defineApp({ accounts: {} }, async () => ({
       const app = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
         yield* driver("probe app", () => deployed.json()),
       );
-      const created = yield* request(
-        `${prefix}/apps/${app.id}/profiles`,
-        { accounts: {}, idempotencyKey: randomUUID() },
-        cookie,
-      );
-      expect(created.status).toBe(200);
-      const profile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-        yield* driver("probe profile", () => created.json()),
-      );
       const probe = (url: string, body = "") =>
         request(
           `${prefix}/apps/${app.id}/tools/call`,
-          { profile: profile.id, tool: "probe", kind: "query", input: { url, body } },
+          { tool: "probe", kind: "query", input: { url, body } },
           cookie,
         ).pipe(
           Effect.flatMap((response) => driver(`probe ${url}`, () => response.json())),
@@ -1732,7 +1718,7 @@ http.createServer((request, response) => {
             {
               path: "index.ts",
               content: `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({ url: string() }) }, async (ctx, input) => {
       try { return "reached:" + (await ctx.fetch(input.url)).status; }
@@ -1752,20 +1738,13 @@ export default defineApp({ accounts: {} }, async () => ({
       const app = yield* Schema.decodeUnknownEffect(
         Schema.Struct({ id: Schema.String, slug: Schema.String }),
       )(yield* driver("probe app", () => deployed.json()));
-      const created = yield* request(
-        `${prefix}/apps/${app.id}/profiles`,
-        { accounts: {}, idempotencyKey: randomUUID() },
-        cookie,
-      );
-      expect(created.status).toBe(200);
-      const probeProfile = yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(
-        yield* driver("probe profile", () => created.json()),
-      );
-      // Setup provisions the built-in Executor app in the background.
-      const executorProfile = yield* Effect.gen(function* () {
+      // Setup provisions the built-in Executor app and links the member's managed key to it in the
+      // background.
+      yield* Effect.gen(function* () {
         const inventory = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+            links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
           }),
         )(
           yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
@@ -1774,14 +1753,8 @@ export default defineApp({ accounts: {} }, async () => ({
         );
         const executor = inventory.apps.find((item) => item.slug === "executor");
         if (executor === undefined) return yield* Effect.fail("Executor app pending");
-        const profiles = yield* Schema.decodeUnknownEffect(
-          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
-        )(
-          yield* request(`${prefix}/apps/${executor.id}/profiles`, undefined, cookie).pipe(
-            Effect.flatMap((response) => driver("Executor profiles", () => response.json())),
-          ),
-        );
-        return profiles[0];
+        if (!inventory.links.some((link) => link.app === executor.id))
+          return yield* Effect.fail("Executor key pending");
       }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }));
       const keyResponse = yield* request(
         "/api/auth/api-key/create",
@@ -1827,7 +1800,7 @@ export default defineApp({ accounts: {} }, async () => ({
         );
       const source = yield* execute(
         "read app source through the built-in Executor app",
-        `return await tools.executor.profiles[${JSON.stringify(executorProfile.id)}].appManagement.source(${JSON.stringify({ path: { organization: organization.id, app: app.id } })})`,
+        `return await tools.executor.appManagement.source(${JSON.stringify({ path: { organization: organization.id, app: app.id } })})`,
       );
       expect(
         source,
@@ -1839,7 +1812,7 @@ export default defineApp({ accounts: {} }, async () => ({
       const probe = (url: string) =>
         execute(
           `authored app fetches ${url}`,
-          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(probeProfile.id)}].probe(${JSON.stringify({ url })})`,
+          `return await tools[${JSON.stringify(app.slug)}].probe(${JSON.stringify({ url })})`,
         );
       // The same listener on its private address is not the dashboard origin.
       const refused = yield* probe(`http://${address}:${containerPort}/health`);
@@ -2006,36 +1979,44 @@ it.live(
               yield* request("/api/auth/organization/list", undefined, cookie),
             );
             const prefix = `/api/organizations/${organization.id}`;
-            // Setup installs the built-in Executor app and the owner's profile of it in the
-            // background. That profile's setup loads the app's Worker, which under a low limit
-            // unloads an idle probe Worker, so it must finish before the probes are deployed.
-            const executorProfiles = yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
-              Effect.flatMap((response) =>
-                json(
-                  Schema.Struct({
-                    apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
-                    profiles: Schema.Array(
-                      Schema.Struct({ app: Schema.String, status: Schema.String }),
-                    ),
-                  }),
-                  response,
+            // Setup installs the built-in Executor app and links the owner's managed key to it in
+            // the background. That link's webhook source reconciliation loads the app's Worker,
+            // which under a low limit unloads an idle probe Worker, so it must finish before the
+            // probes are deployed.
+            const executorSources = yield* Effect.gen(function* () {
+              const { apps: installed } = yield* request(
+                `${prefix}/inventory`,
+                undefined,
+                cookie,
+              ).pipe(
+                Effect.flatMap((response) =>
+                  json(
+                    Schema.Struct({
+                      apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+                    }),
+                    response,
+                  ),
                 ),
-              ),
-              Effect.flatMap(({ apps, profiles }) => {
-                const executor = apps.find((app) => app.slug === "executor");
-                const setup =
-                  executor === undefined
-                    ? []
-                    : profiles.filter((profile) => profile.app === executor.id);
-                return setup.length === 0 || setup.some((profile) => profile.status === "pending")
-                  ? Effect.fail(new Error("Executor app setup has not finished"))
-                  : Effect.succeed(setup);
-              }),
-              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
-            );
-            // A profile that is not ready retries its setup later and loads the Worker again.
-            for (const profile of executorProfiles)
-              expect(profile.status, "the built-in Executor app is set up").toBe("ready");
+              );
+              const executorApp = installed.find((app) => app.slug === "executor");
+              if (executorApp === undefined)
+                return yield* Effect.fail(new Error("The built-in Executor app is not installed"));
+              const sources = yield* request(
+                `${prefix}/apps/${executorApp.id}/webhook-sources`,
+                undefined,
+                cookie,
+              ).pipe(
+                Effect.flatMap((response) =>
+                  json(Schema.Array(Schema.Struct({ status: Schema.String })), response),
+                ),
+              );
+              return sources.length === 0 || sources.some((source) => source.status === "pending")
+                ? yield* Effect.fail(new Error("Executor app setup has not finished"))
+                : sources;
+            }).pipe(Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }));
+            // A source that is not ready retries its reconciliation later and loads the Worker again.
+            for (const source of executorSources)
+              expect(source.status, "the built-in Executor app is set up").toBe("ready");
             const probes: Array<Probe> = [];
             for (let index = 0; index < apps; index++) {
               const deployed = yield* request(
@@ -2048,7 +2029,7 @@ it.live(
                       content: `import { defineApp, query, object, router } from "apps";
 let isolate;
 let calls = 0;
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     probe: query({ input: object({}) }, async () => {
       isolate ??= crypto.randomUUID();
@@ -2068,34 +2049,10 @@ export default defineApp({ accounts: {} }, async () => ({
                 yield* driver("deploy probe", () => deployed.clone().text()),
               ).toBe(200);
               const app = yield* json(Schema.Struct({ id: Schema.String }), deployed);
-              const profile = yield* json(
-                Schema.Struct({ id: Schema.String }),
-                yield* request(
-                  `${prefix}/apps/${app.id}/profiles`,
-                  { accounts: {}, idempotencyKey: randomUUID() },
-                  cookie,
-                ),
-              );
-              // Profile setup discovers the app in the background; let it finish before the calls.
-              yield* request(
-                `${prefix}/apps/${app.id}/profiles/${profile.id}`,
-                undefined,
-                cookie,
-              ).pipe(
-                Effect.flatMap((response) =>
-                  json(Schema.Struct({ status: Schema.String }), response),
-                ),
-                Effect.flatMap((current) =>
-                  current.status === "pending"
-                    ? Effect.fail(new Error("Profile setup has not finished"))
-                    : Effect.void,
-                ),
-                Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
-              );
               probes.push(
                 request(
                   `${prefix}/apps/${app.id}/tools/call`,
-                  { profile: profile.id, tool: "probe", input: {} },
+                  { tool: "probe", input: {} },
                   cookie,
                 ).pipe(
                   Effect.tap((response) =>
@@ -2421,7 +2378,7 @@ it.live(
           {
             path: "index.ts",
             content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }) }));`,
+export default defineApp({}, async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }) }));`,
           },
           appsManifest,
           {

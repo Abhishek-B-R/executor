@@ -13,16 +13,18 @@ import { Api, body, type Session } from "../support/api.ts";
 import { TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
+import { beforeAppAccounts, beforeProfileRemoval } from "../support/profile-removal-rollback.ts";
 import { Target } from "../support/platform.ts";
-import { createProfile } from "../support/profiles.ts";
 import { serverControl } from "../support/server-control.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
+import { localLinks } from "../support/local-links.ts";
 import { scenarios } from "../test-plan.ts";
 
 const source = `import { defineApp, defineProvider, object, router, secrets, string } from "apps";
 const service = defineProvider({ name: "Targeted fixture", auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));`;
-const Link = Schema.Struct({ connection: Schema.String });
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
+const Link = Schema.Struct({ connection: Schema.String, url: Schema.String });
 
 interface Statement {
   readonly sql: string;
@@ -31,10 +33,17 @@ interface Statement {
 /** The rows an older server left, copied from the targeted connection's owner and provider. */
 const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => [
   // The layout before 4.0.8: a nullable target whose default is JSON null, and none of the
-  // tables later steps add.
+  // tables, columns and triggers later steps add.
   {
     sql: `ALTER TABLE executor_account_connections
       ALTER COLUMN target DROP NOT NULL, ALTER COLUMN target SET DEFAULT 'null'::json`,
+  },
+  // Nor the scopes app accounts added since, which connections record with their target.
+  ...beforeAppAccounts(),
+  {
+    sql: `UPDATE executor_account_connections SET target = (target::jsonb - 'scope')::json
+      WHERE id = $1`,
+    params: [template],
   },
   {
     sql: `DROP TABLE executor_tool_search, executor_tool_search_definitions, executor_tool_search_listings`,
@@ -42,6 +51,7 @@ const legacyRows = (template: string, ids: Ids): [Statement, ...Statement[]] => 
   {
     sql: `DROP TABLE executor_stored_oauth_client_credentials, executor_stored_oauth_clients`,
   },
+  ...beforeProfileRemoval({ toolSearch: false }),
   { sql: `UPDATE private_executor_settings SET value = '4.0.7' WHERE key = 'version'` },
   {
     sql: `INSERT INTO executor_oauth_attempts (id, encrypted, expires_at, status)
@@ -122,7 +132,7 @@ const expectUpgraded = (
   ids: Ids,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.12" }]);
+  expect(version).toEqual([{ value: "4.0.15" }]);
   // Only the connection with a target is left, and only the sign-in no connection pointed at.
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
@@ -157,15 +167,11 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
             Effect.orDie,
           ),
         );
-        const profile = yield* createProfile(agent, `/v1/apps/${app.id}`, {
-          owner: "local",
-          subject: "local",
-        });
-        const { connection } = yield* body(
+        const { connection, url } = yield* body(
           Link,
           yield* api.request(agent, "POST", "/account-connect/api/requests", {
             owner: "local",
-            target: { app: app.id, profile: profile.id, requirement: "service" },
+            target: { app: app.id, requirement: "service" },
           }),
         );
         const ids = legacyIds();
@@ -194,6 +200,23 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
           connection,
           ids,
         );
+
+        // The kept connection was started before targets recorded a scope, for a profile: it
+        // completes as the user's own link.
+        yield* serverControl("start");
+        const submitted = yield* api.request(agent, "POST", "/account-connect/api/submit", {
+          connection,
+          token: new URLSearchParams(new URL(url).hash.slice(1)).get("token"),
+          method: "key",
+          fields: { token: "synthetic-legacy-key" },
+        });
+        expect(submitted.status, JSON.stringify(submitted.body)).toBe(200);
+        const account = (yield* body(Resource, submitted)).id;
+        yield* Effect.addFinalizer(() =>
+          api.request(agent, "DELETE", `/dashboard/api/accounts/${account}`).pipe(Effect.orDie),
+        );
+        expect(yield* localLinks(agent, app.id, "user")).toEqual([account]);
+        expect(yield* localLinks(agent, app.id, "app")).toEqual([]);
       }),
     ),
   );
@@ -220,16 +243,20 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
             Effect.orDie,
           ),
         );
-        const profile = yield* createProfile(actors.owner, path);
-        const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        });
+        const pending = yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(path, "user", "service"),
+          {},
+        );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const connection = (yield* body(Resource, pending)).id;
         const ids = legacyIds();
         const legacy = [ids.pending, ids.reconnect, ids.defaulted];
         yield* legacyStorage([
+          // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
+          // idempotently, and none are left to convert.
+          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
           // Before step 8 no client had an audience, whose rows name stored clients.
           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
           { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 8` },

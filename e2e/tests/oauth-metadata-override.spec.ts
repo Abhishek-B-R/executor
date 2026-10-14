@@ -7,7 +7,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -41,7 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth metadata override", (it)
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2(${JSON.stringify(config)}) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({
   read: query({ input: object({}) }, async ({ fetch }) => (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json()),
 }) }));`,
                 },
@@ -63,13 +63,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           );
         const connect = (app: typeof App.Type) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const start = yield* api.request(
               actors.owner,
@@ -94,7 +95,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
               `${prefix}/connections/${connection.id}/oauth/complete`,
               { callbackUrl: callback },
             );
-            return { completed, url, profile };
+            return { completed, url };
           });
 
         // The resource advertises OpenID, but its root metadata omits signing algorithms. The
@@ -139,18 +140,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        expect(
-          (yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${overridden.id}/profiles/${connected.profile.id}`,
-          )).body,
-        ).toMatchObject({ accounts: { service: account.id } });
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${overridden.id}`)).toEqual([
+          account.id,
+        ]);
         const executed = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${overridden.id}/tools/call`,
-          { profile: connected.profile.id, tool: "read", kind: "query", input: {} },
+          { tool: "read", kind: "query", input: {} },
         );
         expect(executed.status, JSON.stringify(executed.body)).toBe(200);
         expect(yield* body(Schema.Struct({ refreshed: Schema.Boolean }), executed)).toEqual({

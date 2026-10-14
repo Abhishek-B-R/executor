@@ -2,7 +2,7 @@ import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { invocationAccount } from "./provider.ts";
 import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
-/** Snapshot the configured app, then execute with its selected credentials. */
+/** Snapshot the configured app, then execute with the named accounts' credentials. */
 import {
   Cause,
   Clock,
@@ -23,17 +23,28 @@ import {
   ToolResultObservation,
   type HostAccount,
   type HostAccounts,
+  type HostAccountSlots,
+  scopedSlots,
 } from "apps/contracts";
 import {
   AccountRequired,
   AccountSelectionInvalid,
   AppNotFound,
   AppNotDeployed,
+  invocationEntries,
+  sameAccounts,
+  type AccountScope,
+  type AppAccounts,
+  type SelectedAccounts,
 } from "../contracts/apps.ts";
 import { AccountNotFound } from "../contracts/account.ts";
 import { DeploymentNotFound } from "../contracts/deployment.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
-import type { Executor } from "../contracts/executor.ts";
+import {
+  type AppAccountUse,
+  CurrentActor,
+  type Executor,
+  type ResourceLifecycle,
+} from "../contracts/executor.ts";
 import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
 import {
   Cursor,
@@ -76,31 +87,32 @@ import {
   type ToolResumeResult,
   type Tool,
   type ToolSummary,
+  InvocationPrefetch,
+  InvocationSelection,
+  type PrefetchedInvocation,
+  type PrefetchHost,
 } from "../contracts/tools.ts";
 import type { ExecutorDatabase } from "./storage.ts";
-import { type Credentials, StoredApp, StoredDeployment } from "../contracts/storage.ts";
+import type { ProviderDefinition } from "../contracts/provider.ts";
+import {
+  type Credentials,
+  type StoredAccount,
+  StoredApp,
+  StoredDeployment,
+} from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
 import { gotApp, storedDeployment } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
-import { storedProfile } from "./profiles.ts";
+import type { OwnerId } from "../contracts/shared.ts";
+import { invocationAccounts } from "./linked-accounts.ts";
 import {
-  CurrentProfile,
-  InvocationPrefetch,
-  type PrefetchedInvocation,
-  type PrefetchHost,
-  InvocationSelection,
-  Profile as ProfileSchema,
-  type Profile,
-  ProfileConflict,
-  ProfileNotFound,
-} from "../contracts/profiles.ts";
-import type { OwnerId, ProfileId } from "../contracts/shared.ts";
-import {
+  accountAuthority,
   answered,
+  chooseAccounts,
+  scopedSelection,
   readSelectionAccounts,
   selectionAccountIds,
   type SelectionAccountsRead,
-  validateSelection,
 } from "./selection.ts";
 import type { Listings, ToolListing } from "./listings.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
@@ -115,24 +127,19 @@ const readApp = (db: Query, app: AppId) =>
   );
 
 /**
- * The reads {@link snapshot} makes, made ahead and at once. The profile read stands in only when
- * it was made under the owner the app read returns, and the account read only when it named the
- * accounts the profile read returns; otherwise the snapshot reads again, in order. A read that
+ * The reads {@link snapshot} makes, made ahead and at once. The account read stands in only when it
+ * named the accounts the call names; otherwise the snapshot reads again, in order. A read that
  * failed for storage stands in for nothing (see `answered`).
  */
 interface SnapshotReads {
   readonly app: Result.Result<Effect.Success<ReturnType<typeof readApp>>, StorageError>;
-  readonly profile:
-    | {
-        readonly owner: OwnerId;
-        readonly read: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
-      }
-    | undefined;
   readonly accounts: SelectionAccountsRead;
 }
 
 /**
- * Resolve the app, pinned deployment, profile and account selection before invoking authored code.
+ * Resolve the app, pinned deployment and the named accounts before invoking authored code. The
+ * snapshot keeps the current actor, so work it starts, such as a workflow, is checked against the
+ * same subject later.
  *
  * These reads deliberately run outside a transaction. A transaction costs two extra round trips and
  * pins a pooled server connection (a Hyperdrive origin connection in Cloud) for as long as the
@@ -140,20 +147,21 @@ interface SnapshotReads {
  * snapshot anyway. On PGlite it was atomic with respect to writers, because a transaction reserves
  * the only connection; that atomicity is dropped on purpose. A write that lands between two reads
  * cannot widen access: every cross-read disagreement fails closed (AppNotDeployed,
- * DeploymentNotFound, ProfileConflict, AccountNotFound, AccountSelectionInvalid or
- * AccountRequired), and account credentials are resolved from the returned selection afterwards.
+ * DeploymentNotFound, AccountNotFound, AccountSelectionInvalid or AccountRequired), and account
+ * credentials are resolved from the returned selection afterwards.
  */
 export function snapshot(
   db: Query,
   input: {
     app: AppId;
     deployment?: DeploymentId | undefined;
-    profile?: ProfileId | undefined;
-    expectedProfileRevision?: number | undefined;
+    accounts?: AppAccounts | undefined;
+    /**
+     * A selection background work captured, such as a workflow run's or a registration's, with
+     * the scope it was captured in: without a caller it binds no `user`. Replaces `accounts`.
+     */
+    captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
   },
-  savedAccounts?: import("../contracts/apps.ts").SelectedAccounts,
-  savedProfileRevision?: number,
-  cleanup = false,
   ahead?: SnapshotReads,
 ) {
   return Effect.gen(function* () {
@@ -176,105 +184,78 @@ export function snapshot(
           : yield* Schema.decodeUnknownEffect(StoredDeployment)(row.deployment).pipe(
               Effect.mapError(() => new StorageError()),
             );
-    const profile =
-      input.profile === undefined
-        ? undefined
-        : ahead?.profile !== undefined &&
-            ahead.profile.owner === app.owner &&
-            answered(ahead.profile.read)
-          ? yield* Effect.fromResult(ahead.profile.read)
-          : yield* storedProfile(db, {
-              app: app.id,
-              profile: input.profile,
-              owner: app.owner,
-            });
-    if (profile !== undefined) {
-      if (
-        profile.status === "removed" ||
-        ((!profile.enabled || profile.status === "removing") && !cleanup)
-      )
-        return yield* new ProfileConflict({
-          profile: profile.id,
-          reason: "inactive",
-        });
-      if (
-        input.expectedProfileRevision !== undefined &&
-        profile.revision !== input.expectedProfileRevision
-      )
-        return yield* new ProfileConflict({
-          profile: profile.id,
-          reason: "revision",
-        });
-    }
-    const bindings = profile === undefined ? {} : (savedAccounts ?? profile.accounts);
-    const validated = yield* validateSelection(
+    const { scope, accounts, selections } = yield* chooseAccounts(
       db,
       app.id,
-      deployment.requirements,
-      bindings,
+      deployment,
+      input.captured === undefined
+        ? input.accounts
+        : scopedSelection(
+            deployment.requirements.accounts,
+            input.captured.accounts,
+            input.captured.scope,
+          ),
       ahead?.accounts,
     );
-    const selections = yield* Effect.forEach(
-      Object.keys(deployment.requirements.accounts),
-      (slot) =>
-        Effect.gen(function* () {
-          const selected = validated.get(slot);
-          if (selected === undefined)
-            return yield* Effect.fail(
-              new AccountRequired({ app: app.id, deployment: deployment.id, slot }),
-            );
-          return selected;
-        }),
-    );
-    return {
-      app,
-      deployment,
-      selections,
-      profile:
-        profile === undefined
-          ? undefined
-          : { ...profile, revision: savedProfileRevision ?? profile.revision },
-      accounts: bindings,
-    };
+    return { app, deployment, scope, selections, accounts, actor: yield* CurrentActor };
   });
 }
 
 /**
- * A profile recheck run beside the snapshot's reads, before the call's own profile and accounts
- * were known: the profile and accounts it ran for, and its outcome.
+ * The actor's app recheck run beside the snapshot's reads, before the call's own app and accounts
+ * were read: the app, actor and accounts it ran for, and its outcome.
  */
 export interface RecheckAhead {
-  readonly profile: Profile;
+  readonly app: { readonly id: AppId; readonly owner: OwnerId };
+  readonly actor: string | undefined;
   readonly accounts: readonly Pick<Account, "id" | "owner">[];
+  /**
+   * Each app requirement's account it authorized by the app link; see
+   * `ResourceLifecycle.appResolving`.
+   */
+  readonly appUses: readonly AppAccountUse[];
   readonly result: Exit.Exit<ReadonlySet<AccountId>, StorageError>;
 }
 
-const sameProfile = Schema.toEquivalence(ProfileSchema);
 /**
- * Per selected account, whether resolving it reads a grant: its slot's provider signs in with
- * something other than secrets, by the account's method when its row was read, else by any of
- * the provider's methods. Opaque to the host, which keeps it beside the profile it was made for.
+ * Which accounts resolving reads a grant for: per requirement of the app, whether its provider
+ * signs in with something other than secrets, and per account, the same by the account's method
+ * when its row was read. Opaque to the host, which keeps it beside the accounts it was made for.
  */
 class GrantHint {
+  readonly requirements: ReadonlyMap<string, boolean>;
   readonly accounts: ReadonlyMap<AccountId, boolean>;
-  constructor(accounts: ReadonlyMap<AccountId, boolean>) {
+  constructor(
+    requirements: ReadonlyMap<string, boolean>,
+    accounts: ReadonlyMap<AccountId, boolean>,
+  ) {
+    this.requirements = requirements;
     this.accounts = accounts;
   }
   static read(hint: unknown) {
-    return hint instanceof GrantHint ? hint.accounts : undefined;
+    return hint instanceof GrantHint ? hint : undefined;
   }
 }
-/** The {@link GrantHint} for a profile, from the app's deployment and any account rows read. */
+/** Whether any of these sign-in types reads a grant; an unknown definition may. */
+const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
+  types === undefined || types.some((type) => type !== "secrets");
+/** The {@link GrantHint} for an app's accounts, from its deployment and any account rows read. */
 const grantHint = (
   app: Effect.Success<ReturnType<typeof gotApp>>,
-  profile: Profile,
+  accounts: AppAccounts | undefined,
   rows: ReadonlyArray<{ readonly id: AccountId; readonly method: string }>,
 ) => {
+  const requirements = new Map<string, boolean>();
+  for (const [slot, required] of Object.entries(app.requirements.accounts))
+    requirements.set(
+      slot,
+      readsGrant(Object.values(required.definition.auth ?? {}).map((entry) => entry.type)),
+    );
   const methods = new Map(rows.map((row) => [row.id, row.method]));
   const grants = new Map<AccountId, boolean>();
-  for (const [slot, selection] of Object.entries(profile.accounts)) {
+  for (const [slot, ids] of accounts === undefined ? [] : invocationEntries(accounts)) {
     const auth = app.requirements.accounts[slot]?.definition.auth;
-    for (const id of typeof selection === "string" ? [selection] : selection) {
+    for (const id of ids) {
       const method = methods.get(id);
       const types =
         auth === undefined
@@ -282,13 +263,21 @@ const grantHint = (
           : method === undefined
             ? Object.values(auth).map((entry) => entry.type)
             : [auth[method]?.type];
-      grants.set(
-        id,
-        grants.get(id) === true || types === undefined || types.some((type) => type !== "secrets"),
-      );
+      grants.set(id, grants.get(id) === true || readsGrant(types));
     }
   }
-  return new GrantHint(grants);
+  return new GrantHint(requirements, grants);
+};
+/**
+ * The accounts whose grants a batch reads: those the hint says hold one, by account or else by
+ * requirement; every account without a hint.
+ */
+const grantedAccounts = (accounts: AppAccounts, hint: GrantHint | undefined) => {
+  const granted = new Set<AccountId>();
+  for (const [slot, ids] of invocationEntries(accounts))
+    for (const id of ids)
+      if ((hint?.accounts.get(id) ?? hint?.requirements.get(slot)) !== false) granted.add(id);
+  return [...granted];
 };
 /** Each account's grant row as read in the batch; taken once, by the account's first read. */
 const grantReadAhead = (ids: readonly AccountId[], rows: ReadonlyArray<GrantRow>) => {
@@ -296,63 +285,157 @@ const grantReadAhead = (ids: readonly AccountId[], rows: ReadonlyArray<GrantRow>
   for (const row of rows) if (byId.has(row.id as AccountId)) byId.set(row.id as AccountId, row);
   return byId;
 };
-/** The recheck ran for exactly this profile and these accounts, each under the same owner. */
+/** The distinct accounts an operation names. */
+const namedAccounts = (accounts: AppAccounts) => [
+  ...new Set(invocationEntries(accounts).flatMap(([, ids]) => ids)),
+];
+/**
+ * The accounts an operation names for user requirements, which the actor's use authorizes, and
+ * each app requirement's account, which the app link for that requirement authorizes. An
+ * account named in both scopes is in both.
+ */
+const scopeSplit = (accounts: AppAccounts) => ({
+  user: [...new Set(Object.values(accounts.user ?? {}).flat())],
+  appUses: Object.entries(accounts.app).flatMap(([requirement, ids]) =>
+    ids.map((id) => ({ requirement, id })),
+  ),
+});
+/**
+ * The recheck ran for exactly this app, actor and these uses, each account under the same owner:
+ * the same accounts by the actor's use, and the same accounts for the same app requirements by the
+ * app link (`appUses`).
+ */
 const recheckedFor = (
   ahead: RecheckAhead,
-  profile: Profile,
+  state: InvocationSnapshot,
   accounts: readonly Pick<Account, "id" | "owner">[],
+  appUses: readonly AppAccountUse[],
 ) => {
-  const owners = new Map(ahead.accounts.map((account) => [account.id, account.owner]));
+  const same = (
+    checked: ReadonlyArray<readonly [string, Pick<Account, "id" | "owner">]>,
+    used: ReadonlyArray<readonly [string, Pick<Account, "id" | "owner">]>,
+  ) => {
+    const owners = new Map(checked.map(([use, account]) => [use, account.owner]));
+    return (
+      owners.size === checked.length &&
+      owners.size === new Set(used.map(([use]) => use)).size &&
+      used.every(([use, account]) => owners.get(use) === account.owner)
+    );
+  };
+  const byId = (list: readonly Pick<Account, "id" | "owner">[]) =>
+    list.map((account) => [account.id, account] as const);
+  const byUse = (list: readonly AppAccountUse[]) =>
+    list.map(
+      ({ requirement, account }) => [JSON.stringify([requirement, account.id]), account] as const,
+    );
   return (
-    sameProfile(ahead.profile, profile) &&
-    owners.size === ahead.accounts.length &&
-    owners.size === new Set(accounts.map((account) => account.id)).size &&
-    accounts.every((account) => owners.get(account.id) === account.owner)
+    ahead.app.id === state.app.id &&
+    ahead.app.owner === state.app.owner &&
+    ahead.actor === state.actor &&
+    same(byId(ahead.accounts), byId(accounts)) &&
+    same(byUse(ahead.appUses), byUse(appUses))
   );
 };
 
 /**
- * Resolve current credentials without holding a database transaction open. `ahead` stands in
- * for the profile recheck only when it succeeded, for the profile and accounts this state holds.
+ * Each account an invocation selects, once, in selection order, with every use it makes of it: by
+ * the actor's use where a user requirement uses it, and by the app link for each app
+ * requirement it fills. Each use is authorized on its own.
  */
-export function resolve(
+const distinctSelection = (state: Effect.Success<ReturnType<typeof snapshot>>) => {
+  const distinct = new Map<
+    AccountId,
+    {
+      readonly account: StoredAccount;
+      readonly provider: ProviderDefinition;
+      readonly user: boolean;
+      readonly appUses: readonly string[];
+    }
+  >();
+  for (const { slot, required, accounts } of state.selections)
+    for (const account of accounts) {
+      const seen = distinct.get(account.id);
+      const user = required.scope === "user" || seen?.user === true;
+      const appUses = [...(seen?.appUses ?? []), ...(required.scope === "app" ? [slot] : [])];
+      distinct.set(account.id, { account, provider: required.definition, user, appUses });
+    }
+  return [...distinct.values()];
+};
+
+/**
+ * A reconnect an account the app uses as its own needs, named by its app requirement: the caller
+ * did not link it and cannot reconnect it, someone who can edit the app must. An account the caller
+ * also uses for a user requirement is theirs to reconnect.
+ */
+const appAccountReconnect =
+  (selection: ReturnType<typeof distinctSelection>) =>
+  <E>(error: E): E | OAuthReconnectRequired => {
+    if (!Schema.is(OAuthReconnectRequired)(error) || error.appRequirement !== undefined)
+      return error;
+    const used = selection.find(({ account }) => account.id === error.account);
+    const requirement = used === undefined || used.user ? undefined : used.appUses[0];
+    return requirement === undefined
+      ? error
+      : new OAuthReconnectRequired({
+          account: error.account,
+          ...(error.reason === undefined ? {} : { reason: error.reason }),
+          ...(error.cause === undefined ? {} : { cause: error.cause }),
+          appRequirement: requirement,
+        });
+  };
+
+/**
+ * Resolve current credentials, to run the app, without holding a database transaction open. It
+ * rechecks the actor's app access. `ahead` stands in for the app recheck only when it succeeded,
+ * for the app, actor and accounts this state holds. A refused account use is a `StorageError`.
+ */
+export const resolve = (
   state: Effect.Success<ReturnType<typeof snapshot>>,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
-  lifecycle?: ResourceLifecycle,
+  ahead?: RecheckAhead,
+) =>
+  resolveFor(state, resolveAccount, "run", ahead).pipe(
+    Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
+  );
+
+/**
+ * Resolve current credentials only to remove what the app registered, as `resolve` does without
+ * app access. A refused account use stays `AccountUseRefused`: it lasts until access changes, so
+ * the removal waits for a person instead of retrying.
+ */
+export const resolveRemoval = (
+  state: Effect.Success<ReturnType<typeof snapshot>>,
+  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
+) => resolveFor(state, resolveAccount, "removal");
+
+function resolveFor(
+  state: Effect.Success<ReturnType<typeof snapshot>>,
+  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
+  use: "run" | "removal",
   ahead?: RecheckAhead,
 ) {
   return Effect.gen(function* () {
-    const selections = new Map<string, HostAccounts[string]>();
+    const selections: Record<AccountScope, Record<string, HostAccountSlots[string]>> = {
+      app: {},
+      user: {},
+    };
     // An account selected for several slots is resolved once per invocation, in selection
     // order. A token renewed for one slot is the token every slot uses, even when it already
     // falls inside the refresh-ahead window, so one invocation never renews the same grant twice.
-    const distinct = new Map<AccountId, Parameters<typeof resolveAccount>[0][number]>();
-    for (const { required, accounts } of state.selections)
-      for (const account of accounts)
-        if (!distinct.has(account.id))
-          distinct.set(account.id, { account, provider: required.definition });
-    const selected = [...distinct.values()];
-    // The profile's subject and its accounts are rechecked together, before any credential.
-    const resolvedFields =
-      state.profile !== undefined && lifecycle?.profileResolving
-        ? yield* resolveAccount(
-            selected,
-            ahead !== undefined &&
-              Exit.isSuccess(ahead.result) &&
-              recheckedFor(
-                ahead,
-                state.profile,
-                selected.map(({ account }) => account),
-              )
-              ? ahead.result
-              : lifecycle.profileResolving(
-                  state.profile,
-                  selected.map(({ account }) => account),
-                ),
-          )
-        : yield* resolveAccount(selected);
+    const selected = distinctSelection(state);
+    const { user, app: appUses } = accountAuthority(state.selections);
+    const app = { id: state.app.id, owner: state.app.owner };
+    // The actor's app access and its accounts are rechecked together, before any credential.
+    const resolvedFields = yield* (
+      use === "run" &&
+      ahead !== undefined &&
+      Exit.isSuccess(ahead.result) &&
+      recheckedFor(ahead, state, user, appUses)
+        ? resolveAccount({ kind: "run", app }, selected, ahead.result)
+        : resolveAccount({ kind: use, app }, selected)
+    ).pipe(Effect.mapError(appAccountReconnect(selected)));
     const credentials = new Map(
-      [...distinct.keys()].map((id, index) => [id, resolvedFields[index]] as const),
+      selected.map(({ account }, index) => [account.id, resolvedFields[index]] as const),
     );
     for (const { slot, required, accounts } of state.selections) {
       const resolved = yield* Effect.forEach(accounts, (account) =>
@@ -362,30 +445,38 @@ export function resolve(
           return bind(required.definition);
         }),
       );
-      if (required.cardinality === "many") selections.set(slot, resolved);
+      if (required.cardinality === "many") selections[required.scope][slot] = resolved;
       else {
         const account = resolved[0];
         if (account === undefined)
           return yield* Effect.fail(
-            new AccountRequired({ app: state.app.id, deployment: state.deployment.id, slot }),
+            new AccountRequired({
+              app: state.app.id,
+              deployment: state.deployment.id,
+              slot,
+              scope: required.scope,
+            }),
           );
-        selections.set(slot, account);
+        selections[required.scope][slot] = account;
       }
     }
-    return {
-      accounts: Redacted.make(Object.fromEntries(selections)),
-    };
-  }).pipe(Effect.provideService(CurrentProfile, state.profile));
+    // Work without a caller binds no user accounts, so its context has no `user`.
+    const accounts: HostAccounts =
+      state.scope === "app"
+        ? { app: selections.app }
+        : { app: selections.app, user: selections.user };
+    return { accounts: Redacted.make(accounts) };
+  });
 }
 
-/** Whether a profile's selected accounts can run its tools; recorded on the check's span. */
+/** Whether an invocation's accounts can run its tools; recorded on the check's span. */
 const accountsOutcome = (outcome: "ready" | "reconnect" | "account_required") =>
   Effect.annotateCurrentSpan("executor.accounts.outcome", outcome);
 
-/** One resolved invocation: app, pinned deployment, optional profile and account selection. */
+/** One resolved invocation: app, pinned deployment, actor and account selection. */
 export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 type InvocationContext = Effect.Success<ReturnType<typeof resolve>>;
-type SelectedAccount = HostAccounts[string];
+type SelectedAccount = HostAccountSlots[string];
 const isMany = (
   value: SelectedAccount,
 ): value is Extract<SelectedAccount, ReadonlyArray<unknown>> => Array.isArray(value);
@@ -416,23 +507,26 @@ const renewRefused = (
     )
       return undefined;
     const { accountId } = error;
-    const selected = state.selections
-      .flatMap(({ required, accounts }) =>
-        accounts.map((account) => ({ account, definition: required.definition })),
-      )
-      .find(({ account }) => account.id === accountId);
+    const selection = distinctSelection(state);
+    const selected = selection.find(({ account }) => account.id === accountId);
     if (selected === undefined) return undefined;
     const accounts = Redacted.value(context.accounts);
-    const used = Object.values(accounts)
-      .flatMap((value) => (isMany(value) ? value : [value]))
+    const used = scopedSlots(accounts)
+      .flatMap(([, value]) => (isMany(value) ? value : [value]))
       .find((account) => account.id === accountId);
     if (used === undefined) return undefined;
-    // Renewal authorizes the account for the profile's subject, as `resolve` does. A scheduled
-    // call has no signed-in caller to fall back on.
+    // Renewal authorizes the account and, once it settles, every account of the invocation and
+    // the app for the current actor, as `resolve` does: they all run the app's code again.
     const usedFields = used.fields;
     const renewed = yield* oauth
-      .renewRejected(selected.account, selected.definition, usedFields)
-      .pipe(Effect.provideService(CurrentProfile, state.profile));
+      .renewRejected(
+        { kind: "run", app: state.app },
+        selected.account,
+        selected.provider,
+        usedFields,
+        selection,
+      )
+      .pipe(Effect.mapError(appAccountReconnect(selection)));
     if (sameFields(Redacted.value(renewed.fields), usedFields)) return undefined;
     yield* Effect.annotateCurrentSpan("executor.account.credentials_renewed", accountId);
     // Rebuilt from the renewed credential itself, so whether it is managed is whatever the
@@ -448,16 +542,18 @@ const renewRefused = (
           ? invocationAccount(selected.account, definition, renewed, clients)
           : account;
       };
-    return {
-      accounts: Redacted.make(
-        Object.fromEntries(
-          Object.entries(accounts).map(([slot, value]) => [
-            slot,
-            isMany(value) ? value.map(replace(slot)) : replace(slot)(value),
-          ]),
-        ),
-      ),
-    } satisfies InvocationContext;
+    const replaceScope = (slots: HostAccountSlots) =>
+      Object.fromEntries(
+        Object.entries(slots).map(([slot, value]) => [
+          slot,
+          isMany(value) ? value.map(replace(slot)) : replace(slot)(value),
+        ]),
+      );
+    const renewedAccounts: HostAccounts =
+      accounts.user === undefined
+        ? { app: replaceScope(accounts.app) }
+        : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
+    return { accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
   });
 
 function invocation(
@@ -469,38 +565,35 @@ function invocation(
   return Schema.decodeUnknownEffect(ToolInvocation)({
     app: state.app.id,
     owner: state.app.owner,
-    ...(state.profile === undefined
-      ? {}
-      : { profile: state.profile.id, profileRevision: state.profile.revision }),
     deployment: state.deployment.id,
     tool,
     ...(kind === undefined ? {} : { kind }),
     input,
-    accounts: Object.fromEntries(
-      state.selections.map(({ slot, required, accounts }) => {
+    accounts: (() => {
+      const scopes: Record<AccountScope, Record<string, unknown>> = { app: {}, user: {} };
+      for (const { slot, required, accounts } of state.selections) {
         const identities = accounts.map(({ id, owner, provider, method }) => ({
           id,
           owner,
           provider,
           method,
         }));
-        return [slot, required.cardinality === "many" ? identities : identities[0]];
-      }),
-    ),
+        scopes[required.scope][slot] = required.cardinality === "many" ? identities : identities[0];
+      }
+      return state.scope === "app" ? { app: scopes.app } : scopes;
+    })(),
   }).pipe(Effect.mapError(() => new StorageError()));
 }
 
 /**
- * Check failures that are answers: the saved call's app, deployment, profile or accounts are now
- * missing, inactive or different. Anything else, such as storage failing, answers nothing.
+ * Check failures that are answers: the saved call's app, deployment or accounts are now missing
+ * or different. Anything else, such as storage failing, answers nothing.
  */
 const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
     AppNotDeployed,
     DeploymentNotFound,
-    ProfileNotFound,
-    ProfileConflict,
     AccountNotFound,
     AccountSelectionInvalid,
     AccountRequired,
@@ -843,45 +936,42 @@ export const makeTools = (
         )
       : Effect.succeed(kind);
   /**
-   * With the profile the host's check read ({@link InvocationSelection}), make the call's reads of
-   * the app, the profile and its accounts, and the profile recheck, at once. The host's check has
+   * With the accounts the host's check resolved ({@link InvocationSelection}), make the call's
+   * reads of the app and those accounts, and the actor's app recheck, at once. The host's check has
    * finished, so each read still follows it. The snapshot uses a read only where the call's own
-   * reads agree with what it was made for, and the recheck only when it ran for the profile and
-   * accounts the call runs; failures are reported in the snapshot's order. A recheck after the
-   * reads would come before the grant reads anyway, so running it beside them leaves nothing
-   * older when the app starts. Without a matching selection, or without a profile, nothing is
-   * read ahead.
+   * reads agree with what it was made for, and the recheck only when it ran for the app, actor and
+   * accounts the call runs with; failures are reported in the snapshot's order. A recheck after the
+   * reads would come before the grant reads anyway, so running it beside them leaves nothing older
+   * when the app starts. Without a matching selection nothing is read ahead.
    */
   const invocationReads = (
     selection: {
       readonly app: AppId;
       readonly owner: OwnerId;
-      readonly profile: Profile;
+      readonly accounts: AppAccounts;
     },
     /** Accounts whose grant rows to read too, for a host that sends them in the same batch. */
     grantsOf: readonly AccountId[] = [],
   ) => {
-    const profile = selection.profile;
-    const ids = selectionAccountIds(profile.accounts);
-    const accounts = ids.map((id) => ({ id, owner: selection.owner }));
+    const ids = namedAccounts(selection.accounts);
+    const app = { id: selection.app, owner: selection.owner };
+    // The host resolved them under the app's owner; `resolve` uses the recheck only if they match.
+    const split = scopeSplit(selection.accounts);
+    const accounts = split.user.map((id) => ({ id, owner: selection.owner }));
+    const appUses = split.appUses.map(({ requirement, id }) => ({
+      requirement,
+      account: { id, owner: selection.owner },
+    }));
     const slots: {
       app?: SnapshotReads["app"];
-      read?: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
       rows?: SelectionAccountsRead["rows"];
-      recheck?: RecheckAhead["result"];
+      recheck?: Pick<RecheckAhead, "actor" | "result">;
       grants?: Result.Result<ReadonlyArray<GrantRow>, StorageError>;
     } = {};
     const leaves: Array<Effect.Effect<void>> = [
       Effect.result(readApp(db, selection.app)).pipe(
-        Effect.map((app) => {
-          slots.app = app;
-        }),
-      ),
-      Effect.result(
-        storedProfile(db, { app: selection.app, profile: profile.id, owner: selection.owner }),
-      ).pipe(
         Effect.map((read) => {
-          slots.read = read;
+          slots.app = read;
         }),
       ),
       Effect.result(readSelectionAccounts(db, ids)).pipe(
@@ -890,17 +980,18 @@ export const makeTools = (
         }),
       ),
     ];
-    if (lifecycle?.profileResolving !== undefined)
+    if (lifecycle !== undefined)
       leaves.push(
-        Effect.exit(
-          lifecycle
-            .profileResolving(profile, accounts)
-            .pipe(Effect.withSpan("sdk.accounts.recheck")),
-        ).pipe(
-          Effect.map((recheck) => {
-            slots.recheck = recheck;
-          }),
-        ),
+        Effect.gen(function* () {
+          // The actor it ran as; `resolve` uses the outcome only for the same actor.
+          const actor = yield* CurrentActor;
+          const result = yield* Effect.exit(
+            lifecycle
+              .appResolving(app, accounts, appUses)
+              .pipe(Effect.withSpan("sdk.accounts.recheck")),
+          );
+          slots.recheck = { actor, result };
+        }),
       );
     if (grantsOf.length > 0)
       leaves.push(
@@ -916,18 +1007,13 @@ export const makeTools = (
       leaves,
       slots,
       take: () => {
-        if (slots.app === undefined || slots.read === undefined || slots.rows === undefined)
-          return undefined;
+        if (slots.app === undefined || slots.rows === undefined) return undefined;
         return {
-          reads: {
-            app: slots.app,
-            profile: { owner: selection.owner, read: slots.read },
-            accounts: { ids, rows: slots.rows },
-          } satisfies SnapshotReads,
+          reads: { app: slots.app, accounts: { ids, rows: slots.rows } } satisfies SnapshotReads,
           recheck:
             slots.recheck === undefined
               ? undefined
-              : ({ profile, accounts, result: slots.recheck } satisfies RecheckAhead),
+              : ({ app, accounts, appUses, ...slots.recheck } satisfies RecheckAhead),
           grants:
             slots.grants === undefined || Result.isFailure(slots.grants)
               ? undefined
@@ -937,56 +1023,38 @@ export const makeTools = (
       /** Whether any read failed in storage: a batch that did is not used at all. */
       failed: () =>
         (
-          [slots.app, slots.read, slots.rows, slots.grants] as ReadonlyArray<
+          [slots.app, slots.rows, slots.grants] as ReadonlyArray<
             Result.Result<unknown, { readonly _tag: string }> | undefined
           >
         ).some(
           (read) =>
             read !== undefined && Result.isFailure(read) && read.failure._tag === "StorageError",
         ) ||
-        (slots.recheck !== undefined && Exit.isFailure(slots.recheck)),
+        (slots.recheck !== undefined && Exit.isFailure(slots.recheck.result)),
     };
   };
   type InvocationReads = NonNullable<ReturnType<ReturnType<typeof invocationReads>["take"]>>;
   /**
-   * {@link PrefetchHost}: what `apps.get`, `apps.profiles.get` and the reads above return, read by
-   * the host in one batch with its own checks. The hint says which of the live profile's accounts
-   * resolve through a grant (see {@link GrantHint}), so the next batch reads only those grants. A
-   * stale hint costs a grant read in the resolve loop, in the call's own order, never a different
-   * answer.
+   * {@link PrefetchHost}: what `apps.get` and the reads above return, read by the host in one batch
+   * with its own checks. The hint says which of the app's requirements and accounts resolve
+   * through a grant (see {@link GrantHint}), so the next batch reads only those grants. A stale
+   * hint costs a grant read in the resolve loop, in the call's own order, never a different answer.
    */
   const prefetchInvocation: PrefetchHost["invocation"] = (selection) => {
     const known = selection.known;
-    const hint = known === undefined ? undefined : GrantHint.read(known.hint);
-    const ids = known === undefined ? [] : selectionAccountIds(known.profile.accounts);
     // Grants of accounts the hint says hold none are not read; the resolve loop reads any it needs.
-    const grantsOf = ids.filter((id) => hint?.get(id) !== false);
     const reads =
       known === undefined
         ? undefined
         : invocationReads(
-            { app: selection.app, owner: selection.owner, profile: known.profile },
-            grantsOf,
+            { app: selection.app, owner: selection.owner, accounts: known.accounts },
+            grantedAccounts(known.accounts, GrantHint.read(known.hint)),
           );
-    const slots: {
-      app?: SnapshotReads["app"];
-      read?: Result.Result<Profile, Effect.Error<ReturnType<typeof storedProfile>>>;
-    } = reads?.slots ?? {};
+    const slots: { app?: SnapshotReads["app"] } = reads?.slots ?? {};
     const leaves: ReadonlyArray<Effect.Effect<void>> = reads?.leaves ?? [
       Effect.result(readApp(db, selection.app)).pipe(
         Effect.map((app) => {
           slots.app = app;
-        }),
-      ),
-      Effect.result(
-        storedProfile(db, {
-          app: selection.app,
-          profile: selection.profile,
-          owner: selection.owner,
-        }),
-      ).pipe(
-        Effect.map((read) => {
-          slots.read = read;
         }),
       ),
     ];
@@ -997,8 +1065,6 @@ export const makeTools = (
           return yield* new AppNotFound({ app: selection.app });
         return yield* gotApp(row);
       });
-    const stored = (read: Result.Result<unknown, { readonly _tag: string }> | undefined) =>
-      read !== undefined && Result.isFailure(read) && read.failure._tag === "StorageError";
     const take = Effect.gen(function* () {
       const app =
         slots.app === undefined
@@ -1007,26 +1073,27 @@ export const makeTools = (
             ? Result.fail(slots.app.failure)
             : yield* Effect.result(asGot(slots.app.success));
       const value = reads === undefined || reads.failed() ? undefined : reads.take();
-      const live =
-        slots.read !== undefined && Result.isSuccess(slots.read) ? slots.read.success : undefined;
       return {
         app,
-        profile: slots.read,
         invocation:
           known === undefined || value === undefined
             ? undefined
-            : { app: selection.app, owner: selection.owner, profile: known.profile, value },
+            : { app: selection.app, owner: selection.owner, accounts: known.accounts, value },
         hint:
-          app === undefined || Result.isFailure(app) || live === undefined
+          app === undefined || Result.isFailure(app)
             ? undefined
             : grantHint(
                 app.success,
-                live,
+                known?.accounts,
                 reads?.slots.rows !== undefined && Result.isSuccess(reads.slots.rows)
                   ? reads.slots.rows.success
                   : [],
               ),
-        failed: reads?.failed() ?? (stored(slots.app) || stored(slots.read)),
+        failed:
+          reads?.failed() ??
+          (slots.app !== undefined &&
+            Result.isFailure(slots.app) &&
+            slots.app.failure._tag === "StorageError"),
       } satisfies PrefetchedInvocation;
     });
     return { leaves, take };
@@ -1034,15 +1101,14 @@ export const makeTools = (
   // A prefetch answers one call: it is provided around the whole host call, so a later call in
   // that scope (none today) must read live rather than reuse reads that may be seconds old.
   const consumedPrefetches = new WeakSet<object>();
-  const readAhead = (input: { readonly app: AppId; readonly profile?: ProfileId | undefined }) =>
+  const readAhead = (input: { readonly app: AppId; readonly accounts?: AppAccounts | undefined }) =>
     Effect.gen(function* () {
       const selection = yield* InvocationSelection;
       if (
         selection === undefined ||
-        input.profile === undefined ||
         selection.app !== input.app ||
-        selection.profile.app !== input.app ||
-        selection.profile.id !== input.profile
+        input.accounts === undefined ||
+        !sameAccounts(selection.accounts, input.accounts)
       )
         return undefined;
       // Made by the host in one batch with its checks, for exactly this selection.
@@ -1052,7 +1118,7 @@ export const makeTools = (
         !consumedPrefetches.has(prefetched) &&
         prefetched.app === selection.app &&
         prefetched.owner === selection.owner &&
-        sameProfile(prefetched.profile, selection.profile)
+        sameAccounts(prefetched.accounts, selection.accounts)
       ) {
         consumedPrefetches.add(prefetched);
         return prefetched.value as InvocationReads;
@@ -1061,7 +1127,7 @@ export const makeTools = (
       yield* Effect.all(reads.leaves, { concurrency: "unbounded", discard: true });
       return reads.take();
     });
-  /** Evaluate the selected profile's live catalog. */
+  /** Evaluate the live catalog with the named accounts. */
   const evaluate = <A, R>(
     input: Parameters<Executor["tools"]["index"]>[0],
     read: (
@@ -1074,7 +1140,7 @@ export const makeTools = (
   ) =>
     Effect.gen(function* () {
       const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
-      const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+      const context = yield* resolve(state, resolveAccount).pipe(
         Effect.withSpan("sdk.accounts.resolve"),
       );
       yield* Effect.annotateCurrentSpan({
@@ -1102,9 +1168,11 @@ export const makeTools = (
     ({ tools, routers }: Effect.Success<ReturnType<typeof runtime.inspect>>): ToolListing => ({
       catalog: {
         deployment: state.deployment.id,
-        ...(state.profile === undefined
-          ? {}
-          : { profile: state.profile.id, profileRevision: state.profile.revision }),
+        accounts: scopedSelection(
+          state.deployment.requirements.accounts,
+          state.accounts,
+          state.scope,
+        ),
       },
       routers,
       items: [...tools]
@@ -1139,15 +1207,15 @@ export const makeTools = (
   return {
     prefetchInvocation,
     /**
-     * The first account selected by this profile whose saved sign-in must reconnect before the
-     * profile's tools can run; undefined when every account can supply credentials. Reads stored
-     * state only: it never renews a grant or evaluates the app.
+     * The first of these accounts whose saved sign-in must reconnect before the app's tools can
+     * run with them; undefined when every account can supply credentials. Reads stored state only:
+     * it never renews a grant or evaluates the app.
      *
-     * An account that must reconnect, or a required account that is not selected yet, is an
-     * expected account state the owner resolves, not a fault of this check. It is recorded as the
-     * span's `executor.accounts.outcome`; a missing account fails the caller only after the span.
+     * An account that must reconnect, or a required account that is not named, is an expected
+     * account state the owner resolves, not a fault of this check. It is recorded as the span's
+     * `executor.accounts.outcome`; a missing account fails the caller only after the span.
      */
-    accountNeedingReconnect: (input: { app: AppId; profile: ProfileId }) =>
+    accountNeedingReconnect: (input: { app: AppId; accounts: AppAccounts }) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
         for (const { required, accounts } of state.selections)
@@ -1167,7 +1235,7 @@ export const makeTools = (
           accountsOutcome("account_required").pipe(Effect.as(missing)),
         ),
         Effect.withSpan("sdk.accounts.reconnectRequired", {
-          attributes: { "executor.app.id": input.app, "executor.profile.id": input.profile },
+          attributes: { "executor.app.id": input.app },
         }),
         Effect.flatMap((found) =>
           Schema.is(AccountRequired)(found) ? Effect.fail(found) : Effect.succeed(found),
@@ -1207,6 +1275,11 @@ export const makeTools = (
         return {
           listing: found.listing,
           deployment: state.deployment.id,
+          accounts: scopedSelection(
+            state.deployment.requirements.accounts,
+            state.accounts,
+            state.scope,
+          ),
           routers: found.routers.filter((router) => router.error !== undefined),
         };
       }).pipe(Effect.withSpan("sdk.tools.searchable")),
@@ -1269,7 +1342,7 @@ export const makeTools = (
             ? appProviderFailure(state, failed)
             : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, failed);
         yield* Effect.annotateCurrentSpan("executor.tools.source", "live");
-        const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+        const context = yield* resolve(state, resolveAccount).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
         );
         const tool = yield* describe(state, context, input.tool);
@@ -1295,7 +1368,7 @@ export const makeTools = (
         );
         const { ahead, state } = yield* Effect.gen(function* () {
           const ahead = yield* readAhead(parsed);
-          const state = yield* snapshot(db, parsed, undefined, undefined, false, ahead?.reads);
+          const state = yield* snapshot(db, parsed, ahead?.reads);
           return { ahead, state };
         }).pipe(Effect.withSpan("sdk.invocation.snapshot"));
         // Grant rows read in the batch, for accounts this state holds, stand in for each grant's
@@ -1305,7 +1378,7 @@ export const makeTools = (
           ahead?.grants !== undefined && ahead.grants.ids.every((id) => held.has(id))
             ? grantReadAhead(ahead.grants.ids, ahead.grants.rows)
             : undefined;
-        const context = yield* resolve(state, resolveAccount, lifecycle, ahead?.recheck).pipe(
+        const context = yield* resolve(state, resolveAccount, ahead?.recheck).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
           Effect.provideService(GrantReadAhead, grants),
         );
@@ -1432,11 +1505,11 @@ export const makeTools = (
           Effect.flatMap((input) =>
             approvals.resume(input, options?.issuer, (saved, originalInput) =>
               Effect.gen(function* () {
+                // The saved identities name the accounts; their credentials are resolved again.
                 const checked = yield* snapshot(db, {
                   app: saved.app,
                   deployment: saved.deployment,
-                  profile: saved.profile,
-                  expectedProfileRevision: saved.profileRevision,
+                  accounts: invocationAccounts(saved),
                 }).pipe(
                   Effect.withSpan("sdk.invocation.snapshot"),
                   Effect.flatMap((state) =>
@@ -1479,7 +1552,7 @@ export const makeTools = (
                     "executor.tool.name": saved.tool,
                     "executor.approval.id": input.requestId,
                   });
-                  const context = yield* resolve(state, resolveAccount, lifecycle).pipe(
+                  const context = yield* resolve(state, resolveAccount).pipe(
                     Effect.withSpan("sdk.accounts.resolve"),
                   );
                   // Set by the host when it hands this call's work to the app's code, as for a call.

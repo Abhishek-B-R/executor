@@ -155,7 +155,14 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           expect(listed.status).toBe(200);
           expect(listed.version).toBe(protocolVersion);
           const { tools } = yield* Schema.decodeUnknownEffect(Tools)(listed.reply?.result);
-          expect(tools.map((tool) => tool.name).sort()).toEqual(["execute", "resume", "skills"]);
+          expect(tools.map((tool) => tool.name).sort()).toEqual([
+            "call",
+            "describe",
+            "execute",
+            "resume",
+            "search",
+            "skills",
+          ]);
           const called = yield* post(session, {
             id: 3,
             method: "tools/call",
@@ -523,7 +530,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP protocol versions",
               path: "index.ts",
               content: `import { defineApp, mutation, object, query, router, string } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   wait: query({ input: object({ call: string() }) }, async (_ctx, { call }) => {
     await fetch(${JSON.stringify(`${signals.origin}/started?call=`)} + encodeURIComponent(call));
     await new Promise((resolve) => setTimeout(resolve, 25_000));

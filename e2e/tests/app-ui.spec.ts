@@ -36,7 +36,7 @@ export const list = query({ input: object({}) }, async ({ sql }) =>
 export const save = mutation({ input: object({ body: string() }) }, async ({ sql }, input) => {
   sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body;
 });
-export default defineApp({ accounts: {} }, {  tools: router({
+export default defineApp({}, {  tools: router({
     list,
     save,
   }) });`,
@@ -149,16 +149,16 @@ const appFixture = Effect.gen(function* () {
   return { api, actors, browser, target, prefix, app, url, bookmark };
 });
 
-/** The owner's browser grants an MCP client that addresses the owner's Executor profile. */
+/** The owner's browser grants an MCP client that addresses the owner's Executor app. */
 const mcpSession = Effect.gen(function* () {
   const actors = yield* Actors,
     browser = yield* Browser,
     oauth = yield* McpOAuth,
     mcp = yield* McpClient;
   yield* browser.login(actors.owner);
-  const { profile } = yield* managementApp(actors.owner);
-  expect(profile.accounts.service).toBeTypeOf("string");
-  const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
+  const { account } = yield* managementApp(actors.owner);
+  expect(account).toBeTypeOf("string");
+  const tools = "tools.executor";
   const grant = yield* oauth.authorize;
   yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
   const client = yield* mcp.connect(
@@ -192,8 +192,8 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         );
         expect(Object.keys(apiDocument.paths)).not.toContain("/api/app-ui/authorize");
         expect(Object.keys(apiDocument.paths)).toContain("/api/viewer");
-        const { app: management, profile } = yield* managementApp(actors.owner);
-        expect(profile.accounts.service).toBeTypeOf("string");
+        const { app: management, account } = yield* managementApp(actors.owner);
+        expect(account).toBeTypeOf("string");
         const source = yield* body(
           Schema.Struct({
             files: Schema.Array(

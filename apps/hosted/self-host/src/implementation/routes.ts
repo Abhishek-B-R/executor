@@ -24,6 +24,7 @@ import {
   clientMetadataDocument,
   clientMetadataDocumentPath,
   clientMetadataSetting,
+  authSettings,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -86,10 +87,10 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
     // A span per wake, named as Cloud's coordinator wake, shows which write asked for setup.
-    const wake = scheduler.wakeProfiles.pipe(
+    const wake = scheduler.wakeWebhookSources.pipe(
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": "change" } }),
     );
-    // Member setup saves profiles and redeploys the default Executor app; it wakes their setup.
+    // Member setup links accounts and redeploys the default Executor app; it wakes webhook sources.
     yield* drainProvisioning(selfHostProvisioningServices).pipe(
       Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
       Effect.repeat(Schedule.spaced("1 second")),
@@ -97,7 +98,11 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       Effect.provide(executorServices),
       Effect.forkScoped,
     );
-    const clientMetadata = yield* clientMetadataSetting(auth.origin);
+    // The account callback the executor's sign-ins send, so the document lists the same one.
+    const clientMetadata = yield* clientMetadataSetting({
+      origin: auth.origin,
+      oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
+    });
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));

@@ -1,11 +1,9 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-import { ProfileId } from "./shared.ts";
-import { ProfileErrors } from "./profiles.ts";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
-import { AppNotFound, AccountSelectionInvalid } from "./apps.ts";
+import { AccountScope, AppNotFound, AccountSelectionInvalid } from "./apps.ts";
 import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";
 import {
   AccountConnectionId,
@@ -27,14 +25,70 @@ import {
 import { OAuthClientChoice, OAuthClientNotFound } from "./oauth-clients.ts";
 
 /**
+ * Target changes require a fresh connection; no credentials or selections are committed. This
+ * includes a requirement whose scope changed since the connection started: one started for a
+ * member's own account cannot become the app's, or the reverse.
+ */
+export const AccountConnectionTargetChanged = UserFacingError.define({
+  tag: "AccountConnectionTargetChanged",
+  status: 409,
+  fields: {
+    app: AppId,
+    requirement: Schema.String,
+  },
+  title: "App account setup changed",
+  description: "This connection no longer matches the app’s requirements.",
+  recovery: {
+    action: "Close this form and start account setup again.",
+    instructions:
+      "Read the current app deployment, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
+  },
+});
+/** Parsed AccountConnectionTargetChanged failure. */
+export type AccountConnectionTargetChanged = typeof AccountConnectionTargetChanged.Type;
+
+/**
+ * The product refused the connection's account for its app requirement under the completing
+ * member's current access: a user requirement needs use of the app; an app requirement needs
+ * management of the app and use of the connected account; a reconnect needs management of the
+ * account it reconnects. No credentials or links are committed, and a reconnected
+ * account keeps its saved credentials.
+ */
+export const AccountConnectionRefused = UserFacingError.define({
+  tag: "AccountConnectionRefused",
+  status: 403,
+  fields: {
+    app: AppId,
+    requirement: Schema.String,
+  },
+  title: "Account not connected",
+  description:
+    "Your access doesn’t allow connecting this account for the app, so nothing was saved.",
+  recovery: {
+    action:
+      "Check your access to the app and to the account’s destination, then start account setup again.",
+    instructions:
+      "The product refused this connection for its creator under current access. A member’s own account needs use of the app. An app’s account needs management of the app and use of the connected account, such as membership in a group it is shared with. Check the signed-in member’s access, choose a destination they can use or have someone with the needed access connect the account, then start a fresh connection. Do not bypass authorization or reuse this request.",
+  },
+});
+/** Parsed AccountConnectionRefused failure. */
+export type AccountConnectionRefused = typeof AccountConnectionRefused.Type;
+
+/**
  * Why the connection's latest sign-in ended without an account: the same typed error its starter
- * or callback page received, with the stage, HTTP status and the service's own error it recorded.
+ * or callback page received, with the stage, HTTP status and the service's own error it recorded,
+ * or the product's refusal, or a changed target, that rolled back the account it signed in to.
  * Starting a new sign-in clears it. Connections store it in this error vocabulary; a stored failure
  * a later release can no longer read is left out rather than failing the connection.
  */
 export const AccountConnectionFailure = Schema.Struct({
   at: Schema.Date,
-  error: Schema.Union([OAuthSetupFailed, OAuthCompletionFailed]),
+  error: Schema.Union([
+    OAuthSetupFailed,
+    OAuthCompletionFailed,
+    AccountConnectionRefused,
+    AccountConnectionTargetChanged,
+  ]),
 });
 export type AccountConnectionFailure = typeof AccountConnectionFailure.Type;
 /** Public progress never contains submitted fields, grants, or OAuth protocol state. */
@@ -47,10 +101,12 @@ export const AccountConnectionState = Schema.Union([
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
 export type AccountConnectionState = typeof AccountConnectionState.Type;
-/** An app profile requirement to fill when account setup finishes. */
+/**
+ * The app requirement an account is connected for. Completing the connection grants the hosts the
+ * app declares, and the product links the account to the app in the same transaction.
+ */
 export const AccountConnectionTarget = Schema.Struct({
   app: AppId,
-  profile: ProfileId,
   requirement: Schema.NonEmptyString,
 });
 /** App name is captured for browser consent without exposing unrelated app configuration. */
@@ -71,12 +127,18 @@ export const AccountConnection = Schema.Struct({
 });
 export type AccountConnection = typeof AccountConnection.Type;
 /**
- * Every connection is for an app requirement, which supplies its provider. `account` reconnects
- * that existing account instead of adding one; its owner and provider must match.
+ * Every connection is for an app requirement, which supplies its provider and scope. A `scope`
+ * names the one the caller started it for; the requirement must have it now. Without one, the
+ * requirement's current scope is kept. Completing refuses a requirement whose scope changed since.
+ * `account` reconnects that existing account instead of adding one; its owner and provider must
+ * match.
  */
 export const CreateAccountConnection = Schema.Struct({
   owner: OwnerId,
-  target: AccountConnectionTarget,
+  target: Schema.Struct({
+    ...AccountConnectionTarget.fields,
+    scope: Schema.optional(AccountScope),
+  }),
   account: Schema.optional(AccountId),
 });
 /** Owner filters remain data predicates; the host must authorize each call. */
@@ -159,27 +221,7 @@ export const AccountConnectionClosed = UserFacingError.define({
 /** Parsed AccountConnectionClosed failure. */
 export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
 
-/** Target changes require a fresh connection; no credentials or selections are committed. */
-export const AccountConnectionTargetChanged = UserFacingError.define({
-  tag: "AccountConnectionTargetChanged",
-  status: 409,
-  fields: {
-    app: AppId,
-    requirement: Schema.String,
-  },
-  title: "App account setup changed",
-  description: "This connection no longer matches the app’s requirements.",
-  recovery: {
-    action: "Close this form and start account setup again.",
-    instructions:
-      "Read the current app deployment, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
-  },
-});
-/** Parsed AccountConnectionTargetChanged failure. */
-export type AccountConnectionTargetChanged = typeof AccountConnectionTargetChanged.Type;
-
 const errors = [
-  ...ProfileErrors,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
@@ -189,6 +231,7 @@ const saveErrors = [
   ...errors,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
+  AccountConnectionRefused,
   CredentialsError,
   AuthMethodInvalid,
   AccountFieldsInvalid,
@@ -200,13 +243,13 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CreateAccountConnection,
       success: AccountConnection,
       error: [
-        ...ProfileErrors,
         StorageError,
         ProviderNotFound,
         AccountNotFound,
         AccountConnectionNotFound,
         AppNotFound,
         AccountSelectionInvalid,
+        AccountConnectionTargetChanged,
       ],
     }),
   )
@@ -218,7 +261,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       error: [...errors, AccountConnectionTargetChanged],
     }).annotate(
       OpenApi.Description,
-      "Check a connection request: pending, completed with account metadata, cancelled or expired. A pending or expired request whose latest OAuth sign-in failed has state.failure: the error the user saw, with its reason, cause (stage and HTTP status) and serviceError (the service's own error and description, or the bounded text of another error body). A rate_limited failure has retryAfter when the service said when to try again. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed requests have already selected the account for the named profile. A pending request whose app no longer requires its provider fails with AccountConnectionTargetChanged; request a new connection.",
+      "Check a connection request: pending, completed with account metadata, cancelled or expired. A pending or expired request whose latest OAuth sign-in failed has state.failure: the error the user saw, with its reason, cause (stage and HTTP status) and serviceError (the service's own error and description, or the bounded text of another error body). A rate_limited failure has retryAfter when the service said when to try again. A sign-in the product refused for the creator's current access records AccountConnectionRefused, and one whose app requirement changed, including its scope, records AccountConnectionTargetChanged; both need a new sign-in. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed requests have already linked the account to the named app. A pending request whose app no longer requires its provider fails with AccountConnectionTargetChanged; request a new connection.",
     ),
   )
   .add(
@@ -263,6 +306,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
+        AccountConnectionRefused,
         CredentialsError,
         AuthMethodInvalid,
         OAuthClientUnavailable,
@@ -289,6 +333,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
+        AccountConnectionRefused,
         CredentialsError,
         OAuthCompletionFailed,
       ],

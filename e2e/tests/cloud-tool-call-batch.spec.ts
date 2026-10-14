@@ -23,7 +23,7 @@ import { cloudLocks } from "../support/cloud-locks.ts";
 import { App, Resource, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
 /** `token` returns the account's token; `slow` does too, after `ms` milliseconds. */
@@ -31,12 +31,12 @@ const source = `import { defineApp, defineProvider, secrets, object, string, num
 const service = defineProvider({ name: "Cloud batch fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.token),
     slow: query({ input: object({ ms: number() }), output: string() }, async (_ctx, { ms }) => {
       await new Promise((resolve) => setTimeout(resolve, ms));
-      return ctx.accounts.service.fields.token;
+      return ctx.user.accounts.service.fields.token;
     }),
   }),
 }));`;
@@ -139,13 +139,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, path);
+          // Connecting from the app links the account for the owner.
           const pending = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
           );
           const account = (yield* body(
             Resource,
@@ -160,16 +157,11 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               .request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)
               .pipe(Effect.ignore),
           );
-          expect(
-            (yield* selectProfileAccounts(actors.owner, path, profile.id, { service: account }))
-              .status,
-          ).toBe(200);
 
           const client = yield* mcp.connect(pat.key, "cloud-batch", {
             organization: actors.organization.id,
           });
-          const tool = (name: string) =>
-            `tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].${name}`;
+          const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
           /** Run `code` in one execute; return its result. */
           const execute = (operation: string, code: string) =>
             client
@@ -217,28 +209,14 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               return { execution, calls: made.found, objectId: String(made.objectId) };
             });
           const token = `return await ${tool("token")}({})`;
-          // Saving the selection wakes the profile's setup after the response, and setup writes
-          // the profile again when it finishes. A call made before that write reads it as a
-          // changed profile and sends its reads once more, so the profile is settled first:
-          // reconciled at its current revision, after which nothing writes it.
-          const settled = Schema.Struct({
-            revision: Schema.Number,
-            status: Schema.String,
-            reconciledRevision: Schema.NullOr(Schema.Number),
-          });
-          const settling: Array<typeof settled.Type> = [];
+          // A call reads the caller's links to the app live, so the link is settled first: the
+          // owner's links read back as exactly the connected account.
+          const settling: Array<ReadonlyArray<string>> = [];
           yield* Effect.gen(function* () {
             for (;;) {
-              const reconciled = yield* api.request(
-                actors.owner,
-                "POST",
-                `${path}/profiles/${profile.id}/reconcile`,
-              );
-              expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
-              const current = yield* body(settled, reconciled);
-              settling.push(current);
-              if (current.status === "ready" && current.reconciledRevision === current.revision)
-                return;
+              const linked = yield* linkedAccountIds(actors.owner, path);
+              settling.push(linked);
+              if (JSON.stringify(linked) === JSON.stringify([account])) return;
               yield* Effect.sleep("100 millis");
             }
           }).pipe(
@@ -248,7 +226,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               Effect.suspend(() => evidence.json("cloud-batch-settled.json", settling)),
             ),
           );
-          // The session's first call reads the profile, then sends its reads with it; every later
+          // The session's first call reads the links, then sends its reads with them; every later
           // call sends one batch.
           const cold = yield* run("The session's first call", token, 1);
           expect(cold.calls[0]?.batches.length, "The session's first call").toBe(2);
@@ -260,9 +238,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
             Effect.gen(function* () {
               expect(warm.execution).toEqual({ ok: true, value: "synthetic-batch" });
               const [alone] = warm.calls;
-              // Recheck, BEGIN, app, profile, accounts, profile recheck, access check, COMMIT.
-              expect(alone?.batches).toEqual([{ statements: 8, writes: 1 }]);
-              expect(alone?.statements, "Every statement of the call was in its batch").toBe(6);
+              // Recheck, BEGIN, app, access check with the links, accounts, app recheck, COMMIT.
+              expect(alone?.batches).toEqual([{ statements: 7, writes: 1 }]);
+              expect(alone?.statements, "Every statement of the call was in its batch").toBe(5);
               const parallel = yield* run(
                 "Five calls in parallel",
                 `return await Promise.all([0, 1, 2, 3, 4].map(() => ${tool("token")}({})))`,
@@ -274,8 +252,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                 value: Array(5).fill("synthetic-batch"),
               });
               for (const call of parallel.calls) {
-                expect(call.batches).toEqual([{ statements: 8, writes: 1 }]);
-                expect(call.statements).toBe(6);
+                expect(call.batches).toEqual([{ statements: 7, writes: 1 }]);
+                expect(call.statements).toBe(5);
               }
             }),
           );
@@ -425,7 +403,7 @@ return [first, await ${tool("token")}({})];`,
                 const call = made.calls[1];
                 expect(call?.batches.length, label).toBe(1);
                 expect(call?.discarded, `${label}: the batch's reads were discarded`).toBe(true);
-                // The recheck and five reads in the batch, then the five reads again on their own.
+                // The recheck and four reads in the batch, then the reads again on their own.
                 expect(call?.statements, label).toBeGreaterThan(6);
               }
             }),

@@ -27,7 +27,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
           {
             path: "index.ts",
             content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Read the active build",input:object({})},async()=>${JSON.stringify(version)}),
 })});`,
           },
@@ -55,7 +55,7 @@ export default defineApp({accounts:{}}, {tools: router({
 import ts from "typescript";
 import * as icons from "lucide-react";
 import React from "react";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Compile large dependencies",input:object({})},
     async()=>({version:ts.version,icons:Object.keys(icons).length,react:React.version})),
 })});`,
@@ -156,7 +156,7 @@ export default defineApp({accounts:{}}, {tools: router({
             {
               path: "index.ts",
               content: `import { defineApp, query, object, router } from "apps";
-export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
+export default defineApp({}, async (ctx) => ({tools: router({
   inspect:query({description:"List retained files",input:object({})},async()=>ctx.files.map((file)=>file.path)),
 })}));`,
             },
@@ -220,7 +220,7 @@ export default defineApp({accounts:{}}, async (ctx) => ({tools: router({
                   path: "index.ts",
                   content: `import { defineApp, query, object, router } from "apps";
 import stalled from "${stalledPackage}";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Never compiles",input:object({})},async()=>String(stalled)),
 })});`,
                 },
@@ -266,30 +266,24 @@ export default defineApp({accounts:{}}, {tools: router({
           evidence = yield* Evidence;
         yield* browser.login(actors.owner);
         for (let iteration = 0; iteration < 3; iteration++) {
-          const name = `Axiom browser proof ${randomUUID().slice(0, 8)}`;
           yield* browser.use("Open the real Add App page", (page) =>
             page.goto(`/org/${actors.organization.slug}/apps/add`),
           );
           yield* browser.use("Search for Axiom", (page) =>
             page.getByPlaceholder("Search apps…").fill("Axiom"),
           );
-          yield* browser.use("Choose the MCP catalog entry", (page) =>
-            page.getByRole("button", { name: /Axiom.*MCP/ }).click(),
+          yield* browser.use("Add the Axiom catalog entry", (page) =>
+            page.getByRole("button", { name: "Add Axiom", exact: true }).click(),
           );
-          yield* browser.use("Name the synthetic app", (page) =>
-            page.getByLabel("App name", { exact: true }).fill(name),
-          );
-          yield* browser.use("Install while page reads run", (page) =>
-            page.getByRole("button", { name: "Add app", exact: true }).click(),
-          );
-          yield* browser.use("Wait for committed setup navigation", (page) =>
-            page.waitForURL("**/apps/*?view=accounts"),
-          );
-          const pathname = yield* browser.use("Read the installed app location", (page) =>
-            page.evaluate(() => location.pathname),
-          );
+          // The page stays on the listing and the row offers Open for the committed installation.
+          const open = yield* browser.use("Wait for the installed app's Open link", (page) => {
+            const link = page
+              .locator(".catalog-row", { hasText: /Axiom.*MCP/ })
+              .getByRole("link", { name: "Open" });
+            return link.waitFor().then(() => link.getAttribute("href"));
+          });
           const id = yield* Schema.decodeUnknownEffect(Schema.String)(
-            /^\/org\/[^/]+\/apps\/([^/]+)$/.exec(pathname)?.[1],
+            /^\/org\/[^/]+\/apps\/([^/?]+)/.exec(open ?? "")?.[1],
           );
           const app = yield* body(
             App,
@@ -299,15 +293,20 @@ export default defineApp({accounts:{}}, {tools: router({
               `/api/organizations/${actors.organization.id}/apps/${id}`,
             ),
           );
-          expect(app.name).toBe(name);
-          yield* Effect.addFinalizer(() =>
-            api
-              .request(
-                actors.owner,
-                "DELETE",
-                `/api/organizations/${actors.organization.id}/apps/${app.id}`,
-              )
-              .pipe(Effect.orDie),
+          expect(app.name).toContain("Axiom");
+          const remove = api
+            .request(
+              actors.owner,
+              "DELETE",
+              `/api/organizations/${actors.organization.id}/apps/${app.id}`,
+            )
+            .pipe(Effect.orDie);
+          yield* Effect.addFinalizer(() => remove);
+          yield* browser.use("Open the installed app", (page) =>
+            page
+              .locator(".catalog-row", { hasText: /Axiom.*MCP/ })
+              .getByRole("link", { name: "Open" })
+              .click(),
           );
           yield* browser.use("Setup follows the committed installation", (page) =>
             page.waitForURL(`**/apps/${app.id}?view=accounts`),
@@ -332,6 +331,8 @@ export default defineApp({accounts:{}}, {tools: router({
             ),
           );
           yield* evidence.json(`catalog-install-${iteration}.json`, timings);
+          // Removing the app makes the next visit offer Add again.
+          yield* remove;
         }
         yield* browser.checkpoint("Axiom reached account setup after real catalog installs");
       }),
@@ -369,7 +370,7 @@ export default defineApp({accounts:{}}, {tools: router({
 import { defineApp, query, object, router } from "apps";
 import { z } from "zod";
 import manifest from "./package.json";
-export default defineApp({accounts:{}}, { tools: router({
+export default defineApp({}, { tools: router({
    inspect: query({description:"Check the installed dependency and original manifest",input:object({})},
     async () => ({value:z.string().parse("real-package"),version:manifest.dependencies.zod})),
  })});`,
@@ -388,7 +389,7 @@ export default defineApp({accounts:{}}, { tools: router({
           `
 import { defineApp, query, object, router } from "apps";
 import manifest from "./package.json";
-export default defineApp({accounts:{}},{tools: router({
+export default defineApp({},{tools: router({
   inspect:query({description:"Read the original declaration",input:object({})},async()=>manifest.dependencies),
 })});`,
           { "@executor-fixture/unused-package": "0.0.0-synthetic" },
@@ -411,7 +412,7 @@ export default defineApp({accounts:{}},{tools: router({
             {
               path: "index.ts",
               content: `import { defineApp, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));`,
+export default defineApp({}, async () => ({ tools: router({}) }));`,
             },
           ],
         });
@@ -449,7 +450,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({}) }));
                     path: "index.ts",
                     content: `import { defineApp, query, object, router } from "apps";
 import { z } from "zod";
-export default defineApp({accounts:{}}, {tools: router({
+export default defineApp({}, {tools: router({
   inspect:query({description:"Read the build",input:object({})},async()=>z.string().parse("build ${index}")),
 })});`,
                   },

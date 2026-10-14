@@ -15,7 +15,7 @@ const files = [
   {
     path: "index.ts",
     content: `import { defineApp, query, router, object } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ count: query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT count(*) AS n FROM notes").one().n) }),
 });`,
   },

@@ -31,9 +31,10 @@ import type { Target } from "./platform.ts";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import {
   applyLegacyStatements,
+  LegacyDatabase,
+  legacyDatabase,
   LegacyResults,
   LegacyStatements,
-  productDatabase,
 } from "./legacy-storage.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
@@ -88,7 +89,7 @@ export const startManagedServer = (
     );
     // The suite's loopback registry serves this checkout's apps release; see npm-registry.ts.
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
-    // The run's loopback integrations.sh feed and app registry; see public-catalogs.ts.
+    // The run's loopback official app feed and app registry; see public-catalogs.ts.
     const catalogs = yield* Config.NonEmptyString("E2E_PUBLIC_CATALOGS").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
@@ -157,7 +158,7 @@ export const startManagedServer = (
       ...(Option.isSome(npmRegistry) ? { EXECUTOR_NPM_REGISTRY: npmRegistry.value } : {}),
       ...(Option.isSome(catalogs)
         ? {
-            EXECUTOR_CATALOG_URL: `${catalogs.value}/api.json`,
+            EXECUTOR_CATALOG_URL: `${catalogs.value}/catalog/index.json`,
             EXECUTOR_REGISTRY_URL: catalogs.value,
           }
         : {}),
@@ -484,12 +485,19 @@ export const startManagedServer = (
           );
           if (!declared || target.metadata.target === "cloud")
             return HttpServerResponse.empty({ status: 403 });
-          const database = productDatabase(env.EXECUTOR_DATA_DIR, target.metadata.target);
           const body = yield* request.json.pipe(
             Effect.flatMap(
-              Schema.decodeUnknownEffect(Schema.Struct({ statements: LegacyStatements })),
+              Schema.decodeUnknownEffect(
+                Schema.Struct({ statements: LegacyStatements, database: LegacyDatabase }),
+              ),
             ),
           );
+          const database = legacyDatabase(
+            env.EXECUTOR_DATA_DIR,
+            target.metadata.target,
+            body.database,
+          );
+          if (database === undefined) return HttpServerResponse.empty({ status: 403 });
           // Hold the lifecycle gate so no product generation can open the database meanwhile.
           const rows = yield* gate.withPermits(1)(
             stop.pipe(

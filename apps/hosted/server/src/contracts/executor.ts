@@ -1,4 +1,4 @@
-import type { Executor, Profile, StorageError } from "@executor-js/sdk/core";
+import type { AppAccounts, Executor, StorageError } from "@executor-js/sdk/core";
 import { Context, Effect, type Exit } from "effect";
 
 /** Resolve the public SDK on demand. The host owns its lifetime: a cloud request or the self-host process. */
@@ -51,19 +51,19 @@ export const StatementBatch = Context.Reference<
 >("hosted/StatementBatch", { defaultValue: () => undefined });
 
 /**
- * What an MCP session's last tool call for one selection read: the live profile, and the SDK's
- * opaque hint about its accounts' grants.
+ * What an MCP session's last tool call for one choice ran with: the accounts it resolved from the
+ * caller's links, and the SDK's opaque hint about those accounts' grants.
  */
 export interface CallState {
-  readonly profile: Profile;
+  readonly accounts: AppAccounts;
   readonly hint: unknown;
 }
 
 /**
- * The state each caller's last tool call read, by caller, app and profile. It holds no
+ * The state each caller's last tool call read, by caller, app and linked accounts. It holds no
  * authorization: a call only uses it to name the accounts and grants its batch reads, and every
- * read and check in that batch runs live; a profile that no longer matches is replaced and the
- * reads sent again. Owned by one MCP session; unset elsewhere.
+ * read and check in that batch runs live; accounts that no longer match the live links are
+ * replaced and the reads sent again. Owned by one MCP session; unset elsewhere.
  */
 export const CallStateCache = Context.Reference<Map<string, CallState> | undefined>(
   "hosted/CallStateCache",

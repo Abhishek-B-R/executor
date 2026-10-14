@@ -1,11 +1,12 @@
 /**
  * An MCP tool call sends its checks and every read it makes for them together, in one batch: the
- * bearer recheck first, then the access check, the app, profile and accounts, the profile recheck
- * and the grants of OAuth accounts, in one snapshot. The access check and the account reads need
- * the profile's accounts before the profile is read, so they name those of the profile the
- * session's last call read; the same batch reads the profile live, and a call whose profile
- * changed since sends the reads once more with the live one. Every check still runs on every call
- * against live rows; the batch decides nothing a separate read would not.
+ * bearer recheck first, then the app, the access check with the caller's links to it, the
+ * accounts, the SDK's app recheck for them and the grants of OAuth accounts, in one snapshot. An
+ * MCP call names the accounts discovery resolved for it; the account reads use what the session's
+ * last call naming the same accounts resolved, and the same batch reads the links live. A call
+ * naming accounts the session has not called with yet reads the app and links first and sends the
+ * account reads in a second batch. Every check still runs on every call against live rows; the
+ * batch decides nothing a separate read would not.
  *
  * Self-host runs the batch under the PGlite client's lock, as Cloud runs it in one socket write
  * (see `cloud-tool-call-batch.spec.ts`). Each batch is one `sql.pipeline` span.
@@ -22,16 +23,21 @@ import { App, Resource } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, Profile, selectProfileAccounts } from "../support/profiles.ts";
+import {
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+  connectionsPath,
+} from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
 const keySource = `import { defineApp, defineProvider, secrets, object, string, query, router } from "apps";
 const service = defineProvider({ name: "Batch fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.token),
   }),
 }));`;
 
@@ -41,14 +47,14 @@ const oauthSource = (
 const service = defineProvider({ name: "OAuth batch fixture", auth: {
   oauth: oauth2({ discover: ${JSON.stringify(discover)} })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.access_token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.access_token),
   }),
 }));`;
 
 const accountlessSource = `import { defineApp, object, string, query, router } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ token: query({ input: object({}), output: string() }, async () => "synthetic-accountless") }),
 });`;
 
@@ -108,18 +114,16 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
             );
-            return { app, path, profile: yield* createProfile(actors.owner, path) };
+            return { app, path };
           });
-        const connection = (path: string, profile: string) =>
+        /** A connection from the app; the account it saves is linked for the owner. */
+        const connection = (path: string) =>
           api
-            .request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile,
-            })
+            .request(actors.owner, "POST", connectionsPath(path, "user", "service"), {})
             .pipe(Effect.flatMap((pending) => body(Resource, pending)));
-        const keyAccount = (path: string, profile: string, token: string) =>
+        const keyAccount = (path: string, token: string) =>
           Effect.gen(function* () {
-            const pending = yield* connection(path, profile);
+            const pending = yield* connection(path);
             const saved = yield* body(
               Resource,
               yield* api.request(
@@ -136,78 +140,39 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             accounts.push(saved.id);
             return saved.id;
           });
-        // Saving a profile wakes its setup after the response, and setup writes the profile again
-        // when it finishes. A call made before that write reads it as a changed profile and sends
-        // its reads once more, so each change is settled before a call: reconciled at the current
-        // revision, after which nothing writes the profile.
-        const settled = Schema.Struct({
-          revision: Schema.Number,
-          status: Schema.String,
-          reconciledRevision: Schema.NullOr(Schema.Number),
-        });
-        const settling: Record<string, Array<typeof settled.Type>> = {};
-        const settle = (path: string, profile: string, status: "ready" | "disabled") => {
-          const attempts: Array<typeof settled.Type> = [];
+        // A call reads the caller's links to the app live. Each link change is settled before the
+        // calls whose batches are measured: the owner's links read back as exactly the expected
+        // accounts, so no call is made while a change is still being written.
+        const settling: Record<string, Array<ReadonlyArray<string>>> = {};
+        const settle = (path: string, expected: ReadonlyArray<string>) => {
+          const attempts: Array<ReadonlyArray<string>> = [];
           return Effect.gen(function* () {
             for (;;) {
-              const reconciled = yield* api.request(
-                actors.owner,
-                "POST",
-                `${path}/profiles/${profile}/reconcile`,
-              );
-              expect(reconciled.status, JSON.stringify(reconciled.body)).toBe(200);
-              const current = yield* body(settled, reconciled);
-              attempts.push(current);
-              if (current.status === status && current.reconciledRevision === current.revision)
-                return;
+              const linked = yield* linkedAccountIds(actors.owner, path);
+              attempts.push(linked);
+              if (JSON.stringify(linked) === JSON.stringify(expected)) return;
               yield* Effect.sleep("100 millis");
             }
           }).pipe(
             Effect.timeout("30 seconds"),
             Effect.ensuring(
               Effect.suspend(() => {
-                (settling[profile] ??= []).push(...attempts);
+                (settling[path] ??= []).push(...attempts);
                 return evidence.json("batch-settled.json", settling);
               }),
             ),
           );
         };
-        const select = (path: string, profile: string, account: string) =>
-          Effect.gen(function* () {
-            expect(
-              (yield* selectProfileAccounts(actors.owner, path, profile, { service: account }))
-                .status,
-            ).toBe(200);
-            yield* settle(path, profile, "ready");
-          });
-        const setEnabled = (path: string, profile: string, enabled: boolean) =>
-          Effect.gen(function* () {
-            const saved = yield* body(
-              Profile,
-              yield* api.request(actors.owner, "GET", `${path}/profiles/${profile}`),
-            );
-            const changed = yield* api.request(
-              actors.owner,
-              "PATCH",
-              `${path}/profiles/${profile}/enabled`,
-              { expectedRevision: saved.revision, enabled },
-            );
-            expect(changed.status, JSON.stringify(changed.body)).toBe(200);
-            yield* settle(path, profile, enabled ? "ready" : "disabled");
-          });
 
         const key = yield* deploy("Batch key", keySource);
-        yield* select(
-          key.path,
-          key.profile.id,
-          yield* keyAccount(key.path, key.profile.id, "synthetic-first"),
-        );
+        const firstAccount = yield* keyAccount(key.path, "synthetic-first");
+        yield* settle(key.path, [firstAccount]);
 
-        /** An app whose profile selects one OAuth account, signed in through the issuer. */
+        /** An app with one linked OAuth account, signed in through the issuer. */
         const oauthApp = (name: string) =>
           Effect.gen(function* () {
             const deployed = yield* deploy(name, oauthSource(`${issuer.origin}/mcp`));
-            const pending = yield* connection(deployed.path, deployed.profile.id);
+            const pending = yield* connection(deployed.path);
             const started = yield* api.request(
               actors.owner,
               "POST",
@@ -235,12 +200,12 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             expect(completed.status, JSON.stringify(completed.body)).toBe(200);
             const account = (yield* body(Resource, completed)).id;
             accounts.push(account);
-            yield* select(deployed.path, deployed.profile.id, account);
+            yield* settle(deployed.path, [account]);
             return deployed;
           });
         const oauth = yield* oauthApp("Batch OAuth");
         const accountless = yield* deploy("Batch accountless", accountlessSource);
-        yield* settle(accountless.path, accountless.profile.id, "ready");
+        yield* settle(accountless.path, []);
 
         const token = (name: string) =>
           Effect.gen(function* () {
@@ -262,14 +227,14 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
         });
         type Client = typeof first;
 
-        /** Run one execute that calls the target's tool through its profile; return what it did. */
+        /** Run one execute that calls the target app's tool with its linked account; return what it did. */
         const call = (
           client: Client,
-          target: { readonly app: typeof App.Type; readonly profile: typeof Profile.Type },
+          target: { readonly app: typeof App.Type },
           operation: string,
         ) =>
           Effect.gen(function* () {
-            const code = `return await tools[${JSON.stringify(target.app.slug)}].profiles[${JSON.stringify(target.profile.id)}].token({})`;
+            const code = `return await tools[${JSON.stringify(target.app.slug)}].token({})`;
             const result = yield* client.use(operation, (client, signal) =>
               client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
             );
@@ -358,52 +323,58 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
           });
 
         yield* evidence.step(
-          "A session's first call for a profile reads it, then sends its reads with it; later calls send one batch",
+          "A session's first call for an app reads its links, then sends its reads with them; later calls send one batch",
           Effect.gen(function* () {
-            // First calls: the recheck with the app and profile, then the rest with the profile
-            // read: as many statements as reading one after another.
+            // First calls: the recheck with the app and links, then the reads for the linked
+            // accounts: as many statements as reading one after another.
             yield* expectCall("key, first", yield* call(first, key, "Key account, first call"), {
               value: "synthetic-first",
               batches: 2,
-              statements: 8,
+              statements: 6,
             });
             yield* expectCall("key, warm", yield* call(first, key, "Key account, warm call"), {
               value: "synthetic-first",
               batches: 1,
-              // Recheck, app, profile, accounts, profile recheck, access check; no grant read.
-              statements: 6,
+              // Recheck, app, access check with the links, accounts, app recheck; no grant read.
+              statements: 5,
             });
             const oauthFirst = yield* call(first, oauth, "OAuth account, first call");
             recorded["oauth, first"] = oauthFirst.trace;
             expect(oauthFirst.trace.batches, "OAuth account, first call").toBe(2);
-            expect(oauthFirst.trace.statements, "OAuth account, first call").toBe(9);
+            expect(oauthFirst.trace.statements, "OAuth account, first call").toBe(7);
             const oauthWarm = yield* call(first, oauth, "OAuth account, warm call");
             recorded["oauth, warm"] = oauthWarm.trace;
             expect(oauthWarm.trace.batches, "OAuth account, warm call").toBe(1);
-            // The key account's six and its grant, read in the batch rather than after it.
-            expect(oauthWarm.trace.statements).toBe(7);
+            // The key account's five and its grant, read in the batch rather than after it.
+            expect(oauthWarm.trace.statements).toBe(6);
             expect(oauthWarm.trace.liveGrantReads).toBe(0);
             yield* expectCall(
               "accountless, first",
               yield* call(first, accountless, "No accounts, first call"),
-              { value: "synthetic-accountless", batches: 2, statements: 7 },
+              { value: "synthetic-accountless", batches: 2, statements: 5 },
             );
             yield* expectCall(
               "accountless, warm",
               yield* call(first, accountless, "No accounts, warm call"),
-              { value: "synthetic-accountless", batches: 1, statements: 5 },
+              { value: "synthetic-accountless", batches: 1, statements: 4 },
             );
           }),
         );
 
+        const other = yield* keyAccount(key.path, "synthetic-other");
         yield* evidence.step(
-          "Another account selected between calls is read with the live profile, in one more batch",
+          "Another account linked in place of the first between calls is read with the live links, in one more batch",
           Effect.gen(function* () {
-            const other = yield* keyAccount(key.path, key.profile.id, "synthetic-other");
-            yield* select(key.path, key.profile.id, other);
+            // Connecting from the app replaced the first link: only plain requirements use the
+            // provider, so the new account is the requirement's only one.
+            yield* settle(key.path, [other]);
+            // Discovery lists the other account, so the call names it. The session has run no call
+            // with it: the first batch reads the app and links beside the recheck, the second the
+            // app, the other account and the app recheck for it, as on the session's first call.
             yield* expectCall("key, switched", yield* call(first, key, "Call after a switch"), {
               value: "synthetic-other",
               batches: 2,
+              statements: 6,
             });
             yield* expectCall(
               "key, warm after a switch",
@@ -411,19 +382,20 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               {
                 value: "synthetic-other",
                 batches: 1,
-                statements: 6,
+                statements: 5,
               },
             );
           }),
         );
 
         yield* evidence.step(
-          "A disabled profile refuses the call, and the call after it is enabled reads it again",
+          "Unlinking the app's only account refuses the call, and once it is linked again a call sends one batch",
           Effect.gen(function* () {
-            yield* setEnabled(key.path, key.profile.id, false);
-            const code = `return await tools[${JSON.stringify(key.app.slug)}].profiles[${JSON.stringify(key.profile.id)}].token({})`;
+            yield* unlinkAccount(actors.owner, key.path, "service", other);
+            yield* settle(key.path, []);
+            const code = `return await tools[${JSON.stringify(key.app.slug)}].token({})`;
             const refused = yield* first
-              .use("Call a disabled profile", (client, signal) =>
+              .use("Call with no linked account", (client, signal) =>
                 client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
               )
               .pipe(
@@ -431,20 +403,25 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                   Schema.decodeUnknownEffect(Execution)(result.structuredContent),
                 ),
               );
-            yield* evidence.json("batch-disabled.json", refused);
-            expect(refused.execution.ok, "A disabled profile").toBe(false);
-            yield* setEnabled(key.path, key.profile.id, true);
-            yield* expectCall("key, enabled", yield* call(first, key, "Call once enabled"), {
+            yield* evidence.json("batch-unlinked.json", refused);
+            expect(refused.execution.ok, "No linked account").toBe(false);
+            yield* linkAccount(actors.owner, key.path, "service", other);
+            yield* settle(key.path, [other]);
+            // The refused call stopped at discovery, which lists an app without a linked account
+            // with no tools, so it sent no batch. The call once linked names the account the
+            // session's last call ran with, so its one batch reads that account beside the links.
+            yield* expectCall("key, linked again", yield* call(first, key, "Call once linked"), {
               value: "synthetic-other",
-              batches: 2,
+              batches: 1,
+              statements: 5,
             });
             yield* expectCall(
-              "key, warm once enabled",
-              yield* call(first, key, "Warm once enabled"),
+              "key, warm once linked again",
+              yield* call(first, key, "Warm once linked"),
               {
                 value: "synthetic-other",
                 batches: 1,
-                statements: 6,
+                statements: 5,
               },
             );
           }),
@@ -457,7 +434,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             yield* issuer.configure({ refreshTokens: true, expiresIn: 31, refreshedExpiresIn: 31 });
             const renewing = yield* oauthApp("Batch OAuth renewal");
             // The sibling session is warm: its batch reads the account's grant. Its first call for
-            // the profile reads it, then sends its reads with it.
+            // the app reads the links, then sends its reads with them.
             for (const [label, batches] of [
               ["Sibling session, first call", 2],
               ["Sibling session, warm call", 1],

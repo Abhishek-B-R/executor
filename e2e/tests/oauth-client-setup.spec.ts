@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,6 +10,7 @@ import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const AppProvider = Schema.Struct({
   ...App.fields,
@@ -42,7 +42,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client setup", (it) => {
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin + "/mcp")}})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
                 },
                 appsManifest,
               ],
@@ -74,13 +74,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         expect((yield* api.request(actors.member, "GET", setupPath(provider))).status).toBe(403);
         const start = (target: typeof AppProvider.Type) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${target.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${target.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${target.id}`, "user", "service"),
+                {},
+              ),
             );
             return yield* api.request(
               actors.owner,

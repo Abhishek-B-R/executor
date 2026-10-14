@@ -24,7 +24,7 @@ use that split only when you supply the required base styles yourself.
 For hosted apps, discover and call `appUi.location` after deployment:
 
 ```js
-return await tools.executor.profiles["<management-profile-id>"].appUi.location({
+return await tools.executor.appUi.location({
   path: { organization: "<approved-organization-id>", app: "<app-id>" },
 });
 ```

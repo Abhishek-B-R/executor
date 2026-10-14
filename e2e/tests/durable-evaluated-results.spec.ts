@@ -21,7 +21,7 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
  * The revision tool is named after a value kept in the app cache, so an invalidation renames it.
  */
 const source = `import { defineApp, query, object, router, string } from "apps";
-export default defineApp({ accounts: {} }, async (ctx) => {
+export default defineApp({}, async (ctx) => {
   const revision = await ctx.cache.get({
     key: "revision",
     schema: string(),
@@ -79,7 +79,7 @@ const tools = Array.from({ length: ${tools} }, (_, index) => ({
   },
   readOnly: true,
 }));
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
@@ -105,7 +105,7 @@ const tools = Array.from({ length: 12000 }, (_, index) => {
     readOnly: true,
   };
 });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
@@ -130,7 +130,7 @@ const tools = Array.from({ length: 1000 }, (_, index) => {
     readOnly: true,
   };
 });
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 

@@ -4,8 +4,8 @@
  * without webhooks, and without security requirements, because v1 sent each connection's
  * credentials on every request whatever the document declared.
  */
-import { Option, Schema } from "effect";
-import { JSON_SCHEMA, load as loadYaml } from "js-yaml";
+import { Option, Result, Schema } from "effect";
+import { JSON_SCHEMA, YAMLException, load as loadYaml } from "js-yaml";
 import { getDomain } from "tldts";
 import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import type { OpenApiConfig, OpenApiOperationRow } from "./formats.ts";
@@ -16,32 +16,97 @@ const isObject = (value: unknown): value is Json =>
 
 const methods = ["get", "put", "post", "delete", "patch", "head", "options", "trace"] as const;
 
+/** A stored specification as an object, or why it is not one, without any of its text. */
+export type ParsedSpec =
+  | { readonly ok: true; readonly document: Json }
+  | { readonly ok: false; readonly reason: string };
+
+const kindOf = (value: unknown) =>
+  value === null ? "null" : Array.isArray(value) ? "a list" : `a ${typeof value}`;
+
 /**
- * Parse the stored text: JSON, or YAML for specs v1 stored as fetched, read with v1's parser
- * (js-yaml, JSON schema). A repeated key keeps its last value, as JSON does.
+ * The parser's reason up to the first quoted name, tag or value it carries, so a failure names the
+ * kind of error and never the specification's text.
  */
-export const parseSpec = (text: string): Json | undefined => {
+const parserReason = (reason: string) => reason.split(/[:"'`!<]/)[0]?.trim() ?? "";
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const lossyUtf8 = new TextDecoder("utf-8");
+
+/** The stored bytes' size and anything unusual about their encoding. */
+const describeBytes = (bytes: Uint8Array, utf8Valid: boolean) => {
+  const notes = [`${bytes.length} bytes`];
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    notes.push("starts with a byte order mark");
+  if (!utf8Valid) notes.push("holds bytes that are not UTF-8");
+  if (bytes.includes(0)) notes.push("holds NUL bytes");
+  return notes.join(", ");
+};
+
+/**
+ * Parse the stored bytes as UTF-8 text (a leading byte order mark dropped, bytes that are not
+ * UTF-8 read as U+FFFD): JSON, or YAML for specs v1 stored as fetched, read with v1's parser
+ * (js-yaml, JSON schema). A repeated key keeps its last value, as JSON does. When neither reads
+ * as an object, the reason names the YAML error and its position, and the stored bytes' size and
+ * encoding.
+ */
+export const parseSpec = (bytes: Uint8Array): ParsedSpec => {
+  const strict = Result.try({ try: () => utf8.decode(bytes), catch: () => "not UTF-8" });
+  const text = Result.isSuccess(strict) ? strict.success : lossyUtf8.decode(bytes);
   const json = Option.getOrUndefined(
     Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))(text),
   );
-  if (isObject(json)) return json;
+  if (isObject(json)) return { ok: true, document: json };
+  const unreadable = (why: string): ParsedSpec => ({
+    ok: false,
+    reason: `v1's stored specification could not be read: ${why} (${describeBytes(bytes, Result.isSuccess(strict))}).`,
+  });
   // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: the YAML parser throws on input it cannot read
   try {
     const yaml = loadYaml(text, { schema: JSON_SCHEMA, json: true });
-    return isObject(yaml) ? yaml : undefined;
-  } catch {
-    return undefined;
+    return isObject(yaml)
+      ? { ok: true, document: yaml }
+      : unreadable(`it is ${kindOf(yaml)}, not an object`);
+  } catch (error) {
+    if (!(error instanceof YAMLException))
+      return unreadable(
+        `reading it as YAML failed with ${error instanceof Error ? error.name : "an unknown error"}`,
+      );
+    const at =
+      error.mark === undefined
+        ? ""
+        : ` at line ${error.mark.line + 1}, column ${error.mark.column + 1}`;
+    return unreadable(`it is not JSON, and as YAML, ${parserReason(error.reason)}${at}`);
   }
 };
 
-const serverUrl = (server: unknown) => {
-  if (!isObject(server) || typeof server.url !== "string") return undefined;
+/**
+ * A server's URL with its variables at their defaults, or the variables nothing defines. A path- or
+ * operation-level server that uses a variable without declaring it takes the declaration of the
+ * same name from the document's first server, whatever that server's URL, as the imported app's
+ * router does.
+ */
+const serverUrl = (
+  server: unknown,
+  documentServer: unknown,
+):
+  | { readonly url: string | undefined }
+  | { readonly unresolved: readonly [string, ...string[]] } => {
+  if (!isObject(server) || typeof server.url !== "string") return { url: undefined };
+  const declared = (from: unknown) =>
+    isObject(from) && isObject(from.variables) ? from.variables : {};
+  const variables = { ...declared(documentServer), ...declared(server) };
   let url = server.url;
-  const variables = isObject(server.variables) ? server.variables : {};
-  for (const [name, variable] of Object.entries(variables))
-    if (isObject(variable) && typeof variable.default === "string")
-      url = url.replaceAll(`{${name}}`, variable.default);
-  return URL.canParse(url) ? url : undefined;
+  for (const [name, variable] of Object.entries(variables)) {
+    const value = isObject(variable) ? variable.default : undefined;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean")
+      url = url.replaceAll(`{${name}}`, String(value));
+  }
+  const [first, ...rest] = [
+    ...new Set([...url.matchAll(/\{([^{}]*)\}/gu)].map((match) => match[1] ?? "")),
+  ];
+  if (first !== undefined) return { unresolved: [first, ...rest] };
+  return { url: URL.canParse(url) ? url : undefined };
 };
 
 /** The first non-empty list of servers with a URL, as v1 chose an operation's servers. */
@@ -55,12 +120,31 @@ const firstServers = (...lists: readonly unknown[]) =>
     .find((list) => list.length > 0) ?? [];
 
 /**
- * Where v1 sent each operation of a document: the configured base URL, else the operation's own
- * first server, else its path's, else the document's, with variables at their defaults. Undefined
- * when an operation has no absolute URL to send to.
+ * Why an operation has no host: v1 prefixed requests with the configured base URL, else the
+ * operation's server, and sent the bare path when neither named a host, which never reached an
+ * API. A finished import is not run again, so the person's agent recreates the integration from
+ * the fix prompt, which carries the item's name and kind. The reason names no URL: the
+ * specification's URL can carry a key in its user, host, port, path or query.
  */
-export const operationBaseUrls = (config: OpenApiConfig, document: Json) => {
-  if (config.baseUrl !== undefined) return [config.baseUrl];
+const noHost = (why: string) =>
+  ({
+    ok: false,
+    reason: `${why} and the integration sets no base URL, so v1 had no host to send its requests to either. Use 'Copy fix prompt' to recreate this integration in v2 with an absolute API base URL.`,
+  }) as const;
+
+/**
+ * Where v1 sent each operation of a document: the configured base URL, else the operation's own
+ * first server, else its path's, else the document's, with variables at their defaults. Refused
+ * when an operation has no absolute URL to send to, or its server uses a variable nothing defines.
+ */
+export const operationBaseUrls = (
+  config: OpenApiConfig,
+  document: Json,
+):
+  | { readonly ok: true; readonly urls: readonly string[] }
+  | { readonly ok: false; readonly reason: string } => {
+  if (config.baseUrl !== undefined) return { ok: true, urls: [config.baseUrl] };
+  const documentServer = Array.isArray(document.servers) ? document.servers[0] : undefined;
   const urls = new Set<string>();
   const paths = isObject(document.paths) ? document.paths : {};
   for (const item of Object.values(paths)) {
@@ -68,12 +152,21 @@ export const operationBaseUrls = (config: OpenApiConfig, document: Json) => {
     for (const method of methods) {
       const operation = item[method];
       if (!isObject(operation)) continue;
-      const url = serverUrl(firstServers(operation.servers, item.servers, document.servers)[0]);
-      if (url === undefined) return undefined;
-      urls.add(url);
+      const server = firstServers(operation.servers, item.servers, document.servers)[0];
+      const resolved = serverUrl(server, documentServer);
+      if ("unresolved" in resolved)
+        return {
+          ok: false,
+          reason: `Its server URL uses ${resolved.unresolved.map((name) => `{${name}}`).join(", ")}, which no server defines.`,
+        };
+      if (server === undefined) return noHost("Its specification names no server URL");
+      if (resolved.url === undefined) return noHost("Its server URL is not absolute");
+      urls.add(resolved.url);
     }
   }
-  return [...urls];
+  return urls.size === 0
+    ? { ok: false, reason: "Its API has no absolute base URL." }
+    : { ok: true, urls: [...urls] };
 };
 
 /**

@@ -1,12 +1,12 @@
 import { WorkflowRunId } from "../contracts/workflows.ts";
 import { AppSlug } from "../contracts/app-slug.ts";
-/** Current application schema. Upgrade history is registered separately. */
+import { AccountScope } from "../contracts/apps.ts";
+/** Table layouts of each schema version. Versions and upgrades are registered in storage-migrations.ts. */
 import { SourceCommit } from "../contracts/source.ts";
 import {
   AccountId,
   WebhookId,
   AppId,
-  ProfileId,
   AppCodeId,
   DeploymentId,
   BuildId,
@@ -19,6 +19,12 @@ import { AccountConnectionId, ApprovalRequestId } from "../contracts/shared.ts";
 import { OAuthClientId, OAuthClientSource } from "../contracts/oauth.ts";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { Effect, Schema } from "effect";
+
+/**
+ * The retired profile identity, `ins_`. Version 4.0.13 converted the SDK rows that named a profile;
+ * the product reads the profile table once to link accounts, and a later version drops it.
+ */
+const ProfileId = Schema.String;
 
 /**
  * Tables of the 4.0.0 and 4.0.1 layouts. Table definitions carry no relations until a schema
@@ -661,8 +667,8 @@ export const storedOAuthClientIssuerIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_stored_oauth_clients_owner_issuer ON executor_stored_oauth_clients (owner, issuer)",
 ] as const;
 
-/** Current ORM layout. Profiles own account selections; apps declare requirements. */
-export const storageSchema = schema({
+/** The 4.0.12 layout: stored OAuth clients keyed by owner and authorization server. */
+export const version4012Schema = schema({
   version: "4.0.12",
   tables: version4012Tables,
   up: ({ auto }) =>
@@ -681,3 +687,169 @@ export const storageSchema = schema({
     }),
   },
 });
+
+/**
+ * Version 4.0.13 replaces profiles. Background rows record the actor whose access each run checks;
+ * webhook sources record the accounts linked to an app for managed webhooks. A schedule already
+ * had an actor: each member has one copy of a declaration and runs it with their linked accounts.
+ * Profile columns and `executor_installations` stay, unread by the SDK, until the product has
+ * converted them and a later version drops them.
+ */
+const actorWorkflowRuns = table("executor_workflow_runs", {
+  ...version4Tables.workflowRuns.columns,
+  /** The subject the run started for; null when the starting operation had no actor. */
+  actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
+});
+const actorWebhooks = table("executor_webhooks", {
+  ...version4Tables.webhooks.columns,
+  /** The subject whose access each callback checks. Always set; nullable only for the upgrade. */
+  actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
+  /**
+   * The actor the provider registration ran as, saved with its accounts before it reaches the
+   * provider. Removing the registration runs as this actor, also after the subscription moves to
+   * another. Null until registering.
+   */
+  registeredActor: column("registered_actor", Schema.NullOr(Schema.String), {
+    type: "varchar(255)",
+  }).default(null),
+  /**
+   * Every account the provider registration ran with, saved before it reaches the provider.
+   * Removing the registration uses them, not the actor's current links. Null until registering.
+   */
+  registeredAccounts: column("registered_accounts", Schema.NullOr(Schema.Json)).default(null),
+});
+const webhookSources = table("executor_webhook_sources", {
+  id: idColumn("id", Schema.String, { type: "varchar(255)" }),
+  app: column("app", AppId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  account: column("account", AccountId, { type: "varchar(255)" }),
+  actor: column("actor", Schema.String, { type: "varchar(255)" }),
+  accounts: column("accounts", Schema.Json),
+  config: column("config", Schema.Json),
+  revision: column("revision", Schema.Int),
+  status: column("status", Schema.String, { type: "varchar(32)" }),
+  failure: column("failure", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
+  reconciledDeployment: column("reconciled_deployment", Schema.NullOr(DeploymentId), {
+    type: "varchar(255)",
+  }),
+  lease: column("lease", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
+  leaseUntil: column("lease_until", Schema.Date),
+  createdAt: column("created_at", Schema.Date),
+}).unique("executor_webhook_sources_app_account", ["app", "account"]);
+
+/**
+ * The app copies 4.0.13 planned: a member whose profiles of one app used different accounts for a
+ * plain requirement keeps the app for one account set and gets a copy for each other. `id` is the
+ * copy's reserved app ID; the profile's schedules wait under it, paused, until data step
+ * `10_profile_app_copies` creates the copy, links the profiles' accounts and resumes `enable`.
+ */
+const profileAppCopies = table("executor_profile_app_copies", {
+  id: idColumn("id", AppId, { type: "varchar(255)" }),
+  /** The app the copy is made from. */
+  app: column("app", AppId, { type: "varchar(255)" }),
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  /** The member whose profiles the copy replaces; only they get its accounts. */
+  subject: column("subject", Schema.String, { type: "varchar(255)" }),
+  /** The profile the copy is named after, in the app's name: "App (Profile)". */
+  label: column("label", Schema.String, { type: "varchar(128)" }),
+  /** The member's profiles with this account set, oldest first. */
+  profiles: column("profiles", Schema.Json),
+  /** The accounts the copy links for the member, from its enabled profiles, oldest first. */
+  accounts: column("accounts", Schema.Json),
+  /** The webhook configuration of the copy's sources, from its named profile. */
+  webhookConfig: column("webhook_config", Schema.Json),
+  /**
+   * Schedule IDs, parked under `id`, that the copy resumes once it exists. The data step drops each
+   * once it is resumed or its resume is refused, so a later pass resumes only the rest.
+   */
+  enable: column("enable", Schema.Json),
+  /** `pending`, then `copied`, or `cancelled` when the app was removed before the copy. */
+  status: column("status", Schema.String, { type: "varchar(32)" }),
+  createdAt: column("created_at", Schema.Date),
+});
+
+/**
+ * Tool search listings are kept per app and account set: `target` is a digest of the accounts the
+ * listing was evaluated with (see `toolSearchTarget`). Listings written before 4.0.13, or by the
+ * previous server during its deploy, name a profile instead and have no target; the SDK neither
+ * searches nor supersedes them as a target's own, and removes them as superseded.
+ */
+const targetedToolSearchListings = table("executor_tool_search_listings", {
+  ...toolSearchListings.columns,
+  target: column("target", Schema.NullOr(Schema.String), { type: "varchar(64)" }).default(null),
+});
+
+/** Tables of the 4.0.13 layout. */
+export const version4013Tables = {
+  ...version4012Tables,
+  workflowRuns: actorWorkflowRuns,
+  webhooks: actorWebhooks,
+  webhookSources,
+  toolSearchListings: targetedToolSearchListings,
+  profileAppCopies,
+};
+
+/** The index tool search finds a target's listings by from 4.0.13, created in that step. */
+export const toolSearchTargetIndex =
+  "CREATE INDEX IF NOT EXISTS executor_tool_search_listings_accounts ON executor_tool_search_listings (app, target)";
+
+/**
+ * Version 4.0.14 adds app accounts. App schedules and app-account webhook sources run without a
+ * caller, so they have no actor: `executor_schedules.actor` and `executor_webhook_sources.actor`
+ * become nullable. A declaration has one app schedule, kept unique by `appScheduleIndex`.
+ * `executor_workflow_runs.scope` records whether a run started with a caller.
+ */
+const appScopeSchedules = table("executor_schedules", {
+  ...version4013Tables.schedules.columns,
+  /** The member whose copy this is; null for an app schedule, which runs without a caller. */
+  actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
+});
+const appScopeWebhookSources = table("executor_webhook_sources", {
+  ...webhookSources.columns,
+  /** The subject who linked the account; null for an app link. */
+  actor: column("actor", Schema.NullOr(Schema.String), { type: "varchar(255)" }).default(null),
+}).unique("executor_webhook_sources_app_account", ["app", "account"]);
+
+/**
+ * A workflow run records the scope it started in, so its steps bind `ctx.user` only when it
+ * started with a caller. Runs saved before 4.0.14 started with one.
+ */
+const scopedWorkflowRuns = table("executor_workflow_runs", {
+  ...actorWorkflowRuns.columns,
+  scope: column("scope", AccountScope, { type: "varchar(16)" }).default("user"),
+});
+
+/** Tables of the 4.0.14 layout. */
+export const version4014Tables = {
+  ...version4013Tables,
+  schedules: appScopeSchedules,
+  webhookSources: appScopeWebhookSources,
+  workflowRuns: scopedWorkflowRuns,
+};
+
+/**
+ * Version 4.0.15 counts a webhook source's failed attempts since its intent last changed or it
+ * last succeeded, so its retries back off instead of repeating its network work every tick.
+ */
+const retriedWebhookSources = table("executor_webhook_sources", {
+  ...appScopeWebhookSources.columns,
+  /** Failed attempts in a row on the source's current intent; zero once it succeeds or changes. */
+  retries: column("retries", Schema.Int).default(0),
+}).unique("executor_webhook_sources_app_account", ["app", "account"]);
+
+/** Tables of the 4.0.15 layout, the current one. */
+export const version4015Tables = {
+  ...version4014Tables,
+  webhookSources: retriedWebhookSources,
+};
+
+/**
+ * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller
+ * and one started with a caller never share a key. It replaces `executor_workflow_runs_context_key`.
+ */
+export const scopedRunKeyIndex =
+  "CREATE UNIQUE INDEX IF NOT EXISTS executor_workflow_runs_scope_key ON executor_workflow_runs (app, COALESCE(actor, ''), COALESCE(installation, ''), scope, start_key)";
+
+/** One app schedule per declaration; members' copies stay unique by `executor_schedules_copy`. */
+export const appScheduleIndex =
+  "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";

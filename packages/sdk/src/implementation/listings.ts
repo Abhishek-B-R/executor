@@ -8,7 +8,6 @@ import {
   type PendingLoad,
   type ToolListingPolicy,
 } from "../contracts/declarations.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
   type Tool,
   ToolListingTimedOut,
@@ -19,7 +18,8 @@ import {
   type ToolListOptions,
   type ToolRouter,
 } from "../contracts/tools.ts";
-import type { DeploymentId, ProfileId } from "../contracts/shared.ts";
+import type { AppAccounts } from "../contracts/apps.ts";
+import type { DeploymentId } from "../contracts/shared.ts";
 import type { Declarations } from "./declarations.ts";
 import { makeHandoff } from "./handoff.ts";
 import { decodeListing, shareListing } from "./listing-json.ts";
@@ -31,8 +31,7 @@ import type { ToolSearch } from "./tool-search.ts";
 export interface ToolListing {
   readonly catalog: {
     readonly deployment: DeploymentId;
-    readonly profile?: ProfileId;
-    readonly profileRevision?: number;
+    readonly accounts: AppAccounts;
   };
   readonly items: ReadonlyArray<Tool>;
   /** Every router in the catalog, on every page. */
@@ -116,7 +115,7 @@ type Outcome = Evaluated | Failed | Unkept | Stopped;
 
 /**
  * Keep each evaluated listing in the shared declaration store under the declaration key, so a
- * new deployment, profile revision, account selection or stored credential is another listing,
+ * new deployment, account set or stored credential is another listing,
  * and serve anything this read did not evaluate itself only after the checks a live evaluation
  * runs before it releases credentials: a kept listing, a remembered failure, and the result of
  * an evaluation another request started.
@@ -139,7 +138,6 @@ export const makeListings = (options: {
   readonly background: BackgroundWork | undefined;
   readonly declarations: Declarations;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
-  readonly lifecycle: ResourceLifecycle | undefined;
   readonly policy?: ToolListingPolicy;
   /** Keeps evaluated listings as search rows. */
   readonly search: ToolSearch;
@@ -162,7 +160,7 @@ export const makeListings = (options: {
       const identity = { app: state.app.id, deployment: state.deployment.id };
       const evaluated = (
         read.resolved === undefined
-          ? resolve(state, options.resolveAccount, options.lifecycle)
+          ? resolve(state, options.resolveAccount)
           : Effect.succeed(read.resolved)
       ).pipe(Effect.flatMap(evaluate));
       const now = yield* Clock.currentTimeMillis;
@@ -513,7 +511,7 @@ export const makeListings = (options: {
         const id = yield* options.declarations.key("tools.list", state);
         const listing = ToolSearchListing.make(id);
         const now = yield* Clock.currentTimeMillis;
-        const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(listing);
+        const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(state, listing);
         const memory = yield* cache.get(id);
         const newer =
           memory?.kind === "value" &&

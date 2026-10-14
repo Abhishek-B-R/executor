@@ -25,6 +25,11 @@ import {
   savedOAuthClientsByIssuerStepName,
   type OAuthClientsByIssuerHost,
 } from "./oauth-clients-by-issuer.ts";
+import {
+  profileAppCopiesStep,
+  profileAppCopiesStepName,
+  type ProfileAppCopiesHost,
+} from "./profile-app-copies.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -35,7 +40,8 @@ export type DataStepHost = FrameworkPinHost &
   ExecutorAppRedeployHost &
   StoredOAuthClientsHost &
   LocalOwnersHost &
-  OAuthClientsByIssuerHost;
+  OAuthClientsByIssuerHost &
+  ProfileAppCopiesHost;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
@@ -71,7 +77,8 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   // Revoke OAuth grants that can never be used again and have been idle for 30 days.
   { name: idleAgentGrantsStepName, step: idleAgentGrantsStep },
   // One-off: redeploy Executor apps built on an apps release before beta.10, whose background
-  // cache refreshes aborted with the invocation, with only their apps pin moved to this host's.
+  // cache refreshes aborted with the invocation, with only their apps pin moved to beta.84, a
+  // protocol 12 release that still builds their source.
   { name: executorAppRedeployStepName, step: executorAppRedeployStep },
   // One-off: move saved OAuth clients into stored clients, under the owner whose accounts used them.
   { name: storedOAuthClientsStepName, step: storedOAuthClientsStep },
@@ -83,6 +90,8 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   { name: oauthClientsByIssuerStepName, step: oauthClientsByIssuerStep },
   // One-off: move the saved clients step 6 left, and collapse the rest, by owner and server.
   { name: savedOAuthClientsByIssuerStepName, step: savedOAuthClientsByIssuerStep },
+  // One-off: make the app copies SDK storage 4.0.13 planned for profiles with other accounts.
+  { name: profileAppCopiesStepName, step: profileAppCopiesStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>

@@ -1,7 +1,9 @@
-import { AccountConnectionId, AccountId, ProfileId } from "@executor-js/sdk";
-import { AppView } from "@executor-js/ui/contracts/dashboard";
+import { AccountConnectionId, AccountId } from "@executor-js/sdk";
+import { GrantId } from "@executor-js/mcp-auth/grants";
+import { AppView, AssistantId } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
+import type { AgentBaseline } from "./mcp-connections.ts";
 
 /** A failed OAuth attempt can reopen its client fields without placing credentials in the URL. */
 export const ConnectionSearch = Schema.Struct({
@@ -47,22 +49,43 @@ export const OrganizationResume = Schema.Struct({
   userId: Schema.NonEmptyString,
 });
 
+/**
+ * Agent setup's URL names the screen the member chose: the assistants, one assistant's guide, or
+ * its first prompt for the agent that connected. Unknown values open the assistants; a first prompt
+ * without an agent opens the guide. The page confirms the agent's grant before calling it connected.
+ */
+export function parseAgentSetupSearch(
+  search: Record<string, unknown>,
+):
+  | { readonly assistant?: AssistantId | undefined; readonly step?: undefined }
+  | { readonly assistant: AssistantId; readonly step: "prompt"; readonly agent: GrantId } {
+  const assistant = Option.getOrUndefined(
+    Schema.decodeUnknownOption(AssistantId)(search.assistant),
+  );
+  const agent = Option.getOrUndefined(Schema.decodeUnknownOption(GrantId)(search.agent));
+  const prompt =
+    assistant !== undefined &&
+    agent !== undefined &&
+    Option.isSome(Schema.decodeUnknownOption(Schema.Literal("prompt"))(search.step));
+  return prompt ? { assistant, step: "prompt", agent } : { assistant };
+}
+
 declare module "@tanstack/history" {
   interface HistoryState {
     organizationResume?: typeof OrganizationResume.Type;
+    /** The baseline a guide's history entry compares new agents with, kept for Back and reload. */
+    agentSetup?: AgentBaseline;
   }
 }
-/** App tabs keep their selection on refresh in both hosted products. */
+/** App tabs keep their view on refresh in both hosted products. */
 export function parseAppSearch(search: Record<string, unknown>): ReturnType<
   typeof parseConnectionSearch
 > & {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
-  readonly profile?: ProfileId | undefined;
 } {
   return {
     ...parseConnectionSearch(search),
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),
   };
@@ -128,14 +151,5 @@ export function parseAccountSearch(search: Record<string, unknown>): {
     organization: Option.getOrUndefined(
       Schema.decodeUnknownOption(Schema.NonEmptyString)(search.organization),
     ),
-  };
-}
-
-/** Account setup targets an explicit personal selection, or starts a new one. */
-export function parseSetupSearch(search: Record<string, unknown>): {
-  profile?: ProfileId | undefined;
-} {
-  return {
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }

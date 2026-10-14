@@ -1,4 +1,7 @@
-/** A schedule whose account must reconnect waits for it, instead of failing every occurrence. */
+/**
+ * A schedule whose account must reconnect, or whose member has no linked account, waits instead of
+ * failing every occurrence.
+ */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -10,8 +13,14 @@ import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import {
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+  connectionsPath,
+} from "../support/app-accounts.ts";
 import { serverControl } from "../support/server-control.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -22,7 +31,6 @@ const AppProvider = Schema.Struct({
   }),
 });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
-const SetupStatus = Schema.Struct({ status: Schema.String });
 const Settings = Schema.Array(
   Schema.Struct({
     name: Schema.String,
@@ -31,6 +39,7 @@ const Settings = Schema.Array(
     activeRun: Schema.NullOr(Schema.String),
     revision: Schema.String,
     reconnectAccount: Schema.optional(Schema.String),
+    accountRequired: Schema.optional(Schema.String),
   }),
 );
 const Runs = Schema.Array(
@@ -66,16 +75,16 @@ layer(HostedLive, { excludeTestServices: true })("OAuth reconnect schedules", (i
             files: [
               {
                 path: "index.ts",
-                content: `import { defineApp, defineProvider, oauth2, mutation, object, interval, router, type MutationContext } from "apps";
+                content: `import { defineApp, defineProvider, oauth2, mutation, object, userInterval, router, type MutationContext } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
-const requirements = { accounts: { service } };
+const requirements = { user: { accounts: { service } } };
 const work = mutation({ input: object({}) }, async (ctx: MutationContext<typeof requirements>) => {
-  const response = await ctx.fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { method: "POST", headers: { authorization: "Bearer " + ctx.accounts.service.fields.access_token } });
+  const response = await ctx.fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { method: "POST", headers: { authorization: "Bearer " + ctx.user.accounts.service.fields.access_token } });
   return await response.json();
 });
 export default defineApp(requirements, async () => ({
   tools: router({ work }),
-  schedules: { work: interval({ minutes: 1 }, work, {}) },
+  schedules: { work: userInterval({ minutes: 1 }, work, {}) },
 }));`,
               },
               appsManifest,
@@ -87,31 +96,15 @@ export default defineApp(requirements, async () => ({
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, path);
-
-          // Before its account is selected, the profile's setup fails on its accounts and waits.
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-            Effect.flatMap((response) => body(SetupStatus, response)),
-            Effect.flatMap((current) =>
-              current.status === "needs-setup"
-                ? Effect.void
-                : Effect.fail(new Error(`Profile setup is ${current.status}`)),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-          );
-          // Setup retries 30 seconds after it failed.
-          yield* serverControl("stop");
-          yield* serverControl("clock/advance", 200, { milliseconds: 31_000 });
-          yield* serverControl("start");
 
           /** Complete the issuer's consent for a connection, creating or reconnecting the account. */
-          const signIn = (connection: string) =>
+          const signIn = (connection: string, label = "Synthetic scheduled account") =>
             Effect.gen(function* () {
               const started = yield* api.request(
                 actors.owner,
                 "POST",
                 `${prefix}/connections/${connection}/oauth/start`,
-                { method: "oauth", label: "Synthetic scheduled account" },
+                { method: "oauth", label },
               );
               expect(started.status, JSON.stringify(started.body)).toBe(200);
               const { authorizationUrl } = yield* body(SignIn, started);
@@ -134,35 +127,40 @@ export default defineApp(requirements, async () => ({
               expect(completed.status, JSON.stringify(completed.body)).toBe(200);
               return yield* body(Resource, completed);
             });
-          const connection = yield* body(
-            Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
-          );
-          const account = yield* signIn(connection.id);
-          yield* Effect.addFinalizer(() =>
-            api
-              .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
-              .pipe(Effect.orDie),
-          );
-          yield* api.request(actors.owner, "GET", `${path}/profiles/${profile.id}`).pipe(
-            Effect.flatMap((response) => body(SetupStatus, response)),
-            Effect.flatMap((current) =>
-              current.status === "ready"
-                ? Effect.void
-                : Effect.fail(new Error(`Profile setup is ${current.status}`)),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
-          );
+          /** Connect an account from the app, which links it to the app. */
+          const connect = (label?: string) =>
+            Effect.gen(function* () {
+              const connection = yield* body(
+                Resource,
+                yield* api.request(
+                  actors.owner,
+                  "POST",
+                  connectionsPath(path, "user", "service"),
+                  {},
+                ),
+              );
+              const account = yield* signIn(connection.id, label);
+              yield* Effect.addFinalizer(() =>
+                api
+                  .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
+                  .pipe(Effect.orDie),
+              );
+              // Linking the account sets it up as the app's webhook source in the background, which
+              // resolves, and so may renew, the account. Let it finish so each renewal below belongs to
+              // the call or run the scenario makes.
+              yield* settleWebhookSources(actors.owner, path, (sources) =>
+                sources.some(
+                  (source) => source.account === account.id && source.status !== "pending",
+                ),
+              );
+              return account;
+            });
+          const account = yield* connect();
 
-          const settings = api
-            .request(actors.owner, "GET", `${path}/schedules?profile=${profile.id}`)
-            .pipe(
-              Effect.flatMap((response) => body(Settings, response)),
-              Effect.map((rows) => rows.find((row) => row.name === "work")),
-            );
+          const settings = api.request(actors.owner, "GET", `${path}/schedules`).pipe(
+            Effect.flatMap((response) => body(Settings, response)),
+            Effect.map((rows) => rows.find((row) => row.name === "work")),
+          );
           const runs = api
             .request(actors.owner, "GET", `${prefix}/scheduled-runs?app=${app.id}`)
             .pipe(Effect.flatMap((response) => body(Runs, response)));
@@ -184,24 +182,57 @@ export default defineApp(requirements, async () => ({
           });
 
           const enabled = yield* api.request(actors.owner, "PATCH", `${path}/schedules/work`, {
-            profile: profile.id,
             enabled: true,
           });
           expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
-          const started = yield* api.request(
-            actors.owner,
-            "POST",
-            `${path}/schedules/work/run?profile=${profile.id}`,
-          );
+          const started = yield* api.request(actors.owner, "POST", `${path}/schedules/work/run`);
           expect(started.status, JSON.stringify(started.body)).toBe(200);
           yield* runWith("succeeded", 1);
+
+          // Connecting a second account from the app replaces the first there, which stays saved.
+          // The schedule saved no account, so it now runs with the second.
+          const other = yield* connect("Synthetic second scheduled account");
+          expect(yield* linkedAccountIds(actors.owner, path)).toEqual([other.id]);
+          expect(
+            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${account.id}`)).status,
+          ).toBe(200);
+          expect((yield* settings)?.accountRequired).toBeUndefined();
+          // Unlinking it leaves the owner no account for the requirement. The schedule stays
+          // enabled and due occurrences are skipped.
+          yield* unlinkAccount(actors.owner, path, "service", other.id);
+          const unlinked = yield* settings;
+          if (unlinked?.nextAt == null) return yield* Effect.die("The schedule has no next run");
+          expect(unlinked).toMatchObject({ enabled: true, accountRequired: "service" });
+          const unlinkedPosts = (yield* issuer.metrics).resourceRequests.POST;
+          yield* nextOccurrence;
+          yield* settings.pipe(
+            Effect.flatMap((current) =>
+              current !== undefined &&
+              current.activeRun === null &&
+              current.nextAt !== null &&
+              current.nextAt !== unlinked.nextAt
+                ? Effect.succeed(current)
+                : Effect.fail(new Error(`The occurrence has not been handled`)),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }),
+          );
+          expect(
+            (yield* runs).map((row) => row.status),
+            "An occurrence without a linked account records no run",
+          ).toEqual(["succeeded"]);
+          expect((yield* issuer.metrics).resourceRequests.POST).toBe(unlinkedPosts);
+          // Linking the first account again resolves the wait.
+          yield* linkAccount(actors.owner, path, "service", account.id);
+          expect((yield* settings)?.accountRequired).toBeUndefined();
+          expect(
+            (yield* api.request(actors.owner, "GET", `${prefix}/accounts/${other.id}`)).status,
+          ).toBe(200);
 
           // The service ends the grant; the next use of the account marks it for reconnecting.
           yield* issuer.configure({
             tokenError: { status: 400, body: { error: "invalid_grant" } },
           });
           const ended = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "work",
             kind: "mutation",
             input: {},
@@ -245,7 +276,7 @@ export default defineApp(requirements, async () => ({
           const definitions = yield* api.request(
             actors.owner,
             "GET",
-            `${path}/schedules/definitions?profile=${profile.id}`,
+            `${path}/schedules/definitions`,
           );
           expect(definitions.status, JSON.stringify(definitions.body)).toBe(409);
           expect((yield* body(Failure, definitions))._tag).toBe("OAuthReconnectRequired");
@@ -266,9 +297,7 @@ export default defineApp(requirements, async () => ({
           // Reconnecting the same account resumes the schedule without re-enabling it.
           const reconnect = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${path}/connections`, {
-              requirement: "service",
-              profile: profile.id,
+            yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
               account: account.id,
             }),
           );

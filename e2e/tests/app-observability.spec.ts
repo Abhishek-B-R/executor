@@ -36,7 +36,7 @@ export const hostCache = query({ input: object({ key: string() }), output: strin
     return (await cache.match(key)) === undefined ? "isolated" : "visible";
   } catch { return "unavailable"; }
 });
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
    list, hostCache,
    add,
  }) });`,

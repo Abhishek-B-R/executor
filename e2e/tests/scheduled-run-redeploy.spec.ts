@@ -19,16 +19,16 @@ class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
 const files = (label: string) => [
   {
     path: "index.ts",
-    content: `import { defineApp, query, mutation, interval, object, router } from "apps";
+    content: `import { defineApp, query, mutation, userInterval, object, router } from "apps";
 const record = mutation({ input: object({}) }, async (ctx) => {
   ctx.sql.exec("INSERT INTO runs (label, created_at) VALUES (?, ?)", ${JSON.stringify(label)}, Date.now());
   return { label: ${JSON.stringify(label)} };
 });
 const labels = query({ input: object({}) }, async (ctx) =>
   ctx.sql.exec("SELECT label FROM runs ORDER BY rowid").toArray().map((run) => run.label));
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({ record, labels }),
-  schedules: { record: interval({ hours: 24 }, record, {}) },
+  schedules: { record: userInterval({ hours: 24 }, record, {}) },
 }));`,
   },
   {

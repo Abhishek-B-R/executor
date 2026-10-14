@@ -9,7 +9,6 @@ import { Api, body } from "../support/api.ts";
 import { App } from "../support/contracts.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
-import { createProfile } from "../support/profiles.ts";
 
 const Bundle = Schema.Struct({
   revision: Schema.String,
@@ -36,7 +35,7 @@ layer(HostedLive, { excludeTestServices: true })("Cached skills", (it) => {
               path: "index.ts",
               content: `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { githubSkills, wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: async () => [
     ...await wellKnownSkills({ url: ${JSON.stringify(upstream.url)}, cache: ctx.cache, freshFor: "1 hour", fetch: ctx.fetch, signal: ctx.signal }),
@@ -115,7 +114,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
               path: "index.ts",
               content: `import { defineApp, query, object, router } from "apps";
 import { wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({
     reference: query({ input: object({}) }, async () => {
       const skills = await wellKnownSkills({ url: ${JSON.stringify(upstream.url)}, cache: ctx.cache, freshFor: "1 second", fetch: ctx.fetch, signal: ctx.signal });
@@ -183,7 +182,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
               path: "index.ts",
               content: `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(upstream.url)}, cache: ctx.cache, freshFor: "1 second", fetch: ctx.fetch, signal: ctx.signal }) }),
 }));`,
@@ -269,7 +268,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
               path: "index.ts",
               content: `import { defineApp, query, object, router } from "apps";
 import { githubSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ probe: query({ input: object({}) }, async () => {
     const loads = [];
     let aborted = false;
@@ -310,9 +309,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, path);
         const call = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
-          profile: profile.id,
           tool: "probe",
           kind: "query",
           input: {},

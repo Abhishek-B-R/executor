@@ -49,6 +49,9 @@ import {
   networkRefusalStatus,
   type HostAccount,
   type HostAccounts,
+  type HostAccountSlots,
+  type ResolvedAccountSlots,
+  scopedSlots,
   renderPlacement,
   type ResolvedAccount,
   type ResolvedAccounts,
@@ -240,11 +243,11 @@ const sealAccount = (
     return { ...account, fields: Object.fromEntries(fields) as ResolvedAccount["fields"] };
   });
 
-type Selected = HostAccounts[string];
+type Selected = HostAccountSlots[string];
 const isMany = (value: Selected): value is Extract<Selected, ReadonlyArray<unknown>> =>
   Array.isArray(value);
 const accountsOf = (accounts: HostAccounts) =>
-  Object.values(accounts).flatMap((selected) => (isMany(selected) ? selected : [selected]));
+  scopedSlots(accounts).flatMap(([, selected]) => (isMany(selected) ? selected : [selected]));
 
 /**
  * The accounts as they are, for a bundle that reads every field as a real value. Undefined when
@@ -273,14 +276,16 @@ export const sealAccounts = (
       key: yield* context.key,
       expires: (yield* Clock.currentTimeMillis) + handleLifetime,
     };
-    const sealSlot = (selected: Selected): Effect.Effect<ResolvedAccounts[string]> =>
+    const sealSlot = (selected: Selected): Effect.Effect<ResolvedAccountSlots[string]> =>
       isMany(selected)
         ? Effect.forEach(selected, (account) => sealAccount(account, bound))
         : sealAccount(selected, bound);
-    const slots = yield* Effect.forEach(Object.entries(accounts), ([slot, selected]) =>
-      sealSlot(selected).pipe(Effect.map((sealed) => [slot, sealed] as const)),
-    );
-    return Object.fromEntries(slots);
+    const sealScope = (slots: HostAccountSlots) =>
+      Effect.forEach(Object.entries(slots), ([slot, selected]) =>
+        sealSlot(selected).pipe(Effect.map((sealed) => [slot, sealed] as const)),
+      ).pipe(Effect.map(Object.fromEntries<ResolvedAccountSlots[string]>));
+    const app = yield* sealScope(accounts.app);
+    return accounts.user === undefined ? { app } : { app, user: yield* sealScope(accounts.user) };
   });
 
 /**

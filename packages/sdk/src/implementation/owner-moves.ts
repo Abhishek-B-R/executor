@@ -82,6 +82,7 @@ const ownerTables = [
   "scheduledRuns",
   "workflowRuns",
   "webhooks",
+  "webhookSources",
   "eventSubscriptions",
   "accountConnections",
   "toolApprovals",
@@ -130,6 +131,7 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
       query(() => db.findMany("scheduledRuns", { select: ["owner"] })),
       query(() => db.findMany("workflowRuns", { select: ["owner"] })),
       query(() => db.findMany("webhooks", { select: ["owner"] })),
+      query(() => db.findMany("webhookSources", { select: ["owner"] })),
       query(() => db.findMany("eventSubscriptions", { select: ["owner"] })),
       query(() => db.findMany("accountConnections", { select: ["owner"] })),
       query(() => db.findMany("toolApprovals", { select: ["owner"] })),
@@ -380,13 +382,21 @@ export const makeOwnerMoves = (db: Query, credentials: Credentials): OwnerMoves 
           const invocation = record["invocation"];
           if (!isObject(invocation) || !isObject(invocation["accounts"])) continue;
           let changed = moved(invocation) !== undefined;
+          // The accounts are by scope (`app`, `user`), each requirement name -> identities.
           const accounts = Object.fromEntries(
-            Object.entries(invocation["accounts"]).map(([slot, selected]) => {
-              const each = Array.isArray(selected) ? selected : [selected];
-              const next = each.map((account) => moved(account) ?? account);
-              if (next.some((account, index) => account !== each[index])) changed = true;
-              return [slot, Array.isArray(selected) ? next : (next[0] ?? selected)];
-            }),
+            Object.entries(invocation["accounts"]).map(([scope, slots]) => [
+              scope,
+              isObject(slots)
+                ? Object.fromEntries(
+                    Object.entries(slots).map(([slot, selected]) => {
+                      const each = Array.isArray(selected) ? selected : [selected];
+                      const next = each.map((account) => moved(account) ?? account);
+                      if (next.some((account, index) => account !== each[index])) changed = true;
+                      return [slot, Array.isArray(selected) ? next : (next[0] ?? selected)];
+                    }),
+                  )
+                : slots,
+            ]),
           );
           if (changed)
             approvals.push({

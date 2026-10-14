@@ -6,9 +6,9 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
+import { connectLocalAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { connectLocalAccount, createProfile } from "../support/profiles.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -19,9 +19,9 @@ const source = (
 const service=defineProvider({name:"Declaration clock",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const ping=query({input:object({})},async()=>"pong");
 const noop=workflow({input:object({})},async()=>null);
-export default defineApp({accounts:{service}}, async ctx => ({
+export default defineApp({user: { accounts:{service} }}, async ctx => ({
   tools: router({ ping }),
-  workflows:{["${version}_"+ctx.accounts.service.fields.token+"_"+Date.now()]:noop},
+  workflows:{["${version}_"+ctx.user.accounts.service.fields.token+"_"+Date.now()]:noop},
 }));`;
 const Deployment = Schema.Struct({
   app: Schema.Struct({
@@ -72,11 +72,10 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const { app } = yield* body(Deployment, deployed);
           resources.apps.push(app.id);
           const path = `/v1/apps/${app.id}`;
-          const profile = yield* createProfile(agent, path, { owner, subject: "local" });
+          // Connect an account for the app, or replace the given account's key.
           const connect = (token: string, account?: string) =>
             connectLocalAccount(agent, {
               app: app.id,
-              profile: profile.id,
               requirement: "service",
               method: "key",
               label: "Declaration clock",
@@ -86,11 +85,8 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           const account = (yield* connect("alpha")).id;
           resources.accounts.push(account);
           const read = Effect.gen(function* () {
-            const response = yield* api.request(
-              agent,
-              "GET",
-              `${path}/workflows?profile=${profile.id}`,
-            );
+            // The read uses the account linked to the app; agents do not choose one.
+            const response = yield* api.request(agent, "GET", `${path}/workflows`);
             expect(response.status, JSON.stringify(response.body)).toBe(200);
             const names = (yield* body(Workflows, response)).map((workflow) => workflow.name);
             expect(names).toHaveLength(1);

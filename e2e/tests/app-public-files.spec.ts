@@ -92,7 +92,7 @@ document.body.dataset.version = ${JSON.stringify(version)};
   ...chunks,
 ];
 
-const indexSource = `import { defineApp, router } from "apps";\nexport default defineApp({ accounts: {} }, { tools: router({}) });\n`;
+const indexSource = `import { defineApp, router } from "apps";\nexport default defineApp({}, { tools: router({}) });\n`;
 const page = `<!doctype html><html><head><title>Public files</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <script type="module" src="/assets/main.js"></script></head>

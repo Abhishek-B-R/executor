@@ -309,7 +309,7 @@ const slowTool = (
   body: string,
 ) => `import { defineApp, query, object, string, router } from "apps";
 const slow = ${JSON.stringify(`${upstream}/slow`)};
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   slow: query({ input: object({}), output: string() }, ${body}),
 }) });`;
 
@@ -402,7 +402,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool-call overhead", (it) => {
         const { deploy, execute, traced } = yield* fixture;
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 const pause = () => new Promise((resolve) => setTimeout(resolve, ${authoredStepMs}));
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   await pause();
   return { tools: router({
     paced: query({ input: object({}), output: string(), approval: async () => { await pause(); return "approved" as const; } },
@@ -430,7 +430,7 @@ export default defineApp({ accounts: {} }, async () => {
         // The app asks through its Promise API.
         const asking =
           yield* deploy(`import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   ask: query({ input: object({}), output: string() }, async ({ elicit }) =>
     (await elicit({ mode: "form", message: "Continue?", requestedSchema: { type: "object", properties: {} } })).action),
 }) });`);
@@ -447,7 +447,7 @@ export default defineApp({ accounts: {} }, { tools: router({
         const relaying = yield* deploy(
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)} }) }));`,
           { "@modelcontextprotocol/sdk": mcpSdkVersion },
         );
         yield* execute(
@@ -485,7 +485,7 @@ Object.defineProperty(performance, "now", { configurable: true, value: () => pre
 const hrtime = (globalThis as { process?: { hrtime?: { bigint?: () => bigint } } }).process?.hrtime;
 const exact = hrtime?.bigint?.bind(hrtime);
 if (hrtime !== undefined && exact !== undefined) hrtime.bigint = () => exact() + BigInt(skewMs) * 1000000n;
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   ahead: query({ input: object({}), output: string() }, async ({ sql }) => {
     skewMs += 10000;
     return ${database ? '`ahead of ${String(sql.exec("SELECT count(*) AS notes FROM notes").one()["notes"])} notes`' : '"ahead"'};
@@ -548,7 +548,7 @@ export default defineApp({ accounts: {} }, { tools: router({
         // connection open. `quick` answers only once `stall` runs, so the program cannot finish
         // and cancel `stall` before its app call starts, however long the host takes to start it.
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   stall: query({ input: object({}), output: string() }, async ({ fetch, signal }) => {
     await (await fetch(${JSON.stringify(`${upstream}/arrived`)})).text();
     return new Promise<string>((resolve) => {
@@ -591,7 +591,7 @@ return await Promise.race([tools[slug].stall({}), tools[slug].quick({})])`,
         const app =
           yield* deploy(`import { defineApp, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   approved: mutation({ input: object({}), output: string(), approval: always() }, async ({ fetch }) =>
     (await fetch(${JSON.stringify(`${upstream}/slow`)})).text()),
 }) });`);
@@ -625,7 +625,7 @@ export default defineApp({ accounts: {} }, { tools: router({
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 ${slowDigest(`(bytes: Uint8Array) => new TextDecoder().decode(bytes).includes('"current"')`)}
-export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache }) }));`,
+export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache }) }));`,
           { "@modelcontextprotocol/sdk": mcpSdkVersion },
         );
         yield* execute(
@@ -669,7 +669,7 @@ export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await 
         const app = yield* deploy(
           `import { defineApp, object, query, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ cache }) => {
+export default defineApp({}, async ({ cache }) => {
   const options = { url: ${JSON.stringify(server)}, cache };
   return { tools: router({
     upstream: await mcpRouter(options),
@@ -801,7 +801,7 @@ try { await ${tools}.upstream.answer({}); return "called"; } catch { return "mis
         // so nothing reaches the new app's supervisor before the cold invocation's wake. The
         // tool then reads the app's cache.
         const app = yield* deploy(`import { defineApp, object, query, router, string } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     probe: query({ input: object({}) }, async ({ cache }) => (await cache.read("probe", string())) ?? "missing"),
   }),
@@ -894,7 +894,7 @@ export default defineApp({ accounts: {} }, {
         const upstream = yield* mcpOutcomeFixture;
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 const slow = ${JSON.stringify(`${upstream}/slow`)};
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   cached: query({ input: object({}), output: string() }, async ({ cache }) =>
     cache.get({ key: "upstream", schema: string(), freshFor: "1 minute", load: async ({ fetch }) => {
       const text = await (await fetch(slow)).text();
@@ -946,7 +946,7 @@ const read = (cache: { get: Function }) => cache.get({ key: "current", schema: s
     await cache.write([{ key: "refreshed", value: "yes" }], "1 hour");
     return "kept";
   } });
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   seed: query({ input: object({}), output: string() }, async ({ cache }) => read(cache)),
   stale: query({ input: object({}), output: string() }, async ({ cache, fetch }) =>
     \`\${await read(cache)} \${await (await fetch(slow)).text()}\`),
@@ -1001,7 +1001,7 @@ export default defineApp({ accounts: {} }, { tools: router({
         const upstream = yield* mcpOutcomeFixture;
         const app = yield* deploy(`import { defineApp, query, object, string, router } from "apps";
 const slow = ${JSON.stringify(`${upstream}/slow`)};
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   shared: query({ input: object({}), output: string() }, async ({ cache }) =>
     cache.get({ key: "shared", schema: string(), freshFor: "1 hour", load: async ({ fetch }) => (await fetch(slow)).text() })),
 }) });`);
@@ -1051,7 +1051,7 @@ export default defineApp({ accounts: {} }, { tools: router({
         const app = yield* deploy(
           `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache: {
+export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache: {
   ...cache,
   read: async (key, schema) => {
     await new Promise((resolve) => setTimeout(resolve, ${authoredReadMs}));
@@ -1102,7 +1102,7 @@ class AppCache {
   invalidate(key) { return this.inner.invalidate(key); }
   forAccount(account) { return new AppCache(this.inner.forAccount(account)); }
 }
-export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache: new AppCache(cache), revalidate: true }) }));`,
+export default defineApp({}, async ({ cache }) => ({ tools: await mcpRouter({ url: ${JSON.stringify(server)}, cache: new AppCache(cache), revalidate: true }) }));`,
           { "@modelcontextprotocol/sdk": mcpSdkVersion },
         );
         const result = yield* execute(
@@ -1124,7 +1124,7 @@ export default defineApp({ accounts: {} }, async ({ cache }) => ({ tools: await 
         const { deploy, execute, traced } = yield* fixture;
         const app = yield* deploy(
           `import { defineApp, mutation, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   note: mutation({ input: object({}), output: string() }, async ({ sql }) => {
     sql.exec("INSERT INTO notes (body) VALUES (?)", "note");
     return \`\${String(sql.exec("SELECT count(*) AS notes FROM notes").one()["notes"])} notes\`;
@@ -1207,7 +1207,7 @@ NativeRequest.prototype.json = function (this: Request) {
   const body = bodies.get(this);
   return body === undefined ? json.call(this) : Promise.resolve(JSON.parse(body));
 };
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   busy: query({ input: object({}), output: string() }, async ({ fetch }) => {
     const answer = fetch(slow);
     let spun = 0;
@@ -1243,7 +1243,7 @@ Response.prototype.json = async function () {
   }
   return json.call(this);
 };
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   framed: query({ input: object({}), output: string() }, async () => { armed = true; return "done"; }),
 }) });`);
         yield* execute(

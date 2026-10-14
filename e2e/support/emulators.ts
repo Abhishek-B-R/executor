@@ -284,7 +284,7 @@ export const emulatorRequest = (
   payload?: unknown,
   token?: string,
   /** Defaults to GET without a payload and POST with one. */
-  verb?: "PUT",
+  verb?: "PUT" | "DELETE",
 ) => {
   const method = verb ?? (payload === undefined ? "GET" : "POST");
   const operation = `${method} ${path}`;
@@ -601,6 +601,59 @@ const make = Effect.gen(function* () {
           ],
         },
         value.services.billing.token,
+      ).pipe(Effect.asVoid),
+    /**
+     * Answer the next `times` reads of one Autumn route with `status`, after `delayMs`: v1's plan
+     * reads (`customers.get`) or billing's plan catalog (`plans.list`). Faults match every caller
+     * of the route on this Cloud's Autumn emulator, so only scenarios that run in order on their
+     * own local Cloud arm them. Returns the fault's id.
+     */
+    failAutumnReads: (
+      route: "customers.get" | "plans.list",
+      fault: { status: number; times: number; delayMs?: number },
+    ) =>
+      request(
+        value.services.billing.baseUrl,
+        "/_emulate/faults",
+        {
+          match: { method: "POST", pathPattern: `/v1/${route}` },
+          response: { status: fault.status, body: { code: "synthetic_outage" } },
+          times: fault.times,
+          ...(fault.delayMs === undefined ? {} : { delayMs: fault.delayMs }),
+        },
+        value.services.billing.token,
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({ fault: Schema.Struct({ id: Schema.String }) }),
+          ),
+        ),
+        Effect.map((armed) => armed.fault.id),
+      ),
+    /** How many reads each armed Autumn fault still answers, by id; spent faults are absent. */
+    autumnFaults: request(
+      value.services.billing.baseUrl,
+      "/_emulate/faults",
+      undefined,
+      value.services.billing.token,
+    ).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            faults: Schema.Array(Schema.Struct({ id: Schema.String, remaining: Schema.Number })),
+          }),
+        ),
+      ),
+      Effect.map(({ faults }) => new Map(faults.map((fault) => [fault.id, fault.remaining]))),
+    ),
+    /** Disarm an Autumn fault, spent or not. */
+    clearAutumnFault: (id: string) =>
+      request(
+        value.services.billing.baseUrl,
+        `/_emulate/faults/${encodeURIComponent(id)}`,
+        undefined,
+        value.services.billing.token,
+        "DELETE",
       ).pipe(Effect.asVoid),
     /**
      * Fail the next membership read once. Only accounts seeded with `v1Member` reach that read,

@@ -12,10 +12,12 @@ MCP server, use [`mcpHealth`](#check-an-mcp-account). Look up exact helper optio
 | Interface                   | Helper                                                    |
 | --------------------------- | --------------------------------------------------------- |
 | Remote MCP server           | `mcpRouter` from `apps/mcp`                               |
-| Local MCP process           | `stdioRouter` from `apps/mcp/stdio`                       |
 | OpenAPI or Swagger document | `liveOpenapiRouter` from `apps/openapi`                   |
 | GraphQL endpoint            | `graphqlRouter` from `apps/graphql`                       |
 | Anything else               | Queries and mutations with `fetch` ([tools.md](tools.md)) |
+
+Reach MCP servers over HTTP with `mcpRouter`. Apps cannot start local processes,
+so a stdio-only server needs an HTTP endpoint first.
 
 ## OAuth apps the user registers
 
@@ -57,7 +59,7 @@ import { always } from "apps/operations/approval";
 withApprovals(liveOpenapiRouter(options), (tool) =>
   tool.kind === "mutation" ? always() : undefined,
 );
-// MCP, HTTP or stdio
+// MCP
 withApprovals(await mcpRouter(options), (tool) =>
   toolAnnotations(tool)?.destructiveHint === true ? always() : undefined,
 );
@@ -87,7 +89,7 @@ generates this for public and OAuth servers. A public server needs no account:
 import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: await mcpRouter({
     url: "https://mcp.deepwiki.com/mcp",
     ...(signal === undefined ? {} : { signal }),
@@ -95,13 +97,22 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-Authenticated apps declare `service: provider.many()` and combine discovery
-with `tools: await accountRouter(accounts.service, account => mcpRouter({ ... }), { signal })`
+Authenticated apps declare `user: { accounts: { service: provider.many() } }`,
+so each member links their own accounts, and combine discovery with
+`tools: await accountRouter(ctx.user?.accounts.service ?? [], account => mcpRouter({ ... }), { signal })`
 from `apps`. Each tool takes `{ accountId, input }`: the chosen account ID and the
 original upstream input. Same-name tools keep one name with an input schema for
-each account. Empty selections expose no tools. The callback may return the
-router or a Promise of it, and may return a `router` of your own queries and
-mutations; `defineApp` checks their handler contexts as for any router.
+each account. No linked accounts expose no tools; the factory also runs without a
+caller for the app's background work, where `ctx.user` is undefined. The callback
+may return the router or a Promise of it, and may return a `router` of your own
+queries and mutations; `defineApp` checks their handler contexts as for any
+router.
+
+For one service account the whole team shares, declare it as the app's own,
+`app: { accounts: { service: provider } }`, and pass `ctx.app.accounts.service`
+to `mcpRouter` directly. Someone who can edit the app links the account for
+everyone; every caller uses it, and tools take the server's own input. Quick add generates the per-member
+form.
 
 Pass that callback's `account` with headers derived from it. Headers are only
 accepted together with the account they belong to.
@@ -116,8 +127,8 @@ a key sent as `Authorization: "Bearer " + ...`; confirm the header in the
 service's documentation. A 403 web page means a firewall refused Executor's
 check, not that a key is needed. A public server that also offers OAuth is
 added without an account; its `provider.ts` keeps the discovered OAuth.
-The factory runs with each configured app's selected account, so different
-accounts can expose different catalogs. Do not keep a global authenticated catalog.
+The factory runs with the caller's linked accounts, so different accounts can
+expose different catalogs. Do not keep a global authenticated catalog.
 
 ### Check an MCP account
 
@@ -184,13 +195,14 @@ Show approval terms from request metadata to the user. Return a persistence choi
 only when the user explicitly selects it; accepting once must not add a saved grant.
 Input waits pause the active upstream timeout; the server can impose its own deadline.
 Discovery cannot prompt. Remote prompts/resources, sampling and URL-mode elicitation
-are not exposed. Stdio uses the separate helper below.
+are not exposed.
 
 The helper returns a router. Its title, description and icons come from the
 server's `serverInfo`, and its `instructions` become a skill agents can read. To
 keep several servers in one app, mount each under a key; tools become
 `<key>.<tool>` and a server that cannot be reached is reported without hiding the
-others:
+others. Here `accounts` is `ctx.app.accounts` of an app with a plain app
+requirement for each server:
 
 ```ts
 const bearer = (account) => ({ Authorization: "Bearer " + account.fields.access_token });
@@ -216,34 +228,12 @@ tools: router({
 }),
 ```
 
-## Local stdio MCP tools
-
-Import `stdioRouter` from `apps/mcp/stdio` and declare
-`@modelcontextprotocol/sdk` in the app's dependencies. The HTTP helper never
-imports this process adapter. Pass the command, literal arguments, and an
-optional working directory. Declare each secret environment variable as a
-`secrets` field; pass the chosen `account.fields` as the child's environment
-with `provider.many()` and `accountRouter`, as above. Do not embed tokens
-in source, command arguments, or working-directory paths. Servers with no
-environment fields need no account. Use `framework.describe` for the exact
-`stdioRouter` options.
-
-The helper discovers tools with the selected account and starts a
-fresh initialized process for each discovery and call. It validates schemas,
-retains MCP result semantics, forwards cancellation, and closes the process
-on completion, error, or timeout. Arguments are literal; there is no shell.
-Unlike `mcpRouter`, it does not read the server's `serverInfo` or
-`instructions`; describe it with `router(await stdioRouter(...), { title, instructions })`.
-The process receives the MCP SDK's basic inherited environment plus the
-selected fields, not the host's full environment. Stderr is ignored. Edit the
-source for server-specific behavior; this helper does not retain sessions
-across calls. Process spawning requires a host that provides it, such as the
-local Node runtime.
-
 ## OpenAPI APIs
 
 Call `liveOpenapiRouter` from `apps/openapi` with `ctx.cache`, `ctx.fetch`,
-the signal and the selected account. It returns the router at once, then
+the signal and an account: each of a `provider.many()` user requirement's
+accounts through `accountRouter`, as for MCP, or a plain app requirement's
+`ctx.app.accounts.service` for one shared account. It returns the router at once, then
 downloads and compiles the definition inside the app when its tools are listed
 or called, caching each revision; no extra dependency is needed. Pass the
 settings the definition cannot be trusted to decide:
@@ -387,17 +377,17 @@ out, a generated tool is modelled or gated wrongly, or the definition itself is
 wrong (such as `security: []` on calls that need a key), write a query or
 mutation for it in the same app ([tools.md](tools.md)). Return it from its own
 `accountRouter` callback, so it calls the API with the account the generated
-tools use:
+tools use (`accounts` is `ctx.user?.accounts.service ?? []` here):
 
 ```ts
 tools: router({
   api: await accountRouter(
-    accounts.service,
+    accounts,
     (account) => liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
     { signal },
   ),
   custom: await accountRouter(
-    accounts.service,
+    accounts,
     (account) =>
       router({
         uploadFile: mutation(
@@ -510,11 +500,11 @@ in the same way, so the account form reports refused credentials.
 
 ## GraphQL APIs
 
-Use `graphqlRouter` from `apps/graphql` with the endpoint, the selected
-account and its headers, and optional cancellation signal. Declare `graphql`
-(currently `16.11.0`) in the app's dependencies. Authenticated apps use
-`provider.many()` and `accountRouter` as above; public endpoints need no
-account selection.
+Use `graphqlRouter` from `apps/graphql` with the endpoint, an account and its
+headers, and optional cancellation signal. Declare `graphql` (currently
+`16.11.0`) in the app's dependencies. Authenticated apps use a `provider.many()`
+user requirement and `accountRouter` as above, or a plain app requirement for
+one shared account; public endpoints need no account.
 
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and

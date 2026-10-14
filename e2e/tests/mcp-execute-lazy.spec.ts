@@ -22,7 +22,7 @@ const toolsPerApp = 120;
 const catalogAppSource = (
   index: number,
 ) => `import { defineApp, query, jsonSchema, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   const tools = {};
   for (let t = 0; t < ${toolsPerApp}; t++)
     tools["op" + t] = query(
@@ -38,20 +38,20 @@ export default defineApp({ accounts: {} }, async () => {
 const echoAppSource = (
   name: string,
 ) => `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text from the ${name} fixture" },
     async (_ctx, { text }) => ({ app: ${JSON.stringify(name)}, text })),
 }) }));`;
 
 // Discovery of this app always fails, so `unavailableApps` shows whether an execution touched it.
 const brokenAppSource = `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new Error("Synthetic evaluation failure");
 });`;
 
 // This app's listing never finishes within a scenario, so a program that reaches it waits on it.
 const stalledAppSource = `import { defineApp, query, object, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   await new Promise((resolve) => setTimeout(resolve, 120_000));
   return { tools: router({ echo: query({ input: object({}), description: "Never listed" }, async () => "late") }) };
 });`;

@@ -1,15 +1,19 @@
 /**
  * An MCP tool call sends its checks and the reads they and the call need together, in one batch,
  * once its per-call recheck of the bearer token can run: the recheck first, then the access
- * check and the call's reads of the app, profile and accounts, with the profile recheck, in one
- * snapshot taken after the token recheck. Each batch is one database round trip from Cloud's
- * session object.
+ * check with the caller's links and the call's reads of the app and accounts, with the caller's
+ * app recheck, in one snapshot taken after the token recheck. Calls never choose accounts: a call
+ * runs with the accounts the caller's links give it when its access check reads them. The accounts
+ * read ahead are those the session's last call ran with; a call whose links give it accounts the
+ * session has not called with reads them in a second round. Each batch is one database round trip
+ * from Cloud's session object.
  *
  * Batching changes no outcome. Nothing read is used until the token recheck passes: a call whose
  * token is revoked while that recheck waits is refused for its token, as before, even when its
  * app was deleted first, so the reads made beside the recheck were refused too. A change saved
- * while any of the call's checks waits takes effect on the call: a profile disabled, an account
- * reconnected, or another account selected. The access check held is the call's own, not
+ * while any of the call's checks waits takes effect on the call: the only account unlinked
+ * refuses it, as no account is linked; an account linked in place of another runs it with the
+ * account now linked; an account reconnected runs it with the new credentials. The access check held is the call's own, not
  * discovery's. A batch with a read that fails for storage is discarded: the call reads again on
  * its own, in order, and runs.
  * The self-host test entry point holds those two statements, so the scenario runs its own
@@ -19,6 +23,12 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, Layer, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Api, body, SessionClients } from "../support/api.ts";
+import {
+  linkAccount,
+  linkedAccountIds,
+  unlinkAccount,
+  connectionsPath,
+} from "../support/app-accounts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
@@ -26,7 +36,6 @@ import { Evidence } from "../support/evidence.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
-import { Profile } from "../support/profiles.ts";
 import { throttlingCollector } from "../support/throttling-collector.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -34,14 +43,14 @@ const source = `import { defineApp, defineProvider, secrets, object, string, que
 const service = defineProvider({ name: "Read ahead fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ accounts: { service } }, async ctx => ({
+export default defineApp({ user: { accounts: { service } } }, async ctx => ({
   tools: router({
-    token: query({ input: object({}), output: string() }, async () => ctx.accounts.service.fields.token),
+    token: query({ input: object({}), output: string() }, async () => ctx.user.accounts.service.fields.token),
   }),
 }));`;
-/** An app without accounts, called through a profile that selects none. */
+/** An app without accounts, which needs no link. */
 const freeSource = `import { defineApp, object, string, query, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({
+export default defineApp({}, { tools: router({
   ping: query({ input: object({}), output: string() }, async () => "pong"),
 }) });`;
 
@@ -75,11 +84,11 @@ const isBatch = (statement: Statement) => statement.text === batchMarker;
 const isPatCheck = (statement: Statement) => statement.text.includes("from apikey where key");
 const isAccessCheck = (statement: Statement) =>
   statement.text.includes("left join hosted_app_access p on p.id =");
-/** The access check's reads of the app and profile, made outside the SDK's tool call. */
+/** The app read made ahead for the call, outside the SDK's tool call. */
 const isSelectionRead = (statement: Statement) =>
   statement.under.includes("FumaDB.SqlQuery.findFirst") &&
   !statement.under.includes("sdk.tools.call");
-/** The call's own reads of the app, profile and accounts, and its profile recheck. */
+/** The call's own reads of the app and accounts, made when nothing read ahead answered them. */
 const isCallRead = (statement: Statement) => statement.under.includes("sdk.invocation.snapshot");
 
 layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) => {
@@ -136,10 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         const app = yield* body(App, deployed);
         const path = `${prefix}/apps/${app.id}`;
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
-        const profile = yield* body(
-          Profile,
-          yield* send("POST", `${path}/profiles`, { accounts: {}, idempotencyKey: randomUUID() }),
-        );
+        // Connecting an account from the app links it for the caller.
         const connect = (
           account?: string,
           token = account === undefined ? "synthetic-before" : "synthetic-after",
@@ -147,11 +153,11 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
           Effect.gen(function* () {
             const pending = yield* body(
               Resource,
-              yield* send("POST", `${path}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-                ...(account === undefined ? {} : { account }),
-              }),
+              yield* send(
+                "POST",
+                connectionsPath(path, "user", "service"),
+                account === undefined ? {} : { account },
+              ),
             );
             return yield* body(
               Resource,
@@ -166,36 +172,31 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         yield* Effect.addFinalizer(() =>
           send("DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
         );
-        const select = (selected: string) =>
-          Effect.gen(function* () {
-            const saved = yield* body(
-              Profile,
-              yield* send("GET", `${path}/profiles/${profile.id}`),
-            );
-            const changed = yield* send("PATCH", `${path}/profiles/${profile.id}`, {
-              expectedRevision: saved.revision,
-              accounts: { service: selected },
-            });
-            expect(changed.status, JSON.stringify(changed.body)).toBe(200);
-          });
-        yield* select(account);
-        const disable = Effect.gen(function* () {
-          const saved = yield* body(Profile, yield* send("GET", `${path}/profiles/${profile.id}`));
-          const disabled = yield* send("PATCH", `${path}/profiles/${profile.id}/enabled`, {
-            expectedRevision: saved.revision,
-            enabled: false,
-          });
-          expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
-        });
-        const enable = Effect.gen(function* () {
-          const saved = yield* body(Profile, yield* send("GET", `${path}/profiles/${profile.id}`));
-          expect(
-            (yield* send("PATCH", `${path}/profiles/${profile.id}/enabled`, {
-              expectedRevision: saved.revision,
-              enabled: true,
-            })).status,
-          ).toBe(200);
-        });
+        const appPath = `${origin}${path}`;
+        const link = (id: string) =>
+          linkAccount(owner, appPath, "service", id).pipe(Effect.provideService(Api, api));
+        const unlink = (id: string) =>
+          unlinkAccount(owner, appPath, "service", id).pipe(Effect.provideService(Api, api));
+        /**
+         * Wait until the caller's links to the app are `expected`, oldest first, before a call whose
+         * batches are counted: a call that reads links its session has not seen sends a second round.
+         */
+        const settled = (name: string, expected: ReadonlyArray<string>) =>
+          linkedAccountIds(owner, appPath).pipe(
+            Effect.provideService(Api, api),
+            Effect.flatMap((linked) =>
+              JSON.stringify(linked) === JSON.stringify(expected)
+                ? Effect.succeed(linked)
+                : Effect.fail(
+                    new Error(
+                      `Links ${JSON.stringify(linked)} are not yet ${JSON.stringify(expected)}`,
+                    ),
+                  ),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("250 millis") }),
+            Effect.timeout("30 seconds"),
+            Effect.flatMap((linked) => evidence.json(`read-ahead-links-${name}.json`, linked)),
+          );
 
         const token = (name: string) =>
           Effect.gen(function* () {
@@ -207,10 +208,11 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
             );
             return key;
           });
-        const code = `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].token({})`;
+        const tool = `tools[${JSON.stringify(app.slug)}].token`;
+        const code = `return await ${tool}({})`;
         const executeWith = (client: Effect.Success<ReturnType<typeof mcp.connect>>, run = code) =>
           client
-            .use("Call the profile's tool through execute", (client, signal) =>
+            .use("Call the app's tool through execute", (client, signal) =>
               client.callTool({ name: "execute", arguments: { code: run } }, undefined, { signal }),
             )
             .pipe(
@@ -310,13 +312,13 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         const key = yield* token("Read ahead");
         const client = yield* mcp.connect(key.key, "pat", { organization: organization.id });
         const execute = executeWith(client);
-        // Call until the session has read the live profile: the server's own reconcile can update
-        // a profile just after it is saved, which the next call reads as a change.
-        for (let attempt = 1; ; attempt++) {
-          expect(yield* execute).toEqual({ ok: true, value: "synthetic-before" });
-          if ((yield* statements).filter(isBatch).length === 1) break;
-          expect(attempt, "A call that sends one batch").toBeLessThan(3);
-        }
+        yield* settled("connected", [account]);
+        // The session's first call has not seen the links, so it reads the accounts in a second
+        // round; the next call reads them in its first.
+        expect(yield* execute).toEqual({ ok: true, value: "synthetic-before" });
+        expect((yield* statements).filter(isBatch).length, "A cold call's two rounds").toBe(2);
+        expect(yield* execute).toEqual({ ok: true, value: "synthetic-before" });
+        expect((yield* statements).filter(isBatch).length, "A warm call's one batch").toBe(1);
 
         yield* evidence.step(
           "The call's checks and reads leave together once its token recheck can run",
@@ -327,13 +329,11 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
             yield* evidence.json("read-ahead-statements.json", made);
             const recheck = made.find(isPatCheck);
             const batches = made.filter(isBatch);
-            expect(batches.length, "One batch: the session's previous call read the profile").toBe(
-              1,
-            );
+            expect(batches.length, "One batch: the session's previous call read the links").toBe(1);
             // The held recheck's statement starts only once released, after a request from here;
             // the batch waits for it, so nothing left before the recheck could.
             expect(batches[0]?.start ?? 0).toBeGreaterThanOrEqual(recheck?.start ?? Infinity);
-            expect(made.filter(isSelectionRead).length, "The app and profile reads").toBe(2);
+            expect(made.filter(isSelectionRead).length, "The app read").toBe(1);
             expect(made.filter(isAccessCheck).length, "One access check").toBe(1);
             expect(
               made.filter(isCallRead).length,
@@ -345,9 +345,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
         yield* evidence.step(
           "A token revoked while its recheck waits is refused for its token, though what was read beside it was refused too",
           Effect.gen(function* () {
-            // A second app with a profile, which one execution discovers and then calls after a
+            // A second app without accounts, which one execution discovers and then calls after a
             // first call. It is deleted while that first call's recheck is held, so the second
-            // call's app and profile reads, made beside its own held recheck, are both refused.
+            // call's app read, made beside its own held recheck, is refused.
             const freeDeployed = yield* send("POST", `${prefix}/apps/deploy`, {
               name: `Read ahead free ${randomUUID().slice(0, 8)}`,
               files: [{ path: "index.ts", content: freeSource }, appsManifest],
@@ -356,23 +356,16 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
             const free = yield* body(App, freeDeployed);
             const freePath = `${prefix}/apps/${free.id}`;
             yield* Effect.addFinalizer(() => send("DELETE", freePath).pipe(Effect.ignore));
-            const freeProfile = yield* body(
-              Profile,
-              yield* send("POST", `${freePath}/profiles`, {
-                accounts: {},
-                idempotencyKey: randomUUID(),
-              }),
-            );
             const revoked = yield* token("Read ahead revoked");
             const doomed = yield* mcp.connect(revoked.key, "pat-revoked", {
               organization: organization.id,
             });
-            const freeCall = `tools[${JSON.stringify(free.slug)}].profiles[${JSON.stringify(freeProfile.id)}].ping({})`;
+            const freeCall = `tools[${JSON.stringify(free.slug)}].ping({})`;
             expect(yield* executeWith(doomed, `return await ${freeCall}`)).toEqual({
               ok: true,
               value: "pong",
             });
-            const both = `const first = await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].token({});
+            const both = `const first = await ${tool}({});
 return [first, await ${freeCall}];`;
             const refused = yield* held(
               { authentication: "tool-call" },
@@ -397,8 +390,8 @@ return [first, await ${freeCall}];`;
             yield* evidence.json("read-ahead-revoked-statements.json", made);
             expect(
               made.filter(isSelectionRead).length,
-              "The deleted app's app and profile reads went out beside the recheck",
-            ).toBe(2);
+              "The deleted app's read went out beside the recheck",
+            ).toBe(1);
             expect(made.filter(isBatch).length, "Nothing sent after a failed recheck").toBe(1);
             expect(made.some(isCallRead), "No state read for the call after a failed recheck").toBe(
               false,
@@ -409,11 +402,18 @@ return [first, await ${freeCall}];`;
         yield* evidence.step(
           "A change saved while the call's access check waits takes effect on the call",
           Effect.gen(function* () {
-            const refused = yield* held({ app: app.id, toolCall: true }, execute, disable);
-            yield* enable;
-            yield* evidence.json("read-ahead-disabled.json", refused);
-            expect(refused.ok, "A profile disabled while the access check waits").toBe(false);
-            expect(refused.error).toMatchObject({ response: { status: 409 } });
+            const refused = yield* held({ app: app.id, toolCall: true }, execute, unlink(account));
+            yield* evidence.json("read-ahead-unlinked.json", refused);
+            expect(refused.ok, "The only account unlinked while the access check waits").toBe(
+              false,
+            );
+            // The access check reads the caller's links after the change: no account is linked
+            // for the plain requirement, so the call is refused for that.
+            expect(refused.error).toMatchObject({
+              response: { code: "AccountRequired", status: 409 },
+            });
+            yield* link(account);
+            yield* settled("relinked", [account]);
             const reconnected = yield* held(
               { app: app.id, toolCall: true },
               execute,
@@ -428,34 +428,54 @@ return [first, await ${freeCall}];`;
           }),
         );
 
-        yield* evidence.step(
-          "Another account selected while the call's access check waits refuses the call for its profile",
+        const other = yield* evidence.step(
+          "Another account linked in place of the call's while its access check waits runs the call, read in a second round",
           Effect.gen(function* () {
-            // The access check read the profile with the first account; the call's own reads see
-            // the second. Every MCP call names the profile revision discovery listed, so the call
-            // is refused for the changed profile before anything read ahead for the first
-            // account could stand in, as it was before reads were sent together.
+            // The access check reads the caller's links in its own statement, so the links it
+            // reads after the change decide the call: it runs with the account now linked. The
+            // session has not called with that account, so it is read in a second round.
             const other = (yield* connect(undefined, "synthetic-other")).id;
             yield* Effect.addFinalizer(() =>
               send("DELETE", `${prefix}/accounts/${other}`).pipe(Effect.orDie),
             );
-            yield* select(account);
+            // Connecting from the app linked it in place of the call's account, which stays
+            // saved; linking that account again replaces it in turn.
+            yield* settled("connected-other", [other]);
+            yield* link(account);
+            yield* settled("before-switch", [account]);
             expect(yield* execute).toEqual({ ok: true, value: "synthetic-after" });
-            const switched = yield* held({ app: app.id, toolCall: true }, execute, select(other));
-            yield* evidence.json("read-ahead-switched.json", switched);
-            expect(switched.ok, "A selection changed while the call's access check waits").toBe(
-              false,
+            const switched = yield* held(
+              { app: app.id, toolCall: true },
+              execute,
+              Effect.gen(function* () {
+                // The plain requirement's provider is used by nothing else: the link replaces.
+                yield* link(other);
+                yield* settled("switched", [other]);
+              }),
             );
-            expect(switched.error).toMatchObject({
-              response: { code: "ProfileConflict", status: 409 },
+            yield* evidence.json("read-ahead-switched.json", switched);
+            expect(switched, "Links changed while the call's access check waits").toEqual({
+              ok: true,
+              value: "synthetic-other",
             });
-            // The next call reads the new selection.
+            const made = yield* statements;
+            yield* evidence.json("read-ahead-switched-statements.json", made);
+            expect(made.filter(isBatch).length, "A second round for the account now linked").toBe(
+              2,
+            );
+            expect(made.filter(isAccessCheck).length, "One access check").toBe(1);
+            expect(
+              made.filter(isCallRead).length,
+              "The call used the second round's reads instead of reading again",
+            ).toBe(0);
+            // The next call's discovery lists the account now linked, and the call runs with it.
             expect(yield* execute).toEqual({ ok: true, value: "synthetic-other" });
+            return other;
           }),
         );
 
         yield* evidence.step(
-          "A read of the accounts made beside the profile recheck that fails for storage is made again in order",
+          "A read of the accounts made beside the access check that fails for storage is made again in order",
           Effect.gen(function* () {
             // As a connection dropped between two replies of one write would: the read made ahead
             // stands in for nothing, and the call reads the accounts itself.
@@ -479,50 +499,41 @@ return [first, await ${freeCall}];`;
         );
 
         yield* evidence.step(
-          "A selection changed again between a call's two rounds is checked for the accounts it then selects",
+          "An account the session has not called with is read in a second round, for the account the live links give it",
           Effect.gen(function* () {
-            // A call whose first round reads a profile its session has not seen makes a second
-            // round, with the access check for the accounts that profile selects. When the
-            // selection changes again before that round, its access check was made for accounts
-            // the profile no longer selects, so the call checks the ones it does, live: they pass,
-            // and the call is refused for its changed profile, as it is without batches. Using
-            // the second round's check would refuse it for an account that check never covered.
-            // The account the previous step selected; connecting another account selects it.
-            const other = (yield* body(
-              Profile,
-              yield* send("GET", `${path}/profiles/${profile.id}`),
-            )).accounts.service;
+            // Connecting another account from the app replaces the linked one, which stays saved.
             const third = (yield* connect(undefined, "synthetic-third")).id;
             yield* Effect.addFinalizer(() =>
               send("DELETE", `${prefix}/accounts/${third}`).pipe(Effect.orDie),
             );
-            yield* select(account);
-            expect(yield* execute).toEqual({ ok: true, value: "synthetic-after" });
-            expect(other, "The previous step's account").not.toBe(account);
-            yield* select(String(other));
-            const changed = yield* held(
+            yield* settled("replaced", [third]);
+            // The session has run no call with this account, so the first round reads only the
+            // app and the access check with the links; the second reads the linked account. The
+            // replaced account is deleted while that check waits: the call still resolves.
+            const replaced = yield* held(
               { app: app.id, toolCall: true },
               execute,
               Effect.gen(function* () {
-                // Release the first round and hold the second round's access check.
-                yield* arm({ app: app.id, toolCall: true });
-                yield* reached;
-                yield* select(third);
+                expect((yield* send("DELETE", `${prefix}/accounts/${other}`)).status).toBe(200);
+                yield* settled("replaced-deleted", [third]);
               }),
             );
-            yield* evidence.json("read-ahead-changed-between-rounds.json", changed);
-            expect(changed.ok, "A selection changed between the call's rounds").toBe(false);
-            expect(changed.error, "Refused for its profile, not for an account").toMatchObject({
-              response: { code: "ProfileConflict", status: 409 },
+            yield* evidence.json("read-ahead-replaced.json", replaced);
+            expect(replaced, "The newly linked account runs").toEqual({
+              ok: true,
+              value: "synthetic-third",
             });
             const made = yield* statements;
-            yield* evidence.json("read-ahead-changed-between-rounds-statements.json", made);
+            yield* evidence.json("read-ahead-replaced-statements.json", made);
             expect(made.filter(isBatch).length, "Two rounds").toBe(2);
+            expect(made.filter(isAccessCheck).length, "One access check").toBe(1);
             expect(
-              made.filter(isAccessCheck).length,
-              "Both rounds' access checks, then a live one for the accounts now selected",
-            ).toBe(3);
+              made.filter(isCallRead).length,
+              "The call used the second round's reads instead of reading again",
+            ).toBe(0);
+            // The session has now called with the account: the next call reads it in one batch.
             expect(yield* execute).toEqual({ ok: true, value: "synthetic-third" });
+            expect((yield* statements).filter(isBatch).length, "A warm call's one batch").toBe(1);
           }),
         );
       }),

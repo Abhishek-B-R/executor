@@ -3,7 +3,7 @@ import { Effect, Layer, type Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { AutumnClient, type AutumnOptions } from "../contracts/autumn.ts";
 import { V1Membership, V1MembershipUnavailable } from "../contracts/onboarding.ts";
-import { autumnLive } from "./autumn-client.ts";
+import { autumnLive, autumnReads } from "./autumn-client.ts";
 
 /** Only the fields the decision reads; the rest of each WorkOS record is never decoded or kept. */
 const Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
@@ -58,7 +58,7 @@ export const v1MembershipLive = (settings: V1MembershipSettings) =>
         HttpClient.filterStatusOk,
       );
       const autumn = AutumnClient.pipe(
-        Effect.provide(autumnLive(settings.billing)),
+        Effect.provide(autumnLive(settings.billing, autumnReads.once)),
         Effect.provideService(HttpClient.HttpClient, yield* HttpClient.HttpClient),
       );
       const list = <S extends Schema.Top>(

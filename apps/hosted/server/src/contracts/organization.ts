@@ -1,11 +1,19 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
-import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema } from "effect/http-api";
-import { Account, AccountHealth, App, OwnerId, HttpUrl, StorageError } from "@executor-js/sdk/core";
+import {
+  Account,
+  AccountHealth,
+  AccountId,
+  App,
+  AppId,
+  OwnerId,
+  HttpUrl,
+  StorageError,
+} from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
   OrganizationIconKey,
@@ -167,7 +175,8 @@ export class OrganizationIcons extends Context.Service<
 
 /** Organization-owned inventory. Saved credentials never appear in these records. */
 export const Inventory = Schema.Struct({
-  profiles: Schema.Array(Profile),
+  /** The accounts the caller linked to each listed app and may use. */
+  links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
   apps: Schema.Array(App),
   /** Each account's checks by the apps listed here; reading them never runs a check. */
   accounts: Schema.Array(

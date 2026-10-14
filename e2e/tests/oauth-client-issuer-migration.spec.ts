@@ -18,6 +18,7 @@ import { withApps } from "../support/apps-release.ts";
 import { TestLive, withHostedCase } from "../support/case.ts";
 import { nextDataStepSummary, dataStepSummaries } from "../support/data-steps.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
+import { beforeAppAccounts, beforeProfileRemoval } from "../support/profile-removal-rollback.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -82,7 +83,7 @@ const service = defineProvider({
   },
 });
 
-export default defineApp({ accounts: { service } }, async () => ({ tools: router({}) }));
+export default defineApp({ user: { accounts: { service } } }, async () => ({ tools: router({}) }));
 `,
   },
   {
@@ -198,6 +199,10 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
         const seen = (yield* dataStepSummaries(log, step)).length;
         yield* legacyStorage([
           { sql: `DROP INDEX executor_stored_oauth_clients_owner_issuer` },
+          // App accounts (4.0.14) and the profile removal of 4.0.13, which come after the version
+          // this fixture writes.
+          ...beforeAppAccounts(),
+          ...beforeProfileRemoval(),
           {
             sql: `ALTER TABLE executor_stored_oauth_clients DROP COLUMN issuer,
               ALTER COLUMN provider DROP DEFAULT, ALTER COLUMN provider SET NOT NULL`,
@@ -356,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           },
         ]);
         yield* serverControl("start");
-        expect(version).toEqual([{ value: "4.0.12" }]);
+        expect(version).toEqual([{ value: "4.0.15" }]);
         expect(credentials).toEqual([
           { client: ids.a },
           { client: ids.a },

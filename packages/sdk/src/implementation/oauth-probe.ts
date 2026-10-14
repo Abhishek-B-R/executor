@@ -1,7 +1,8 @@
 /** Header-only OAuth discovery for resources that advertise auth on GET or MCP initialization. */
 import { Effect } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient, HttpClientRequest } from "effect/http";
+import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { bearerChallenge } from "./oauth-challenge.ts";
+import { withExecutorUserAgent } from "./user-agent.ts";
 
 /**
  * Probe an already policy-checked endpoint with the host's checked HTTP client. The result keeps
@@ -11,12 +12,7 @@ import { bearerChallenge } from "./oauth-challenge.ts";
  */
 export const probeOAuthChallenge = (endpoint: string | URL, egress: HttpClient.HttpClient) =>
   Effect.gen(function* () {
-    // Some firewalls refuse requests without one; Workers do not supply one by default.
-    const client = HttpClient.mapRequest(egress, (request) =>
-      request.headers["user-agent"] === undefined
-        ? HttpClientRequest.setHeader(request, "user-agent", "Executor")
-        : request,
-    );
+    const client = withExecutorUserAgent(egress);
     const get = yield* Effect.scoped(
       HttpClient.withScope(client)
         .get(endpoint, {

@@ -15,6 +15,7 @@ import {
   ElicitationReply,
   type HostRequest,
   type HostAccounts,
+  scopedSlots,
   type InvocationDeadline,
   type ResolvedAccounts,
   type TrustedToolApproval,
@@ -274,8 +275,9 @@ const protocols = new Map<string, AppProtocol>();
 const protocolLimit = 4096;
 /**
  * First reads of builds whose protocol is not known yet, by build, with the read build once it
- * arrives. Concurrent first calls of a build, such as a tool call and the profile setup that an
- * account selection started, share one read, so the Worker they both reach loads its build once.
+ * arrives. Concurrent first calls of a build, such as a tool call and the webhook registration
+ * that linking an account started, share one read, so the Worker they both reach loads its build
+ * once.
  * Only plain data is shared: a call never awaits another call's promise. On Cloud, a call resumed
  * by another request's promise continues in that request's I/O context, and its own capabilities
  * then fail with "Cannot perform I/O on behalf of a different request". A waiting call therefore
@@ -368,7 +370,8 @@ class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFa
 export const appWorker = (
   invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts">,
 ) =>
-  facetIdentity(invocation.build, invocation.accounts).pipe(
+  // Requirement names are unique across scopes, so one record names the account set.
+  facetIdentity(invocation.build, Object.fromEntries(scopedSlots(invocation.accounts))).pipe(
     Effect.map((identity) => ({
       identity,
       mode: runsInFacet(invocation) ? ("facet" as const) : ("worker" as const),
@@ -953,7 +956,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         );
         const command = { operation: "requirements" } as const;
         const reply = yield* start(null, async () => bundle, {
-          body: protocol.invocation({ command, accounts: {} }),
+          body: protocol.invocation({ command, accounts: { app: {} } }),
           headers,
           globalOutbound: null,
           elicit: null,

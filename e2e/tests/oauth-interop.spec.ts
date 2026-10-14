@@ -14,9 +14,9 @@ import {
   oauthInteropIssuer,
   otherTenant,
 } from "../support/oauth-interop-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Failure = Schema.Struct({
@@ -54,10 +54,10 @@ const oauthApp = Effect.gen(function* () {
             path: "index.ts",
             content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service=defineProvider({name:"Interop service",auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async(${
+export default defineApp({user: { accounts:{service} }},async(${
               resourceUrl === undefined
                 ? ")=>({tools:router({})}));"
-                : `{accounts})=>({tools:router({read:query({input:object({})},async({fetch})=>{
+                : `{user:{accounts}})=>({tools:router({read:query({input:object({})},async({fetch})=>{
   const result=await fetch(${JSON.stringify(resourceUrl)},{headers:{authorization:"Bearer "+accounts.service.fields.access_token}});
   return result.json();
 })})}));`
@@ -71,13 +71,14 @@ export default defineApp({accounts:{service}},async(${
       yield* Effect.addFinalizer(() =>
         api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
       );
-      const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
       const connection = yield* body(
         Resource,
-        yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        }),
+        yield* api.request(
+          actors.owner,
+          "POST",
+          connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+          {},
+        ),
       );
       const started = yield* api.request(
         actors.owner,
@@ -89,7 +90,7 @@ export default defineApp({accounts:{service}},async(${
           ...(client === undefined ? {} : { client }),
         },
       );
-      return { app: app.id, profile: profile.id, connection: connection.id, started };
+      return { app: app.id, connection: connection.id, started };
     });
   /** Follow the service's consent redirect and return Executor's callback URL. */
   const consent = (authorizationUrl: string) =>
@@ -127,17 +128,16 @@ export default defineApp({accounts:{service}},async(${
     resourceUrl?: string,
   ) =>
     Effect.gen(function* () {
-      const { app, profile, connection, started } = yield* start(config, client, resourceUrl);
+      const { app, connection, started } = yield* start(config, client, resourceUrl);
       expect(started.status, JSON.stringify(started.body)).toBe(200);
       const authorizationUrl = new URL((yield* body(SignIn, started)).authorizationUrl);
       const callbackUrl = yield* consent(authorizationUrl.href);
       const completed = yield* complete(connection, callbackUrl);
-      return { app, profile, authorizationUrl, callbackUrl, completed };
+      return { app, authorizationUrl, callbackUrl, completed };
     });
-  /** Call the app's `read` query, which uses the account's current access token. */
-  const read = (app: string, profile: string) =>
+  /** Call the app's `read` query, which uses its one linked account's current access token. */
+  const read = (app: string) =>
     api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
-      profile,
       tool: "read",
       kind: "query",
       input: {},
@@ -223,7 +223,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         // A refreshed ID token from the tenant the user signed in to renews the grant.
         const same = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(same.completed.status, JSON.stringify(same.completed.body)).toBe(200);
-        const renewed = yield* app.read(same.app, same.profile);
+        const renewed = yield* app.read(same.app);
         expect(renewed.status, JSON.stringify(renewed.body)).toBe(200);
         expect(yield* body(Echo, renewed)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toEqual([{ tenant: entraTenant, issued: true }]);
@@ -233,14 +233,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         yield* common.refreshAsTenant(otherTenant);
         const switched = yield* app.connect(discover, entraClient, `${common.origin}/resource`);
         expect(switched.completed.status, JSON.stringify(switched.completed.body)).toBe(200);
-        const switchedRead = yield* app.read(switched.app, switched.profile);
+        const switchedRead = yield* app.read(switched.app);
         expect((yield* common.metrics).refreshes).toEqual([
           { tenant: entraTenant, issued: true },
           { tenant: otherTenant, issued: true },
         ]);
         expect(switchedRead.status, JSON.stringify(switchedRead.body)).toBe(200);
         expect(yield* body(Echo, switchedRead)).toMatchObject({ refreshed: true });
-        const again = yield* app.read(switched.app, switched.profile);
+        const again = yield* app.read(switched.app);
         expect(again.status, JSON.stringify(again.body)).toBe(200);
         expect(yield* body(Echo, again)).toMatchObject({ refreshed: true });
         expect((yield* common.metrics).refreshes).toHaveLength(2);
@@ -365,7 +365,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
         expect(metrics.registrations).toEqual([
           { grantTypes: ["authorization_code"], accepted: true },
         ]);
-        const read = yield* app.read(signIn.app, signIn.profile);
+        const read = yield* app.read(signIn.app);
         expect(read.status, JSON.stringify(read.body)).toBe(200);
         expect(yield* body(Echo, read)).toEqual({
           refreshed: false,

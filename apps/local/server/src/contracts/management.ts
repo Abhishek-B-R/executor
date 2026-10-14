@@ -18,7 +18,6 @@ export const LocalExecutorApi = HttpApi.make("executor").add(
   ExecutorApi.groups.accountConnections,
   ExecutorApi.groups.oauthClients,
   ExecutorApi.groups.apps,
-  ExecutorApi.groups.appProfiles,
   ExecutorApi.groups.skills,
   ExecutorApi.groups.tools,
   ExecutorApi.groups.schedules,
@@ -30,9 +29,15 @@ export const LocalExecutorApi = HttpApi.make("executor").add(
   ExecutorApi.groups.registry,
 );
 
+const dashboard = DashboardApi.groups.dashboard.endpoints;
+const connect = AccountConnectApi.groups.accountConnect.endpoints;
+/**
+ * Each app's account links, named `appAccounts.<scope>.<action>` for tools as on hosted: `app`
+ * routes link for every call, `user` routes for the local user. `connect` returns a browser link
+ * whose completion links the new account to the requirement.
+ */
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
-  .add(ExecutorApi.groups.appProfiles)
   .add(ExecutorApi.groups.skills)
   .add(ExecutorApi.groups.accounts)
   .add(ExecutorApi.groups.webhooks)
@@ -55,8 +60,17 @@ const api = HttpApi.make("local-management")
     ),
   )
   .add(
-    HttpApiGroup.make("accountConnect").add(
-      AccountConnectApi.groups.accountConnect.endpoints.issue,
+    HttpApiGroup.make("appAccounts").add(
+      dashboard.appList,
+      dashboard.appGet,
+      dashboard.appLink,
+      dashboard.appUnlink,
+      connect.appConnect,
+      dashboard.userList,
+      dashboard.userGet,
+      dashboard.userLink,
+      dashboard.userUnlink,
+      connect.userConnect,
     ),
   )
   .add(LocalWebhookSetupApi.groups.webhookLinks)

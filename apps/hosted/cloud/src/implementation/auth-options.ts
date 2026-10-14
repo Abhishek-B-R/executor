@@ -3,7 +3,6 @@ import { siteVisitorCookie } from "@executor-js/marketing/site-visitor";
 import type { BetterAuthOptions } from "better-auth";
 import { APIError } from "better-auth/api";
 import { authOptions, type RefreshRejection } from "@executor-js/hosted-server";
-import { HttpUrl } from "@executor-js/sdk/core";
 import { cloudHosts } from "../infrastructure/stage.ts";
 import { passkey } from "@better-auth/passkey";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -11,7 +10,7 @@ import { organization } from "better-auth/plugins/organization";
 import { oAuthProxy } from "better-auth/plugins/oauth-proxy";
 import { oauthProxyLocationGuard, oauthProxyProductionGuard } from "./oauth-proxy-guard.ts";
 import {
-  cloudAccountSignIns,
+  cloudAccountRedirectUri,
   cloudOAuthProxy,
   socialCallbackOrigin,
 } from "./oauth-proxy-settings.ts";
@@ -36,23 +35,7 @@ export const cloudAuthSettings = Effect.gen(function* () {
   const resourceOrigins = hosts.resourceOrigins;
   const callbackOrigin = socialCallbackOrigin(hosts);
   const emulators = yield* cloudEmulators;
-  const accountSignIns = yield* cloudAccountSignIns;
-  const configuredRedirectUri = yield* Config.String("EXECUTOR_OAUTH_CALLBACK_URL").pipe(
-    Config.option,
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Option(HttpUrl))),
-  );
-  // With role hosts, new connected-account sign-ins return to the edge's callback, which sends the
-  // browser to the browser origin: production's edge for a stage that signs in through its proxy.
-  // Without them, an operator may set a relay.
-  const oauthRedirectUri = Option.isNone(accountSignIns.callbacks)
-    ? configuredRedirectUri
-    : Option.isSome(configuredRedirectUri)
-      ? yield* Effect.die(
-          new Error(
-            "EXECUTOR_OAUTH_CALLBACK_URL is derived from the role hosts; remove it from this deployment",
-          ),
-        )
-      : Option.some(HttpUrl.make(accountSignIns.callbacks.value.current));
+  const oauthRedirectUri = yield* cloudAccountRedirectUri;
   const { names: proxyNames, settings: oauthProxy } = yield* cloudOAuthProxy;
   // The proxy's production is where its sign-ins return. A value naming this deployment's other
   // hosts is stale configuration: production would proxy its own sign-ins to itself. The browser

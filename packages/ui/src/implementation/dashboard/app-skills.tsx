@@ -280,8 +280,6 @@ function SkillFiles<E>({
   const document: AppSkillDocument = {
     ...skill,
     revision: catalog.revision,
-    ...(catalog.profile === undefined ? {} : { profile: catalog.profile }),
-    ...(catalog.profileRevision === undefined ? {} : { profileRevision: catalog.profileRevision }),
     app: catalog.app,
     deployment: catalog.deployment,
     file: resource.path,

@@ -3,7 +3,10 @@ import { Context, Schema, type Effect, type Redacted } from "effect";
 
 /** Match the API version used by autumn-js 1.2.28. */
 export const autumnApiVersion = "2.3.0";
-/** Bound a complete request, including response decoding. Billing writes are never retried. */
+/**
+ * Bound a complete write, including response decoding. Writes are never retried; each consumer
+ * chooses how its reads are bounded (`autumnReads` in `implementation/autumn-client.ts`).
+ */
 export const autumnTimeout = "10 seconds";
 
 /**

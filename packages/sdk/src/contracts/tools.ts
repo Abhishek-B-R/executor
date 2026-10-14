@@ -13,12 +13,10 @@ import {
   UpstreamError,
 } from "apps/contracts";
 import { ApiError } from "@executor-js/utils/api-error";
-import { ProfileId } from "./shared.ts";
 import { type ErrorPresentation, UserFacingError } from "@executor-js/utils/user-facing-error";
-import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 import { callPresentation, type CausePresentation, MayHaveWritten } from "./call-presentation.ts";
-/** Existing tool call seam, using the configured app's saved accounts. Discovery design is deferred. */
-import { Match, Option, Schema } from "effect";
+/** Tool discovery and calls, using the accounts each operation names. */
+import { Context, type Effect, Match, Option, type Result, Schema } from "effect";
 import {
   ApprovalElicitation,
   ApprovalResponse,
@@ -32,6 +30,7 @@ import {
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
+import type { Executor } from "./executor.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountId,
@@ -46,7 +45,15 @@ import {
   ToolName,
 } from "./shared.ts";
 import { AccountNotFound } from "./account.ts";
-import { AccountRequired, AccountSelectionInvalid, AppNotFound, AppNotDeployed } from "./apps.ts";
+import {
+  AccountRequired,
+  AccountChoiceUnsupported,
+  AccountSelectionInvalid,
+  AppAccounts,
+  AppAccountsQuery,
+  AppNotFound,
+  AppNotDeployed,
+} from "./apps.ts";
 import { DeploymentNotFound } from "./deployment.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 
@@ -89,6 +96,91 @@ export {
   type FormElicitation,
   type ElicitationResponse,
 } from "apps/contracts";
+
+/**
+ * Host-only: the accounts the host resolved for the tool call it is about to make, from the
+ * caller's linked accounts and choices, and the app's owner it checked them under. With it,
+ * `tools.call` reads the app and those accounts and runs the actor's app recheck in one round
+ * trip instead of one after another. Nothing here is trusted. The call still makes every read,
+ * after the host's check, uses it only when the call names the same app and accounts, and uses a
+ * read made with these values only when its own app read agrees with them; otherwise it reads and
+ * checks again in order. Never supplied by authored code.
+ */
+export const InvocationSelection = Context.Reference<
+  | {
+      readonly app: AppId;
+      readonly owner: OwnerId;
+      readonly accounts: AppAccounts;
+    }
+  | undefined
+>("executor/InvocationSelection", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
+ * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
+ * it only for the app, owner and accounts of its {@link InvocationSelection}, and only once: a
+ * later call in its scope reads live, as grant rows read ahead are consumed on first use. Every
+ * read it holds is checked as the call's own reads are. Never supplied by authored code.
+ */
+export const InvocationPrefetch = Context.Reference<
+  | {
+      readonly app: AppId;
+      readonly owner: OwnerId;
+      readonly accounts: AppAccounts;
+      readonly value: unknown;
+    }
+  | undefined
+>("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
+export const PrefetchHost = Symbol("executor.PrefetchHost");
+export interface PrefetchHost {
+  /**
+   * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
+   * that never fail, for the host to send in one batch beside its own checks. Without `known`,
+   * only the app is read. With it, the accounts `known.accounts` names are read too, with the
+   * `CurrentActor`'s app recheck for them and the grants of the accounts `known.hint` says hold
+   * one (those whose requirement may sign in with something other than secrets without a hint):
+   * `known` is the accounts and hint the host's previous call for this app resolved, and names
+   * rows to read, nothing more. Once the leaves have run, `take` returns what they read.
+   */
+  readonly invocation: (selection: {
+    readonly app: AppId;
+    readonly owner: OwnerId;
+    readonly known?: { readonly accounts: AppAccounts; readonly hint: unknown } | undefined;
+  }) => {
+    readonly leaves: ReadonlyArray<Effect.Effect<void>>;
+    readonly take: Effect.Effect<PrefetchedInvocation>;
+  };
+}
+/** What {@link PrefetchHost} read for one app. */
+export interface PrefetchedInvocation {
+  /** What `apps.get({ app, owner })` would have returned; undefined when it was not read. */
+  readonly app:
+    | Result.Result<
+        Effect.Success<ReturnType<Executor["apps"]["get"]>>,
+        Effect.Error<ReturnType<Executor["apps"]["get"]>>
+      >
+    | undefined;
+  /**
+   * For {@link InvocationPrefetch}: the reads made with `known`, when every one answered; a read
+   * that failed in storage makes the call read again on its own.
+   */
+  readonly invocation:
+    | {
+        readonly app: AppId;
+        readonly owner: OwnerId;
+        readonly accounts: AppAccounts;
+        readonly value: unknown;
+      }
+    | undefined;
+  /**
+   * Keep beside the accounts the next call resolves, as its `known.hint`; opaque to the host.
+   * Made from the app read alone when `known` was not given, so it already says which of the
+   * app's requirements may hold grants.
+   */
+  readonly hint: unknown;
+  /** Whether any read failed in storage; the host then reads nothing from this batch. */
+  readonly failed: boolean;
+}
 
 /**
  * Copy for a refusal the app's reply reports, which has no presentation of its own. `message` is
@@ -258,11 +350,11 @@ export type Tool = typeof Tool.Type;
 export const ToolRouter = HostedRouter;
 export type ToolRouter = typeof ToolRouter.Type;
 
-/** One page of a live catalog, evaluated using the named profile's saved selections. */
+/** One page of a live catalog, evaluated with the named accounts. */
 export const ToolPage = Schema.Struct({
-  profile: Schema.optional(ProfileId),
-  profileRevision: Schema.optional(ProfileRevision),
   deployment: DeploymentId,
+  /** The accounts the catalog was evaluated with; calls name the same accounts. */
+  accounts: AppAccounts,
   items: Schema.Array(Tool),
   /** Every router in the catalog, on every page. */
   routers: Schema.Array(ToolRouter),
@@ -281,11 +373,10 @@ export const ToolSummary = Schema.Struct({
 
 export type ToolSummary = typeof ToolSummary.Type;
 
-/** The whole live catalog without schemas, evaluated using the named profile's saved selections. */
+/** The whole live catalog without schemas, evaluated with the named accounts. */
 export const ToolIndex = Schema.Struct({
-  profile: Schema.optional(ProfileId),
-  profileRevision: Schema.optional(ProfileRevision),
   deployment: DeploymentId,
+  accounts: AppAccounts,
   items: Schema.Array(ToolSummary),
   routers: Schema.Array(ToolRouter),
 });
@@ -293,8 +384,8 @@ export const ToolIndex = Schema.Struct({
 export type ToolIndex = typeof ToolIndex.Type;
 
 /**
- * A listing kept as search rows: its declaration key, so a new deployment, profile revision,
- * account selection or credential generation is another one.
+ * A listing kept as search rows: its declaration key, so a new deployment, account selection or
+ * credential generation is another one.
  */
 export const ToolSearchListing = Schema.String.pipe(Schema.brand("ToolSearchListing"));
 export type ToolSearchListing = typeof ToolSearchListing.Type;
@@ -303,6 +394,8 @@ export type ToolSearchListing = typeof ToolSearchListing.Type;
 export interface SearchableTools {
   readonly listing: ToolSearchListing;
   readonly deployment: DeploymentId;
+  /** The accounts the listing was read with; a search target of this listing names them. */
+  readonly accounts: AppAccounts;
   /** The listing's routers that could not list their tools. */
   readonly routers: ReadonlyArray<ToolRouter>;
 }
@@ -320,8 +413,12 @@ export interface ToolSearchScope {
 export interface ToolSearchTarget {
   readonly listing: ToolSearchListing;
   readonly app: AppId;
-  readonly profile?: ProfileId | undefined;
-  /** Words every tool of the target also matches, such as its app's name and profile label. */
+  /**
+   * The accounts `searchable` returned with the listing. A listing read with other accounts is not
+   * this target's and finds nothing.
+   */
+  readonly accounts: AppAccounts;
+  /** Words every tool of the target also matches, such as its app's name. */
   readonly labels: ReadonlyArray<string>;
   readonly scopes: ReadonlyArray<ToolSearchScope>;
   /** Only tools named this or below it, such as the tools of one router. */
@@ -360,7 +457,7 @@ export interface ToolSearchPage {
 }
 
 const evaluationInstructions =
-  "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
+  "Reproduce tool discovery for the current app, deployment, and chosen accounts. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account links, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
 /**
  * What to do when the answer the skill loader received points to a repository or ref it cannot
  * find. The answer reached the app's code, which can stand in for a failed request, so it is not
@@ -371,7 +468,7 @@ const missingSource = {
     action:
       "Check the repository the app’s skill source names. If it is private, pass a GitHub account and its token to the skill loader.",
     instructions:
-      "Reading the repository the skill source names without credentials returned HTTP 404 or 401: it may be misspelled, it may be private, or the request may have failed. This does not show that the repository does not exist. Check the repository name in the skill loader's options for typos. For a private repository, pass the loader a GitHub account and its token, such as account: ctx.accounts.github and token: ctx.accounts.github.fields.token, from a provider that declares hosts github.com and raw.githubusercontent.com; the user connects an account whose token can read the repository. Alternatively, bundle its skill folders with the app.",
+      "Reading the repository the skill source names without credentials returned HTTP 404 or 401: it may be misspelled, it may be private, or the request may have failed. This does not show that the repository does not exist. Check the repository name in the skill loader's options for typos. For a private repository, pass the loader a GitHub account and its token, such as account: ctx.app.accounts.github and token: ctx.app.accounts.github.fields.token, from an app requirement whose provider declares hosts github.com and raw.githubusercontent.com; someone who can edit the app links an account for everyone whose token can read the repository. Alternatively, bundle its skill folders with the app.",
   },
   ref: {
     action: "Check the branch or tag the app’s skill source names.",
@@ -1103,7 +1200,17 @@ export const routerFailure = (
 
 const toolNotFound = ({ tool }: { readonly tool: ToolName }): RefusalCopy => {
   const description = `The app does not expose a tool named “${tool}”.`;
-  return { message: description, title: "Tool not found", description };
+  const recovery = {
+    action: "Search the app’s tools again and call one it lists.",
+    instructions:
+      "The tool may have been removed or renamed since its name was found, such as when the API behind an app drops an operation. Search the app’s tools for the current name before calling again.",
+  };
+  return {
+    message: `${description} It may have been removed or renamed: search the app’s tools again and call one it lists.`,
+    title: "Tool not found",
+    description,
+    recovery,
+  };
 };
 /**
  * This evaluated app does not expose the named tool. With `mayHaveWritten`, the app's reply to a
@@ -1474,13 +1581,13 @@ export const InvocationAccount = Schema.Struct({
   provider: ProviderId,
   method: Schema.String,
 });
-/**
- * Reviewed call with decoded arguments, exact code version and account identities. A call without
- * a profile omits both profile keys: pending requests are JSON, which has no undefined.
- */
+/** One scope's account identities by requirement. */
+const InvocationSlots = Schema.Record(
+  Schema.String,
+  Schema.Union([InvocationAccount, Schema.Array(InvocationAccount)]),
+);
+/** Reviewed call with decoded arguments, exact code version and account identities. */
 export const ToolInvocation = Schema.Struct({
-  profile: Schema.optionalKey(ProfileId),
-  profileRevision: Schema.optionalKey(ProfileRevision),
   app: AppId,
   owner: OwnerId,
   deployment: DeploymentId,
@@ -1491,10 +1598,14 @@ export const ToolInvocation = Schema.Struct({
    */
   kind: Schema.optionalKey(ToolKind),
   input: Json,
-  accounts: Schema.Record(
-    Schema.String,
-    Schema.Union([InvocationAccount, Schema.Array(InvocationAccount)]),
-  ),
+  /**
+   * The accounts by scope. `user` is absent for a call without a caller, which ran with the app's
+   * accounts only.
+   */
+  accounts: Schema.Struct({
+    app: InvocationSlots,
+    user: Schema.optionalKey(InvocationSlots),
+  }),
 });
 export type ToolInvocation = typeof ToolInvocation.Type;
 /** Completed transport; toolError marks a framework-recognized semantic error. Value is unchanged. */
@@ -1532,7 +1643,6 @@ export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "
   });
 /** Every way a live call fails. A resumed call is the same call, so it fails the same ways. */
 const toolCallErrors = [
-  ...ProfileErrors,
   StorageError,
   CredentialsError,
   AppNotFound,
@@ -1542,6 +1652,7 @@ const toolCallErrors = [
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
+  AccountChoiceUnsupported,
   AccountSelectionInvalid,
   ToolNotFound,
   ToolKindMismatch,
@@ -1568,7 +1679,7 @@ export const ToolResumeResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
   /**
    * Executor did not resume the saved call: the request expired, or Executor read the app,
-   * deployment, profile or accounts and they differ from the reviewed call.
+   * deployment or accounts and they differ from the reviewed call.
    */
   Schema.Struct({
     status: Schema.Literal("failed"),
@@ -1583,7 +1694,7 @@ export const ToolResumeResult = Schema.Union([
     error: ToolResumeFailure,
     /**
      * `unconfirmed`: Executor's own storage failed, with `error`, while it read the current app,
-     * deployment, profile or accounts to compare with the reviewed call, so it did not resume the
+     * deployment or accounts to compare with the reviewed call, so it did not resume the
      * call. Nothing shows that they changed. It is a field, not a reason: clients that predate it,
      * such as dashboards still open during a deploy, reject an unknown reason but ignore a field.
      */
@@ -1632,29 +1743,25 @@ export class ToolApprovalNotFound extends Schema.TaggedError<ToolApprovalNotFoun
 export const ToolInputs = {
   list: Schema.Struct({
     app: AppId,
-    profile: Schema.optional(ProfileId),
-    expectedProfileRevision: Schema.optional(ProfileRevision),
+    accounts: Schema.optional(AppAccounts),
     deployment: Schema.optional(DeploymentId),
     cursor: Schema.optional(Cursor),
     limit: Schema.optional(PageLimit),
   }),
   index: Schema.Struct({
     app: AppId,
-    profile: Schema.optional(ProfileId),
-    expectedProfileRevision: Schema.optional(ProfileRevision),
+    accounts: Schema.optional(AppAccounts),
     deployment: Schema.optional(DeploymentId),
   }),
   get: Schema.Struct({
     app: AppId,
-    profile: Schema.optional(ProfileId),
-    expectedProfileRevision: Schema.optional(ProfileRevision),
+    accounts: Schema.optional(AppAccounts),
     deployment: Schema.optional(DeploymentId),
     tool: ToolName,
   }),
   call: Schema.Struct({
     app: AppId,
-    profile: Schema.optional(ProfileId),
-    expectedProfileRevision: Schema.optional(ProfileRevision),
+    accounts: Schema.optional(AppAccounts),
     deployment: Schema.optional(DeploymentId),
     tool: ToolName,
     /**
@@ -1680,10 +1787,9 @@ export const ToolInputs = {
 export const ToolsGroup = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", "/v1/tools", {
-      query: ToolInputs.list.fields,
+      query: { ...ToolInputs.list.fields, accounts: AppAccountsQuery },
       success: ToolPage,
       error: [
-        ...ProfileErrors,
         StorageError,
         CredentialsError,
         AppNotFound,
@@ -1694,6 +1800,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,
         OAuthRenewalFailed,
@@ -1705,10 +1812,9 @@ export const ToolsGroup = HttpApiGroup.make("tools")
   )
   .add(
     HttpApiEndpoint.get("index", "/v1/tools/index", {
-      query: ToolInputs.index.fields,
+      query: { ...ToolInputs.index.fields, accounts: AppAccountsQuery },
       success: ToolIndex,
       error: [
-        ...ProfileErrors,
         StorageError,
         CredentialsError,
         AppNotFound,
@@ -1719,6 +1825,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,
         OAuthRenewalFailed,
@@ -1730,10 +1837,9 @@ export const ToolsGroup = HttpApiGroup.make("tools")
   )
   .add(
     HttpApiEndpoint.get("get", "/v1/tools/get", {
-      query: ToolInputs.get.fields,
+      query: { ...ToolInputs.get.fields, accounts: AppAccountsQuery },
       success: Tool,
       error: [
-        ...ProfileErrors,
         StorageError,
         CredentialsError,
         AppNotFound,
@@ -1744,6 +1850,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,
         OAuthRenewalFailed,

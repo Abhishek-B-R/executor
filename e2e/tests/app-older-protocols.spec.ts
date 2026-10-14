@@ -21,6 +21,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { skillUpstream } from "../support/skill-upstream.ts";
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /** Single-file source written for the protocol-1 framework: queries and mutations catalogs. */
 const legacy = (revision: string) => [
   {
@@ -47,6 +48,7 @@ export default defineApp({ accounts: {}, database }, {
   },
 ];
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Single-file source written for `apps@0.0.1-beta.4`, protocol 2: queries and mutations catalogs
  * from a factory, and remote skills that its `dynamicSkills` loader reads through the app cache.
@@ -78,6 +80,7 @@ export default defineApp({ accounts: {}, database }, async (ctx) => ({
 /** The marker a protocol-3 app's own error carries. */
 const appMarker = "Synthetic conversation is missing";
 
+// app-user-accounts: keep, as source of an earlier `apps` release.
 /**
  * Single-file source written for `apps@0.0.1-beta.5`, protocol 3: queries and mutations catalogs,
  * and a query and a workflow step that throw the app's own named error.
@@ -124,7 +127,7 @@ const notes = query({ input: object({}) }, async ({ sql }) => sql.exec("SELECT t
 const save = mutation({ input: object({ text: string() }) }, async ({ sql }, input) => { sql.exec(insert, input.text); return framework(); });
 const lazy = mutation({ input: object({ text: string() }) }, async ({ sql }, input) => { sql.exec(insert, input.text); return "resolved"; });
 const source = dynamicRouter({ list: async () => [], resolve: async (name) => (name === "lazy" ? lazy : undefined) });
-export default defineApp({ accounts: {} }, { tools: router({ notes, save, source }) });`,
+export default defineApp({}, { tools: router({ notes, save, source }) });`,
   },
   {
     path: "migrations/0001_notes.sql",

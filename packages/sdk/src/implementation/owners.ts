@@ -122,8 +122,10 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
           tx.deleteMany("scheduledRuns", { where: (b) => b("owner", "=", owner) }),
         );
         yield* query(() => tx.deleteMany("schedules", { where: (b) => b("owner", "=", owner) }));
-        // Profiles run as the app owner; delete by owner for the same reason as schedules.
-        yield* query(() => tx.deleteMany("profiles", { where: (b) => b("owner", "=", owner) }));
+        // Webhook sources belong to the app owner; delete by owner for the same reason as schedules.
+        yield* query(() =>
+          tx.deleteMany("webhookSources", { where: (b) => b("owner", "=", owner) }),
+        );
         // Event subscriptions too, so a subscription whose app row already went stays reachable.
         const subscriptions = yield* query(() =>
           tx.findMany("eventSubscriptions", {

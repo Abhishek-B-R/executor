@@ -30,7 +30,6 @@ import {
   AppSkillName,
   CommittedSource,
   ExecutorApi,
-  ProfileId,
   SourceCommit,
   SourceFilePath,
   SourceError,
@@ -221,8 +220,8 @@ const hostedFrameworkApi = frameworkApi("/api/organizations/:organization", AppA
 type Management = HttpApiClient.ForApi<typeof localManagementApi>["appManagement"];
 type Framework = HttpApiClient.ForApi<typeof localFrameworkApi>["framework"];
 /**
- * Typed clients for one host. App management uses its shared contract. Skill and profile reads
- * use the SDK routes: local serves them under /v1, and hosted serves the same endpoints and
+ * Typed clients for one host. App management uses its shared contract. Skill reads use the SDK
+ * routes: local serves them under /v1, and hosted serves the same endpoints and
  * schemas under its organization prefix.
  */
 const connect = (host: string, organization: Option.Option<string>) =>
@@ -240,7 +239,6 @@ const connect = (host: string, organization: Option.Option<string>) =>
         framework,
         tenant: {},
         skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient }),
-        profiles: yield* HttpApiClient.group(ExecutorApi, { group: "appProfiles", httpClient }),
       };
     }
     const prefix = `/api/organizations/${encodeURIComponent(target.organization)}`;
@@ -256,10 +254,6 @@ const connect = (host: string, organization: Option.Option<string>) =>
       framework,
       tenant: { organization: target.organization },
       skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient: sdkClient }),
-      profiles: yield* HttpApiClient.group(ExecutorApi, {
-        group: "appProfiles",
-        httpClient: sdkClient,
-      }),
     };
   });
 /** Run one app management operation; contract errors stay typed for command diagnostics. */
@@ -349,51 +343,26 @@ const readSkills = (args: {
   readonly host: string;
   readonly organization: Option.Option<string>;
   readonly app: Option.Option<string>;
-  readonly profile: Option.Option<ProfileId>;
   readonly name: Option.Option<typeof AppSkillName.Type>;
   readonly file: Option.Option<typeof SourceFilePath.Type>;
 }) =>
   Effect.gen(function* () {
     if (Option.isNone(args.name) && Option.isSome(args.file))
       return yield* new SkillLookupFailed({ reason: "Pass --name with --file." });
-    if (Option.isNone(args.app) && (Option.isSome(args.name) || Option.isSome(args.profile)))
-      return yield* new SkillLookupFailed({ reason: "Pass --app with --name or --profile." });
-    const { management, tenant, skills, profiles } = yield* connect(args.host, args.organization);
+    if (Option.isNone(args.app) && Option.isSome(args.name))
+      return yield* new SkillLookupFailed({ reason: "Pass --app with --name." });
+    const { management, tenant, skills } = yield* connect(args.host, args.organization);
     const apps = yield* management
       .list({ params: tenant })
       .pipe(Effect.catchIf(isTransportFailure, hostFailure));
-    // The same targets as the MCP skills tool: the app itself when it needs no accounts, and
-    // each usable account profile.
-    const targets = (app: App) =>
-      skillRead(profiles.list({ params: { app: app.id }, query: {} })).pipe(
-        Effect.map((profiles) => [
-          ...(Object.keys(app.requirements.accounts).length === 0
-            ? [Option.none<ProfileId>()]
-            : []),
-          ...profiles
-            .filter(
-              (profile) =>
-                profile.enabled && profile.status !== "removed" && profile.status !== "removing",
-            )
-            .map((profile) => Option.some(profile.id)),
-        ]),
-      );
-    const catalog = (app: App, profile: Option.Option<ProfileId>) =>
-      skillRead(
-        skills.list({
-          params: { app: app.id },
-          query: { profile: Option.getOrUndefined(profile) },
-        }),
-      );
+    // The host resolves the accounts you linked to each app, as the MCP skills tool does.
+    const catalog = (app: App) => skillRead(skills.list({ params: { app: app.id }, query: {} }));
     if (Option.isNone(args.app)) {
       const results = yield* Effect.forEach(
         apps.filter((app) => app.activeDeployment !== null),
         (app) =>
-          targets(app).pipe(
-            Effect.flatMap((profiles) =>
-              Effect.forEach(profiles, (profile) => catalog(app, profile)),
-            ),
-            Effect.map((catalogs) => ({ app: app.slug, catalogs })),
+          catalog(app).pipe(
+            Effect.map((found) => ({ app: app.slug, catalogs: [found] })),
             Effect.catch(() => Effect.succeed({ app: app.slug, catalogs: undefined })),
           ),
         { concurrency: 4 },
@@ -409,25 +378,12 @@ const readSkills = (args: {
       return yield* new SkillLookupFailed({
         reason: `No visible app has slug or ID ${slug}. Run executor apps list to see apps.`,
       });
-    let profile = args.profile;
-    if (Option.isNone(profile) && Object.keys(selected.requirements.accounts).length > 0) {
-      const available = yield* targets(selected);
-      const only = available[0];
-      if (available.length !== 1 || only === undefined)
-        return yield* new SkillLookupFailed({
-          reason:
-            available.length === 0
-              ? `${slug} needs an account profile. Set up the app's accounts first.`
-              : `${slug} has several account profiles. Pass --profile with one of: ${available.flatMap((id) => (Option.isSome(id) ? [id.value] : [])).join(", ")}.`,
-        });
-      profile = only;
-    }
     if (Option.isNone(args.name))
-      return yield* catalog(selected, profile).pipe(Effect.flatMap(print(AppSkillCatalog)));
+      return yield* catalog(selected).pipe(Effect.flatMap(print(AppSkillCatalog)));
     return yield* skillRead(
       skills.read({
         params: { app: selected.id, name: args.name.value },
-        query: { profile: Option.getOrUndefined(profile), file: Option.getOrUndefined(args.file) },
+        query: { file: Option.getOrUndefined(args.file) },
       }),
     ).pipe(Effect.flatMap(print(AppSkillDocument)));
   });
@@ -1044,11 +1000,6 @@ export const appsCommand = (platform: string) =>
         ...connection,
         app: Flag.String("app").pipe(
           Flag.withDescription("App slug or ID. Omit to list skills from every deployed app"),
-          Flag.optional,
-        ),
-        profile: Flag.String("profile").pipe(
-          Flag.withSchema(ProfileId),
-          Flag.withDescription("Account profile ID for apps whose skills need accounts"),
           Flag.optional,
         ),
         name: Flag.String("name").pipe(

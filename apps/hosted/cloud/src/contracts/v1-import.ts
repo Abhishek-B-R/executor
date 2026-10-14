@@ -46,7 +46,8 @@ export const V1ItemPlan = Schema.Union([
 ]);
 export type V1ItemPlan = typeof V1ItemPlan.Type;
 /**
- * What one item request did. `v2Id` names the app, account, profile or MCP connection it created;
+ * What one item request did. `v2Id` names the app, account or MCP connection it created (for a
+ * connection, the account it linked to its app);
  * `note` says what the user should know about it, such as a v1 tool name it dropped.
  * `needsRepair` marks an app imported as source without a deployment, which does not run until it
  * is fixed; its note says what to fix.

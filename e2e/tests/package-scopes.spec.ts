@@ -63,7 +63,7 @@ layer(HostedLive, { excludeTestServices: true })("Package scopes", (it) => {
               files: [
                 {
                   path: "index.ts",
-                  content: `import { defineApp } from "apps";\n// ${marker}\nexport default defineApp({ accounts: {} }, {});\n`,
+                  content: `import { defineApp } from "apps";\n// ${marker}\nexport default defineApp({}, {});\n`,
                 },
                 {
                   path: "package.json",

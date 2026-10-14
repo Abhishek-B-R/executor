@@ -11,6 +11,7 @@ import {
 } from "node:crypto";
 import { appsManifest } from "../support/apps-release.ts";
 import { releasedServer } from "../support/docker-release-server.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 /**
  * A credential handle as the outbound reads it: `exsec_`, the hex of a 12-byte IV and the
@@ -60,9 +61,9 @@ const service = defineProvider({
   hosts: [${JSON.stringify(declared)}],
   auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
 });
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({
-    token: query({ input: object({}) }, async (ctx) => ctx.accounts.service.fields.token),
+    token: query({ input: object({}) }, async (ctx) => ctx.user.accounts.service.fields.token),
     send: query({ input: object({ url: string(), token: string() }) }, async (_, { url, token }) => {
       const response = await fetch(url, { headers: { authorization: "Bearer " + token } });
       return { status: response.status, text: await response.text() };
@@ -75,15 +76,9 @@ export default defineApp({ accounts: { service } }, {
         ]);
         const path = `${server.prefix}/apps/${app.id}`;
         const Id = Schema.Struct({ id: Schema.String });
-        const profile = yield* server.json(Id, `${path}/profiles`, {
-          accounts: {},
-          idempotencyKey: randomUUID(),
-        });
-        const connection = yield* server.json(Id, `${path}/connections`, {
-          requirement: "service",
-          profile: profile.id,
-        });
+        const connection = yield* server.json(Id, connectionsPath(path, "user", "service"), {});
         const value = `synthetic-release-token-${randomUUID()}`;
+        // Connecting from the app links the account to it; calls use it.
         yield* server.json(Id, `${server.prefix}/connections/${connection.id}/submit`, {
           method: "key",
           label: "Release handles",
@@ -91,7 +86,6 @@ export default defineApp({ accounts: { service } }, {
         });
         const call = <S extends Schema.Top>(schema: S, tool: string, input: object) =>
           server.json(schema, `${path}/tools/call`, {
-            profile: profile.id,
             tool,
             input,
           });

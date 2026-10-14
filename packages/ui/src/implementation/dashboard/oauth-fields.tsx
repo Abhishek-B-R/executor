@@ -248,8 +248,10 @@ export function OAuthFields<A, E>({
     });
   };
   // The picker leads the form only when there is a real choice between clients. With one, the
-  // form uses it and keeps the picker, with entering details, under Advanced.
-  const prominent = choices.filter((offered) => offered.kind !== "manual").length > 1;
+  // form uses it and keeps the picker, with entering details, under Advanced. A reconnect keeps
+  // the account's client, so replacing it is always an Advanced option.
+  const prominent =
+    account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1;
   const clientSelect =
     choice === undefined || choices.length < 2 ? undefined : (
       <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">

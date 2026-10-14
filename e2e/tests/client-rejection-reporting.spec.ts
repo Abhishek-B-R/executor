@@ -14,6 +14,7 @@ import { awaitSentryEvents, traceExceptionTypes } from "../support/sentry-events
 import { openapiAppFiles } from "../support/authored-templates.ts";
 import { staleRegistryDocument } from "../support/stale-openapi-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const kindTag = "executor.request.rejection.kind",
@@ -48,7 +49,7 @@ layer(HostedLive, { excludeTestServices: true })("Client rejection reporting", (
             {
               path: "index.ts",
               content: `import { defineApp, query, mutation, object, number, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({
+export default defineApp({}, async () => ({
   tools: router({
     strict: query({ input: object({ count: number() }) }, async (_context, input) => input),
     crash: mutation({ input: object({}) }, async () => { throw new Error("private-fixture-message"); }),
@@ -82,12 +83,13 @@ export default defineApp({ accounts: {} }, async () => ({
             { kind: "Payload", issue: "$.files: MissingKey" },
           ],
           [
-            "connection payload from before selections moved into profiles",
+            "connection payload that names the account to replace by number instead of ID",
             "POST",
-            `${prefix}/apps/${app.id}/connections`,
-            { requirement: "service-requirement" },
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            { destination: { kind: "personal" }, account: 42 },
             400,
-            { kind: "Payload", issue: "$.profile: MissingKey" },
+            // `account` is optional, so a number matches neither an account ID nor its absence.
+            { kind: "Payload", issue: "$.account: AnyOf" },
           ],
           [
             "path parameter that is not an app ID",

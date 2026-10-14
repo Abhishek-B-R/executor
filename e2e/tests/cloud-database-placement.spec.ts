@@ -75,14 +75,14 @@ const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]
   );
 
 const echoAppSource = `import { defineApp, query, object, string, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text" },
     async (_ctx, { text }) => ({ text })),
 }) }));`;
 
 /** A query that answers after the given number of milliseconds. */
 const timerAppSource = `import { defineApp, query, object, number, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   wait: query({ input: object({ ms: number() }) },
     async (_ctx, { ms }) => { await new Promise((resolve) => setTimeout(resolve, ms)); return { ms }; }),
 }) }));`;
@@ -90,7 +90,7 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
 /** An echo query and an echo mutation that always needs approval. */
 const reviewedAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }) }, async (_ctx, { text }) => ({ text })),
   review: mutation({ input: object({ text: string() }), approval: always() },
     async (_ctx, { text }) => ({ text })),
@@ -104,9 +104,9 @@ const Pending = Schema.Struct({
 /** The session object's connection limit (`objectConnectionLimit` in object-database.ts). */
 const objectConnectionLimit = 4;
 
-const scheduledAppSource = `import { defineApp, mutation, interval, object, router } from "apps";
+const scheduledAppSource = `import { defineApp, mutation, userInterval, object, router } from "apps";
 const tick = mutation({ input: object({}) }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({ tools: router({ tick }), schedules: { tick: interval({ minutes: 60 }, tick, {}) } }));`;
+export default defineApp({}, async () => ({ tools: router({ tick }), schedules: { tick: userInterval({ minutes: 60 }, tick, {}) } }));`;
 
 const Runs = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, status: Schema.String }),

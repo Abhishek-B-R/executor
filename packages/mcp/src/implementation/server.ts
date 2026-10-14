@@ -26,12 +26,13 @@ import type { BrowserApprovals, BrowserDelivery } from "../contracts/browser.ts"
 import type { McpExecutionResult } from "../contracts/execute.ts";
 import { makeExecutions } from "./executions.ts";
 import { executeNative } from "./native-elicitation.ts";
+import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { skills } from "./skills.ts";
 import { eventsHandler } from "./events.ts";
 
 // Observe the final protocol value after timeout, admission and resume handling.
 const observeExecution =
-  (name: "mcp.execute" | "mcp.resume") =>
+  (name: "mcp.execute" | "mcp.call" | "mcp.resume") =>
   <A extends McpExecutionResult, E, R>(work: Effect.Effect<A, E, R>) =>
     Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
@@ -185,6 +186,11 @@ export const makeMcp = (options: McpOptions) =>
               },
             }),
           );
+        // Search and describe read the catalog directly; call runs as an execution so it can pause.
+        const search = (input: Parameters<typeof searchCatalog>[2]) =>
+          searchCatalog(options.backend, options.limits, input).pipe(Effect.withSpan("mcp.search"));
+        const describe = (input: Parameters<typeof describeCatalog>[1]) =>
+          describeCatalog(options.backend, input).pipe(Effect.withSpan("mcp.describe"));
         const toolkit =
           mode === "native"
             ? McpServer.toolkit(NativeMcpToolkit).pipe(
@@ -193,10 +199,25 @@ export const makeMcp = (options: McpOptions) =>
                     execute: ({ code }) =>
                       caller.pipe(
                         Effect.flatMap(({ id }) =>
-                          executeNative(executions, id, options.backend, code),
+                          executeNative(executions, id, options.backend, executeProgram(code)),
                         ),
                         observeExecution("mcp.execute"),
                       ),
+                    call: (input) =>
+                      caller.pipe(
+                        Effect.flatMap(({ id }) =>
+                          executeNative(
+                            executions,
+                            id,
+                            options.backend,
+                            callTools(input),
+                            "client",
+                          ),
+                        ),
+                        observeExecution("mcp.call"),
+                      ),
+                    search,
+                    describe,
                     skills: skill,
                   }),
                 ),
@@ -209,13 +230,26 @@ export const makeMcp = (options: McpOptions) =>
                         caller.pipe(
                           Effect.flatMap(({ id, sessionId }) =>
                             executions
-                              .execute(id, options.backend, code, "result")
+                              .execute(id, options.backend, executeProgram(code), "result")
                               .pipe(
                                 Effect.flatMap((result) => withLink(result, sessionId, delivery)),
                               ),
                           ),
                           observeExecution("mcp.execute"),
                         ),
+                      call: (input) =>
+                        caller.pipe(
+                          Effect.flatMap(({ id, sessionId }) =>
+                            executions
+                              .execute(id, options.backend, callTools(input), "result")
+                              .pipe(
+                                Effect.flatMap((result) => withLink(result, sessionId, delivery)),
+                              ),
+                          ),
+                          observeExecution("mcp.call"),
+                        ),
+                      search,
+                      describe,
                       resume: ({ requestId }) =>
                         caller.pipe(
                           Effect.flatMap(({ id, sessionId }) =>
@@ -251,10 +285,19 @@ export const makeMcp = (options: McpOptions) =>
                       execute: ({ code }) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, code, "result"),
+                            executions.execute(id, options.backend, executeProgram(code), "result"),
                           ),
                           observeExecution("mcp.execute"),
                         ),
+                      call: (input) =>
+                        caller.pipe(
+                          Effect.flatMap(({ id }) =>
+                            executions.execute(id, options.backend, callTools(input), "result"),
+                          ),
+                          observeExecution("mcp.call"),
+                        ),
+                      search,
+                      describe,
                       resume: (input) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) => executions.resume(id, options.backend, input)),

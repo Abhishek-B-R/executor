@@ -11,7 +11,7 @@ import { v1BlobBucket } from "./v1-import-settings.ts";
 
 /** The one call the import makes on the binding. */
 interface ReadOnlyBucket {
-  get(key: string): Promise<{ text(): Promise<string> } | null>;
+  get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>;
 }
 const NativeBucket = Schema.declare(
   (value): value is ReadOnlyBucket =>
@@ -37,7 +37,7 @@ export const v1R2Blobs = Effect.gen(function* () {
         const bucket = yield* Schema.decodeUnknownEffect(NativeBucket)(environment.V1_BLOBS);
         const object = yield* Effect.tryPromise(() => bucket.get(key.object));
         if (object === null) return Option.none();
-        return Option.some(yield* Effect.tryPromise(() => object.text()));
+        return Option.some(new Uint8Array(yield* Effect.tryPromise(() => object.arrayBuffer())));
       }).pipe(
         Effect.tapError(() => Effect.logWarning("v1 import read failed: blob")),
         Effect.mapError(() => new V1ImportUnavailable()),

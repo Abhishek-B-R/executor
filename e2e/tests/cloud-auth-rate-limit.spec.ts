@@ -105,14 +105,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
           errorCallbackURL: "/login",
         });
 
-        // Anonymous client registration allows five requests a minute from one address.
-        const registrations = yield* Effect.forEach(Array.from({ length: 6 }), () => register, {
+        // Anonymous client registration allows sixty requests a minute from one address.
+        const registrations = yield* Effect.forEach(Array.from({ length: 61 }), () => register, {
           concurrency: 1,
         });
         expect(registrations.map((response) => response.status)).toEqual([
-          201, 201, 201, 201, 201, 429,
+          ...Array.from({ length: 60 }, () => 201),
+          429,
         ]);
-        yield* retryAfter(60)(registrations[5]!.retryAfter);
+        yield* retryAfter(60)(registrations[60]!.retryAfter);
 
         // Sign-in allows three requests in ten seconds, counted apart from registration.
         const signIns = yield* Effect.forEach(Array.from({ length: 4 }), () => signIn, {

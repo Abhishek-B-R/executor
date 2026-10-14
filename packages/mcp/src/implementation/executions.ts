@@ -5,6 +5,7 @@ import {
   ElicitationFailed,
   toolCallSpan,
   ToolInputs,
+  invocationAccounts,
   type ToolCallResult,
   type ToolPending,
 } from "@executor-js/sdk/core";
@@ -51,12 +52,12 @@ import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../con
 import { programScheduler } from "./program-scheduler.ts";
 import { reportFailure } from "./diagnostics.ts";
 import {
-  executeProgram,
   executionProgress,
   reportedCalls,
   timeoutDeliveryMs,
   timeoutMessage,
   type ExecutionProgress,
+  type Program,
 } from "./execute.ts";
 
 class ApprovalDenied extends Schema.TaggedError<ApprovalDenied>()("ApprovalDenied", {}) {}
@@ -73,19 +74,22 @@ const endedRetentionMs = 30 * 60 * 1000;
 /** Bounds that memory however many requests a host issues. */
 const maxEnded = 4096;
 
-/** The asking call's identity. A call without a profile omits the keys; MCP results are JSON. */
+/** Whether a call runs with no account in either scope. */
+const accountFree = (accounts: NonNullable<InteractionTool["accounts"]>) =>
+  Object.keys(accounts.app).length === 0 && Object.keys(accounts.user ?? {}).length === 0;
+
+/**
+ * The asking call's identity. A call without accounts in either scope omits the key; MCP results
+ * are JSON.
+ */
 const interactionTool = (call: {
   readonly app: InteractionTool["app"];
   readonly tool: InteractionTool["tool"];
-  readonly profile?: InteractionTool["profile"] | undefined;
-  readonly expectedProfileRevision?: InteractionTool["expectedProfileRevision"] | undefined;
+  readonly accounts?: InteractionTool["accounts"] | undefined;
 }): InteractionTool => ({
   app: call.app,
   tool: call.tool,
-  ...(call.profile === undefined ? {} : { profile: call.profile }),
-  ...(call.expectedProfileRevision === undefined
-    ? {}
-    : { expectedProfileRevision: call.expectedProfileRevision }),
+  ...(call.accounts === undefined || accountFree(call.accounts) ? {} : { accounts: call.accounts }),
 });
 
 /**
@@ -95,6 +99,11 @@ const interactionTool = (call: {
  * only the prompt, as the client's own elicitation request.
  */
 export type PendingTransport = "result" | "prompt";
+/**
+ * Who answers a policy approval: the user through a pending interaction (`ask`), or the MCP client,
+ * which already confirmed the destructive tool call that started the run (`client`).
+ */
+export type ApprovalMode = "ask" | "client";
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
 /** UTF-8 bytes of the JSON a transport sends for this interaction. */
 const sentBytes = (transport: PendingTransport, request: PendingInteraction) =>
@@ -130,6 +139,7 @@ type Event =
 type Run = {
   readonly id: string;
   readonly transport: PendingTransport;
+  readonly approval: ApprovalMode;
   readonly scheduling: ReturnType<typeof programScheduler>;
   readonly caller: string;
   readonly scope: Scope.Closeable;
@@ -383,6 +393,55 @@ export const makeExecutions = (
      * otherwise. A request over the budget is never offered: the saved call is cancelled, so it can
      * never run, and the call fails with the request's size.
      */
+    /**
+     * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
+     * approved call runs as a resumed one does, so its failures reach the caller the same way.
+     */
+    const approveNow = (
+      run: Run,
+      backend: McpBackend<Error>,
+      operation: Operation,
+      request: typeof ToolPending.Type,
+    ): Effect.Effect<ToolCallResult, Error> =>
+      backend
+        .resumeInvocation(
+          request,
+          { action: "accept" },
+          {
+            elicitation: elicitation(
+              run,
+              operation,
+              interactionTool({
+                app: request.invocation.app,
+                tool: request.invocation.tool,
+                accounts: invocationAccounts(request.invocation),
+              }),
+            ),
+          },
+        )
+        .pipe(
+          Effect.flatMap((result) =>
+            Match.value(result).pipe(
+              Match.when({ status: "completed" }, (result) => Effect.succeed(result)),
+              Match.when({ status: "denied" }, () => Effect.fail(new ApprovalDenied())),
+              Match.when({ status: "cancelled" }, () => Effect.fail(new ApprovalCancelled())),
+              Match.when(
+                { status: "failed", reason: "execution-failed", context: "unconfirmed" },
+                () => Effect.fail(new ApprovalUnavailable({ reason: "context-unconfirmed" })),
+              ),
+              Match.when({ status: "failed", reason: "execution-failed" }, ({ error }) =>
+                Effect.fail(error),
+              ),
+              Match.when({ status: "failed" }, ({ reason }) =>
+                Effect.fail(new ApprovalUnavailable({ reason })),
+              ),
+              Match.when({ status: "already-consumed" }, () =>
+                Effect.fail(new ApprovalUnavailable({ reason: "answered" })),
+              ),
+              Match.exhaustive,
+            ),
+          ),
+        );
     const offer = (
       run: Run,
       backend: McpBackend<Error>,
@@ -459,7 +518,7 @@ export const makeExecutions = (
         listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
-        listTargets: (input) => exchange((backend) => backend.listTargets(input)),
+        listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),
         listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
         searchableTools: (input, options) =>
           exchange((backend) => backend.searchableTools(input, options)),
@@ -484,10 +543,12 @@ export const makeExecutions = (
                         "executor.tool.name": input.tool,
                       },
                     }),
-                    Effect.flatMap((result): Effect.Effect<ToolCallResult, ApprovalTooLarge> =>
+                    Effect.flatMap((result): Effect.Effect<ToolCallResult, Error> =>
                       result.status === "completed"
                         ? Effect.succeed(result)
-                        : offer(run, backend, result),
+                        : run.approval === "client"
+                          ? approveNow(run, backend, operation, result)
+                          : offer(run, backend, result),
                     ),
                   ),
               (result, response) => {
@@ -669,12 +730,16 @@ export const makeExecutions = (
             ? release(pending.run)
             : Effect.void;
         }),
-      /** Start one program. Policy consent and tool input return the same pending-interaction union. */
+      /**
+       * Start one program or batch of direct calls. Policy consent and tool input return the same
+       * pending-interaction union.
+       */
       execute: (
         caller: string,
         backend: McpBackend<Error>,
-        code: string,
+        work: Program,
         transport: PendingTransport,
+        approval: ApprovalMode = "ask",
       ): Effect.Effect<McpExecutionResult, ExecutionRejected> =>
         Effect.gen(function* () {
           const admitted = () => runs.size + closing.size < defaultMcpRuntimeLimits.maxExecutions;
@@ -685,6 +750,7 @@ export const makeExecutions = (
           const run: Run = {
             id: crypto.randomUUID(),
             transport,
+            approval,
             caller,
             scheduling: programScheduler(scheduler),
             scope: yield* Scope.make(),
@@ -718,8 +784,7 @@ export const makeExecutions = (
             Effect.sync(() => {
               live.programs += 1;
             }),
-            () =>
-              executeProgram(broker(run), limits, code, Deferred.await(run.expired), run.progress),
+            () => work(broker(run), limits, Deferred.await(run.expired), run.progress),
             () =>
               Effect.sync(() => {
                 live.programs -= 1;
@@ -789,8 +854,7 @@ export const makeExecutions = (
                       interactionTool({
                         app: pending.request.invocation.app,
                         tool: pending.request.invocation.tool,
-                        profile: pending.request.invocation.profile,
-                        expectedProfileRevision: pending.request.invocation.profileRevision,
+                        accounts: invocationAccounts(pending.request.invocation),
                       }),
                     ),
                   })

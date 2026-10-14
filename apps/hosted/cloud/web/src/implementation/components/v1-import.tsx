@@ -2,7 +2,7 @@ import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { HostedEntry } from "@executor-js/hosted-web/entry";
 import { Button } from "@executor-js/ui/components/button";
 import { CopyButton } from "@executor-js/ui/dashboard/code";
-import { catalogIconDomainsAtom } from "@executor-js/ui/contracts/icons";
+import { catalogIconsAtom } from "@executor-js/ui/contracts/icons";
 import { ProviderIcon } from "@executor-js/ui/dashboard/common";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import {
@@ -529,8 +529,8 @@ function Group({
   );
 }
 
-/** Names the catalog knows, for integrations whose address v1 kept only in their spec. */
-const iconDomains = catalogIconDomainsAtom(catalogAtom);
+/** Catalog apps' icons by name, for integrations that match an official app. */
+const catalogIcons = catalogIconsAtom(catalogAtom);
 
 /** An integration's logo from the host it calls; toolkits and artifacts show what they become. */
 function ItemIcon({
@@ -540,7 +540,7 @@ function ItemIcon({
   readonly item: V1ImportItem;
   readonly fallback: IconSvgElement;
 }) {
-  const domains = useAtomValue(iconDomains);
+  const icons = useAtomValue(catalogIcons);
   if (item.kind === "toolkit" || item.kind === "artifact")
     return (
       <span className="inline-flex size-8.5 shrink-0 items-center justify-center rounded-[7px] border bg-background">
@@ -548,7 +548,13 @@ function ItemIcon({
       </span>
     );
   const name = item.kind === "connection" ? (item.context ?? item.label) : item.label;
-  return <ProviderIcon name={name} url={item.host ?? domains.get(name.trim().toLowerCase())} />;
+  return (
+    <ProviderIcon
+      name={name}
+      url={item.host}
+      icons={icons.byName.get(name.trim().toLowerCase()) ?? undefined}
+    />
+  );
 }
 
 /** The groups are known before the preview arrives; only their counts wait. */
