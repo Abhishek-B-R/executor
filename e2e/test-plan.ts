@@ -6392,6 +6392,18 @@ export const scenarios = plan({
       cloud: na("Uses a loopback provider fixture."),
     },
   },
+  webhookSourceRetryBackoff: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "webhook-source-retry-backoff.spec.ts",
+    title:
+      "a webhook source whose account's OAuth renewal the service keeps refusing waits twice as long after each failure in a row, and configuring it runs at once and starts the count again",
+    targets: {
+      local: na("Hosted link and webhook source routes."),
+      "self-host": scheduled,
+      cloud: na("Advances the wall clock and reads stored rows of a runner-owned product process."),
+    },
+  },
   webhookSourceEditors: {
     fixtures: "actors",
     file: "webhook-source-status.spec.ts",

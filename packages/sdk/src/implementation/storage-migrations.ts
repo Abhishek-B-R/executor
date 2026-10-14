@@ -14,6 +14,7 @@ import {
   version4012Schema,
   version4013Tables,
   version4014Tables,
+  version4015Tables,
   appScheduleIndex,
   scopedRunKeyIndex,
   version402Tables,
@@ -629,6 +630,20 @@ export const storageSchemas = [
           },
         ]),
       ),
+  }),
+  // Additive for the running server: a source it writes keeps the default count, which only
+  // shortens that source's next retry delay.
+  schema({
+    version: "4.0.15",
+    tables: version4015Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
   }),
 ] as const;
 

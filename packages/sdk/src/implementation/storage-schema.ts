@@ -819,12 +819,28 @@ const scopedWorkflowRuns = table("executor_workflow_runs", {
   scope: column("scope", AccountScope, { type: "varchar(16)" }).default("user"),
 });
 
-/** Tables of the 4.0.14 layout, the current one. */
+/** Tables of the 4.0.14 layout. */
 export const version4014Tables = {
   ...version4013Tables,
   schedules: appScopeSchedules,
   webhookSources: appScopeWebhookSources,
   workflowRuns: scopedWorkflowRuns,
+};
+
+/**
+ * Version 4.0.15 counts a webhook source's failed attempts since its intent last changed or it
+ * last succeeded, so its retries back off instead of repeating its network work every tick.
+ */
+const retriedWebhookSources = table("executor_webhook_sources", {
+  ...appScopeWebhookSources.columns,
+  /** Failed attempts in a row on the source's current intent; zero once it succeeds or changes. */
+  retries: column("retries", Schema.Int).default(0),
+}).unique("executor_webhook_sources_app_account", ["app", "account"]);
+
+/** Tables of the 4.0.15 layout, the current one. */
+export const version4015Tables = {
+  ...version4014Tables,
+  webhookSources: retriedWebhookSources,
 };
 
 /**

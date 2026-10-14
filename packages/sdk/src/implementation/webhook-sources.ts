@@ -51,8 +51,16 @@ const StoredSource = Schema.Struct({
   revision: Schema.Int,
   lease: Schema.NullOr(Schema.String),
   leaseUntil: Schema.Date,
+  retries: Schema.Int,
 });
 type StoredSource = typeof StoredSource.Type;
+
+/**
+ * The wait after a source's `retries`-th failure in a row: 30 seconds, doubling to at most an hour.
+ * A failure that persists, such as a service refusing the account's OAuth client, then costs one
+ * attempt an hour instead of one a tick. New intent resets the count and runs at once.
+ */
+const retryDelay = (retries: number) => Math.min(30_000 * 2 ** (retries - 1), 3_600_000);
 
 /**
  * Keys of managed subscriptions start with `setup-` and hash the definition, source, configuration
@@ -309,6 +317,12 @@ export const makeWebhookSources = (
                     ? "removing"
                     : "pending"
                   : status;
+                // Only a failure backs off. A source that needs setup keeps its short delay, so it
+                // runs soon after the setup is done.
+                const retries =
+                  !changed && (next === "failed" || (next === "removing" && failure !== null))
+                    ? live.retries + 1
+                    : 0;
                 yield* query(() =>
                   tx.updateMany("webhookSources", {
                     where: (b) => b("id", "=", live.id),
@@ -317,8 +331,14 @@ export const makeWebhookSources = (
                       failure: changed ? null : failure,
                       lease: null,
                       leaseUntil: new Date(
-                        completedAt + (changed || next === "ready" ? 0 : 30_000),
+                        completedAt +
+                          (changed || next === "ready"
+                            ? 0
+                            : retries > 0
+                              ? retryDelay(retries)
+                              : 30_000),
                       ),
+                      retries,
                       ...(next === "ready" ? { reconciledDeployment: app.activeDeployment } : {}),
                     },
                   }),
@@ -422,6 +442,7 @@ export const makeWebhookSources = (
             config,
             status: "pending" as const,
             failure: null,
+            retries: 0,
           };
           if (existing === undefined) {
             const id = `src_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`;
@@ -480,6 +501,7 @@ export const makeWebhookSources = (
                 config: parsed.config,
                 status: "pending",
                 failure: null,
+                retries: 0,
                 revision: existing.revision + 1,
               },
             }),
@@ -501,6 +523,7 @@ export const makeWebhookSources = (
           const fields = {
             status: "removing" as const,
             failure: null,
+            retries: 0,
             revision: existing.revision + 1,
             ...(existing.status !== "removing" && existing.lease === null
               ? { leaseUntil: new Date(0) }
