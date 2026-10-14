@@ -160,6 +160,15 @@ straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
 let app code reach other private network addresses.
 
+Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
+Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,
+for example `'["https://mcp.example.com"]'`, to reach that origin when it resolves
+to a private address. Entries include the scheme, hostname and optional port,
+with no path or trailing slash. Other origins remain subject to the default
+network restrictions. Allowlist each origin used by the MCP server's OAuth
+metadata and endpoints separately. For an internal CA, set `NODE_EXTRA_CA_CERTS`
+to a PEM CA bundle mounted in the container; TLS verification still applies.
+
 Upgrades apply pending data steps at startup, before serving, and log a summary
 line starting `Data step pass finished`. Set `EXECUTOR_DATA_STEPS=report` to hold
 them: each start then logs what they would change and writes nothing.

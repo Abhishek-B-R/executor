@@ -3428,6 +3428,16 @@ export const scenarios = plan({
       ),
     },
   },
+  privateHttpsMcp: {
+    fixtures: "actors",
+    file: "mcp-auth-detection.spec.ts",
+    title: "Private HTTPS MCP import and OAuth require an exact origin opt-in",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises self-host operator settings through hosted import and account APIs."),
+      cloud: na("Cloud does not permit operator-configured private network origins."),
+    },
+  },
   oauthUrlPolicy: {
     fixtures: "actors",
     file: "oauth-url-policy.spec.ts",

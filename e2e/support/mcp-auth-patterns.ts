@@ -6,6 +6,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 
 /**
  * - `anonymous`: initialize and tools/list work without credentials; nothing about OAuth.
@@ -50,9 +51,13 @@ const page = (status: number) =>
   });
 
 /** Start one pattern's server; the listener closes with the caller's scope. */
-export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
+export const mcpAuthServer = Effect.fn(function* (
+  pattern: McpAuthPattern,
+  tls?: { readonly key: string; readonly cert: string },
+) {
   const address = yield* Deferred.make<string>();
   let registrations = 0;
+  let requests = 0;
   const origin = Deferred.await(address);
   const anonymous = pattern === "anonymous" || pattern === "anonymous-oauth";
   /** Patterns with an authorization server, and those that publish path-suffixed metadata. */
@@ -237,17 +242,27 @@ export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
   );
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      Layer.provideMerge(
+        NodeHttpServer.layer(
+          () =>
+            (tls === undefined ? createServer() : createHttpsServer(tls)).on("request", () => {
+              requests++;
+            }),
+          { host: "127.0.0.1", port: 0 },
+        ),
+      ),
     ),
   );
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
-  const base = `http://127.0.0.1:${server.address.port}`;
+  const base = `${tls === undefined ? "http" : "https"}://127.0.0.1:${server.address.port}`;
   yield* Deferred.succeed(address, base);
   return {
     origin: base,
     url: `${base}/mcp`,
     /** Dynamic client registration requests received. */
     registrations: Effect.sync(() => registrations),
+    /** HTTP requests received, including MCP and OAuth discovery. */
+    requests: Effect.sync(() => requests),
   };
 });

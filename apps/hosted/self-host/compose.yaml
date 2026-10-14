@@ -19,6 +19,7 @@ services:
       EXECUTOR_ENCRYPTION_KEY:
       # OAuth transport exceptions are explicit and parsed at startup.
       EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
+      # JSON array of exact HTTP(S) origins allowed to resolve to private addresses.
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
       # Most app and data Workers kept loaded (default 64). Idle ones above it unload and reload

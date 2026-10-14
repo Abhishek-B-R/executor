@@ -33,24 +33,24 @@ export const LoopbackOrigin = Schema.String.check(
   ),
 );
 
-/** An exact HTTP origin, including its port. No paths, credentials, wildcards, query or fragment. */
+/** An exact HTTP(S) origin, including its port. No paths, credentials, wildcards, query or fragment. */
 export const HttpOrigin = Schema.String.check(
   Schema.makeFilter(
     (value) => {
       const url = URL.parse(value);
       return (
         url !== null &&
-        url.protocol === "http:" &&
+        (url.protocol === "http:" || url.protocol === "https:") &&
         !url.hostname.includes("*") &&
         url.origin === value
       );
     },
-    { message: "Expected an exact HTTP origin, without a trailing slash" },
+    { message: "Expected an exact HTTP(S) origin, without a trailing slash" },
   ),
 ).pipe(Schema.brand("HttpOrigin"));
 export type HttpOrigin = typeof HttpOrigin.Type;
 
-/** Trusted host policy. Explicit HTTP origins never imply access to sibling hosts or other ports. */
+/** Trusted host policy. Explicit origins never imply access to sibling hosts or other ports. */
 export const UrlPolicy = Schema.Struct({
   allowLoopbackHttp: Schema.Boolean,
   allowedHttpOrigins: Schema.Array(HttpOrigin),

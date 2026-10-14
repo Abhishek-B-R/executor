@@ -3,7 +3,8 @@
  * credentials, and says which signals decided it. Each server emulates a real service's pattern.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -12,6 +13,8 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Inventory, Resource } from "../support/contracts.ts";
 import { mcpAuthServer, type McpAuthPattern } from "../support/mcp-auth-patterns.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { Target } from "../support/platform.ts";
+import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 
@@ -149,6 +152,93 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
 });
 
 layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
+  it.effect(scenarios.privateHttpsMcp.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem,
+          processes = yield* ChildProcessSpawner.ChildProcessSpawner,
+          api = yield* Api,
+          actors = yield* Actors,
+          target = yield* Target;
+        const { prefix, startOAuth } = yield* importer;
+        // Trust only this scenario's short-lived certificate, without disabling TLS verification.
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-https-mcp-" });
+        const certificate = `${directory}/cert.pem`;
+        const key = `${directory}/key.pem`;
+        yield* processes.string(
+          ChildProcess.make(
+            "openssl",
+            [
+              "req",
+              "-x509",
+              "-newkey",
+              "rsa:2048",
+              "-nodes",
+              "-keyout",
+              key,
+              "-out",
+              certificate,
+              "-days",
+              "1",
+              "-subj",
+              "/CN=127.0.0.1",
+              "-addext",
+              "subjectAltName=IP:127.0.0.1,DNS:localhost",
+            ],
+            { stderr: "pipe" },
+          ),
+        );
+        const tls = {
+          key: yield* fs.readFileString(key),
+          cert: yield* fs.readFileString(certificate),
+        };
+        const allowed = yield* mcpAuthServer("oauth-dcr", tls);
+        const otherPort = yield* mcpAuthServer("oauth-dcr", tls);
+        const attempt = (url: string) =>
+          api.request(actors.owner, "POST", `${prefix}/apps/import`, {
+            source: { kind: "mcp", name: "Private HTTPS fixture", url },
+          });
+
+        yield* serverControl("stop");
+        // Disabling the loopback shortcut also requires an explicit origin for the runner's callback.
+        const callback = `http://account-picker.localhost:${new URL(target.metadata.origin).port}`;
+        yield* serverControl("environment", 200, {
+          NODE_EXTRA_CA_CERTS: certificate,
+          EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "false",
+          EXECUTOR_URL_ALLOW_HTTP_ORIGINS: JSON.stringify([allowed.origin, callback]),
+        });
+        yield* serverControl("start");
+        const imported = yield* attempt(allowed.url);
+        expect(imported.status, JSON.stringify(imported.body)).toBe(200);
+        const app = yield* body(Imported, imported);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        expect(Object.keys(app.requirements.accounts)).toEqual(["service"]);
+
+        const started = yield* startOAuth(app.id);
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        expect(yield* allowed.registrations).toBe(1);
+        const signIn = yield* body(SignIn, started);
+        expect(new URL(signIn.authorizationUrl).origin).toBe(allowed.origin);
+
+        const requests = yield* allowed.requests;
+        for (const url of [
+          otherPort.url,
+          allowed.url.replace("https:", "http:"),
+          allowed.url.replace("127.0.0.1", "localhost"),
+        ]) {
+          const refused = yield* attempt(url);
+          expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+          expect(refused.body).toMatchObject({ _tag: "CatalogImportFailed" });
+        }
+        expect(yield* otherPort.requests).toBe(0);
+        expect(yield* allowed.requests).toBe(requests);
+      }),
+    ),
+  );
+
   it.effect(scenarios.mcpAuthDetectionPublic.title, (context) =>
     withHostedCase(
       context,
