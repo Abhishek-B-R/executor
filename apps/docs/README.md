@@ -36,7 +36,7 @@ of them to plain Markdown, so an agent reading a page sees an ordered list where
 a reader sees steps.
 
 Keep the existing voice: short, plain sentences. Use the vocabulary in
-`CONTEXT.md` — provider, account, app, deployment, tool, approval, organization.
+`CONTEXT.md` — provider, account, app, version, tool, approval, organization.
 Do not use integration, connection, toolkit or policy. Never put a customer name
 or customer data in a page; use synthetic examples. Mark anything not yet
 shipped as "coming later" rather than documenting it as available.

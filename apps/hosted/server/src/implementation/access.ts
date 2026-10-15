@@ -1,7 +1,7 @@
 import {
   AccountNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
+  VersionNotFound,
   invocationAccounts,
   sameAccounts,
 } from "@executor-js/sdk/core";
@@ -20,7 +20,7 @@ import type {
   AppAccounts,
   AppId,
   AccountConnectionId,
-  DeploymentId,
+  VersionId,
   Executor,
   OwnerId,
   SelectedAccounts,
@@ -107,7 +107,7 @@ export const usableApp = (executor: Executor, owner: OwnerId, app: AppId) =>
   });
 /**
  * The app read a selection check made ahead, and what it was read for. The check uses it only for
- * the app's requirements, the deployment pin and the order of its failures; a tool call reads its
+ * the app's requirements, the version pin and the order of its failures; a tool call reads its
  * own state after the check.
  */
 export interface SelectionReads {
@@ -161,7 +161,7 @@ export const readSelection = (executor: Executor, owner: OwnerId, app: AppId) =>
   }));
 /**
  * {@link usableApp} with the caller's links to the app and the app links. The app is read
- * first, so membership, the app's policy and, when its active deployment declares accounts, the
+ * first, so membership, the app's policy and, when its active version declares accounts, the
  * caller's links and the app links take one statement; an app the caller may not use is still refused before a missing one. An operation
  * then reads its own state, after these checks. `read`
  * is the app read the caller made earlier, used only when it was made for this owner and app and
@@ -191,8 +191,8 @@ const usableAppWithLinks = (
         ? yield* fold.result
         : Result.isSuccess(current) &&
             Object.keys(current.success.requirements.accounts).length === 0
-          ? // The active deployment needs no account, so the statement reads no links or
-            // app links. A retained deployment that declares accounts reads them when it resolves
+          ? // The active version needs no account, so the statement reads no links or
+            // app links. A retained version that declares accounts reads them when it resolves
             // its requirements.
             yield* resourceAuthorityForApp(organization, user, app).pipe(
               Effect.flatMap(({ actor, access }) =>
@@ -221,46 +221,46 @@ export const selectedApp = (
     return { app: current, accounts: yield* callerAccounts(current, linked) };
   });
 /**
- * Check the configured app and resolve the caller's accounts for one of its deployments: a
+ * Check the configured app and resolve the caller's accounts for one of its versions: a
  * retained one in its code lineage when pinned, else the active one. Reads of an earlier
- * deployment, such as its skills, resolve its own requirements.
+ * version, such as its skills, resolve its own requirements.
  */
 export const selectedVersion = (
   executor: Executor,
   owner: OwnerId,
-  input: { readonly app: AppId; readonly deployment?: DeploymentId | undefined },
+  input: { readonly app: AppId; readonly version?: VersionId | undefined },
 ) =>
   Effect.gen(function* () {
     const { app: current, linked } = yield* usableAppWithLinks(executor, owner, input.app);
-    if (input.deployment === undefined || input.deployment === current.activeDeployment)
+    if (input.version === undefined || input.version === current.activeVersion)
       return yield* callerAccounts(current, linked);
-    const retained = yield* executor.apps.deployment({
+    const retained = yield* executor.apps.version({
       owner,
       app: input.app,
-      deployment: input.deployment,
+      version: input.version,
     });
     return yield* versionAccounts(
-      { app: current.id, deployment: retained.id, requirements: retained.requirements },
+      { app: current.id, version: retained.id, requirements: retained.requirements },
       linked,
     );
   });
 /** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
-export const selectedActiveDeployment = (
+export const selectedActiveVersion = (
   executor: Executor,
   owner: OwnerId,
-  input: { readonly app: AppId; readonly deployment?: DeploymentId | undefined },
+  input: { readonly app: AppId; readonly version?: VersionId | undefined },
 ) =>
   Effect.gen(function* () {
     const { app, accounts } = yield* selectedApp(executor, owner, input.app);
-    if (input.deployment !== undefined && input.deployment !== app.activeDeployment)
-      return yield* new DeploymentNotFound({ app: app.id, deployment: input.deployment });
-    if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
+    if (input.version !== undefined && input.version !== app.activeVersion)
+      return yield* new VersionNotFound({ app: app.id, version: input.version });
+    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
     // Pin the authorized version so a concurrent promotion cannot silently change the call.
-    return { deployment: app.activeDeployment, accounts };
+    return { version: app.activeVersion, accounts };
   });
 
 /**
- * A tool call's pinned deployment, accounts and kind, after `check` authorizes them. A check that
+ * A tool call's pinned version, accounts and kind, after `check` authorizes them. A check that
  * evaluates the app, such as a read-only rule reading the tool's metadata, takes as long as the app
  * does, so the caller's links are read again after it: a link removed or added meanwhile takes
  * effect on the call, as it would on the next one. The call runs with the accounts and the kind
@@ -271,27 +271,27 @@ export const selectedActiveDeployment = (
 export const checkedToolCall = <E, R>(
   executor: Executor,
   owner: OwnerId,
-  input: { readonly app: AppId; readonly deployment?: DeploymentId | undefined },
+  input: { readonly app: AppId; readonly version?: VersionId | undefined },
   check: (
-    selected: { readonly deployment: DeploymentId; readonly accounts: AppAccounts },
+    selected: { readonly version: VersionId; readonly accounts: AppAccounts },
     described?: ToolIdentity,
   ) => Effect.Effect<ToolAuthorization, E, R>,
   read?: SelectionReads,
 ) =>
   Effect.gen(function* () {
     const { app, accounts } = yield* selectedApp(executor, owner, input.app, read);
-    if (input.deployment !== undefined && input.deployment !== app.activeDeployment)
-      return yield* new DeploymentNotFound({ app: app.id, deployment: input.deployment });
-    if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
-    const deployment = app.activeDeployment;
-    const first = yield* check({ deployment, accounts });
-    if (first.tool === undefined) return { deployment, accounts, kind: first.kind };
+    if (input.version !== undefined && input.version !== app.activeVersion)
+      return yield* new VersionNotFound({ app: app.id, version: input.version });
+    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+    const version = app.activeVersion;
+    const first = yield* check({ version, accounts });
+    if (first.tool === undefined) return { version, accounts, kind: first.kind };
     const live = yield* callerAccounts(app);
     const { kind } = yield* check(
-      { deployment, accounts: live },
+      { version, accounts: live },
       sameAccounts(live, accounts) ? first.tool : undefined,
     );
-    return { deployment, accounts: live, kind };
+    return { version, accounts: live, kind };
   });
 
 /**

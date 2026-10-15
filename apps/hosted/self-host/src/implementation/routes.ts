@@ -195,7 +195,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         Layer.provide(appUi.sessionAccess.combine(appServices).layer),
       ),
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
-      HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
+      HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),

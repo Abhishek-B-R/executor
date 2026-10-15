@@ -42,7 +42,7 @@ Object for session state. See [hosted MCP](../../notes/hosted-mcp.md).
 
 The `skills` tool reads ordinary deployed app files through `listSkills/readSkill`.
 Call `{}` to discover visible skills, then `{app, name}` to read one. Reference
-reads can pin the returned deployment ID. MCP owns no documents, file loaders or
+reads can pin the returned version ID. MCP owns no documents, file loaders or
 built-in skill registry. See [app skills](../../notes/app-skills.md).
 
 The default Executor management app is a normal saved app with a connected
@@ -101,5 +101,5 @@ app account lists the app again rather than serving a listing read with the prev
 
 Discovery lists an app's catalog and skills with the same accounts a call uses. An app whose
 plain requirement has no linked account exposes no tools (calling into it reports
-`AppAccountRequired`) and lists no skills. Calls are pinned to the deployment discovery listed and
+`AppAccountRequired`) and lists no skills. Calls are pinned to the version discovery listed and
 resolve their accounts again; backends recheck them.

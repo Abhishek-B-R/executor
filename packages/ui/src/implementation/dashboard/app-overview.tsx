@@ -33,12 +33,12 @@ export function AppOverview({
   readonly entries: ReactNode;
 }) {
   const { AppLink } = useDashboard();
-  const undeployed = app.activeDeployment === null;
+  const undeployed = app.activeVersion === null;
   if (undeployed)
     return (
       <div className="p-7 max-[740px]:p-4">
         <EmptyState
-          title="No deployment yet"
+          title="No version yet"
           action={
             source ? (
               <Button asChild disabledReason={sourceDisabledReason}>
@@ -149,8 +149,8 @@ export function AppOverviewTools<E>({
   const { AppLink } = useDashboard();
   return (
     <ToolsPreviewFrame app={app}>
-      {app.activeDeployment === null ? (
-        <EmptyState size="card" heading="h3" title="No deployment yet">
+      {app.activeVersion === null ? (
+        <EmptyState size="card" heading="h3" title="No version yet">
           Deploy source to make tools available.
         </EmptyState>
       ) : sources.length === 0 ? (
@@ -214,7 +214,7 @@ function ToolsPreviewFrame({ app, children }: { readonly app: App; readonly chil
     <>
       <div className="flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
         <h3 className="text-sm font-medium">Tools</h3>
-        {app.activeDeployment !== null && (
+        {app.activeVersion !== null && (
           <AppLink
             app={app.id}
             view="tools"
@@ -247,10 +247,10 @@ export function AppOverviewAccounts({
       <EmptyState
         size="card"
         heading="h3"
-        title={app.activeDeployment === null ? "No deployment yet" : "No accounts required"}
+        title={app.activeVersion === null ? "No version yet" : "No accounts required"}
       >
-        {app.activeDeployment === null
-          ? "Account requirements appear after deployment."
+        {app.activeVersion === null
+          ? "Account requirements appear after deploying."
           : "This app can run without a saved account."}
       </EmptyState>
     );

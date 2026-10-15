@@ -16,7 +16,7 @@ const App = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   slug: Schema.String,
-  activeDeployment: Schema.String,
+  activeVersion: Schema.String,
   accounts: Schema.optional(Schema.Never),
 });
 const Inventory = Schema.Struct({
@@ -83,8 +83,8 @@ layer(HostedLive, { excludeTestServices: true })("Executor customization", (it) 
           ],
           { concurrency: 2 },
         );
-        expect(afterEdit.apps.find((item) => item.id === app.id)?.activeDeployment).toBe(
-          edited.app.activeDeployment,
+        expect(afterEdit.apps.find((item) => item.id === app.id)?.activeVersion).toBe(
+          edited.app.activeVersion,
         );
         expect(saved.files.toSorted((a, b) => a.path.localeCompare(b.path))).toEqual(
           modified.toSorted((a, b) => a.path.localeCompare(b.path)),

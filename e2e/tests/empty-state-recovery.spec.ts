@@ -51,8 +51,8 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
             page.getByText("View the files that make this app work.", { exact: true }).waitFor(),
           );
           expect(
-            yield* browser.use("One deployment state replaces repeated cards", (page) =>
-              page.getByRole("heading", { name: "No deployment yet", exact: true }).count(),
+            yield* browser.use("One version state replaces repeated cards", (page) =>
+              page.getByRole("heading", { name: "No version yet", exact: true }).count(),
             ),
           ).toBe(1);
           expect(
@@ -69,8 +69,8 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
               .getByRole("link", { name: "Schedules", exact: true })
               .click(),
           );
-          yield* browser.use("Schedules explains the missing deployment", (page) =>
-            page.getByRole("heading", { name: "No deployment yet", exact: true }).waitFor(),
+          yield* browser.use("Schedules explains the missing version", (page) =>
+            page.getByRole("heading", { name: "No version yet", exact: true }).waitFor(),
           );
           expect(
             yield* browser.use("No useless retry for an undeployed app", (page) =>

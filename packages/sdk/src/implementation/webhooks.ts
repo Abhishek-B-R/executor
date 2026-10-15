@@ -18,6 +18,7 @@ import {
   WebhookTarget,
   DeliverWebhook,
   WebhookSubscription,
+  WebhookSubscriptionFields,
   WebhookApp,
   WebhookDefinitionsInput,
   WebhookNotFound,
@@ -39,20 +40,22 @@ import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp, storedDeployment } from "./apps.ts";
+import { storedApp, storedVersion } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
 import { accountAuthority } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredWebhook = Schema.Struct({
-  ...WebhookSubscription.fields,
+  ...WebhookSubscriptionFields.fields,
   registeredActor: Schema.NullOr(Schema.NonEmptyString),
   registeredAccounts: Schema.NullOr(SelectedAccounts),
   encrypted: Schema.RedactedFromValue(Schema.Uint8Array),
   revision: Schema.String,
   leaseUntil: Schema.Date,
-});
+})
+  // Storage keeps the columns' former names.
+  .pipe(Schema.encodeKeys({ version: "deployment" }));
 /**
  * The actor and accounts an upstream registration ran as, saved before it reached the provider.
  * An app-account webhook's registration ran without an actor.
@@ -135,26 +138,26 @@ export const makeWebhooks = (
       Effect.flatMap((value) => Schema.decodeUnknownEffect(PrivateState)(Redacted.value(value))),
       Effect.mapError(() => new StorageError()),
     );
-  /** The subscription's pinned deployment and source, with the actor's accounts for the rest. */
+  /** The subscription's pinned version and source, with the actor's accounts for the rest. */
   const subscriptionState = (row: typeof StoredWebhook.Type) =>
     Effect.gen(function* () {
       const accounts = yield* backgroundAccounts(db, lifecycle, {
         app: row.app,
-        deployment: row.deployment,
+        version: row.version,
         actor: row.actor ?? undefined,
         source: row.sourceAccount,
       });
-      return yield* snapshot(db, { app: row.app, deployment: row.deployment, accounts });
+      return yield* snapshot(db, { app: row.app, version: row.version, accounts });
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
   /**
-   * The registration's pinned deployment and the accounts it ran with, as the actor it ran as.
+   * The registration's pinned version and the accounts it ran with, as the actor it ran as.
    * Removing it uses only them: the subscription may have moved to another actor since, and the
    * actor's current links may no longer resolve every requirement.
    */
   const removalState = (row: typeof StoredWebhook.Type, registration: Registration) =>
     snapshot(db, {
       app: row.app,
-      deployment: row.deployment,
+      version: row.version,
       // Only an app-account webhook's registration runs without an actor, and without a caller.
       captured: {
         accounts: registration.accounts,
@@ -241,8 +244,8 @@ export const makeWebhooks = (
     runtime
       .webhook({
         app: row.app,
-        build: state.deployment.build,
-        database: ownsDatabase(state.deployment.requirements),
+        build: state.version.build,
+        database: ownsDatabase(state.version.requirements),
         ...context,
         ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
         command,
@@ -271,8 +274,8 @@ export const makeWebhooks = (
           runtime
             .webhook({
               app: state.app.id,
-              build: state.deployment.build,
-              database: ownsDatabase(state.deployment.requirements),
+              build: state.version.build,
+              database: ownsDatabase(state.version.requirements),
               ...context,
               command: { operation: "webhooks" },
             })
@@ -455,17 +458,15 @@ export const makeWebhooks = (
       )
         return yield* new WebhookFailed({ reason: "unavailable" });
       const app = yield* storedApp(db, parsed);
-      const deployment = yield* storedDeployment(db, app);
+      const version = yield* storedVersion(db, app);
       const sourceAccount = parsed.sourceAccount;
       const state = yield* backgroundAccounts(db, lifecycle, {
         app: app.id,
-        deployment: deployment.id,
+        version: version.id,
         actor,
         source: sourceAccount,
       }).pipe(
-        Effect.flatMap((accounts) =>
-          snapshot(db, { app: app.id, deployment: deployment.id, accounts }),
-        ),
+        Effect.flatMap((accounts) => snapshot(db, { app: app.id, version: version.id, accounts })),
         Effect.provideService(CurrentActor, actor),
       );
       const context = yield* resolve(state, resolveAccount).pipe(
@@ -474,8 +475,8 @@ export const makeWebhooks = (
       const catalog = yield* runtime
         .webhook({
           app: parsed.app,
-          build: state.deployment.build,
-          database: ownsDatabase(state.deployment.requirements),
+          build: state.version.build,
+          database: ownsDatabase(state.version.requirements),
           ...context,
           command: { operation: "webhooks" },
         })
@@ -490,8 +491,8 @@ export const makeWebhooks = (
       const hook = catalog.find((hook) => hook.name === parsed.name);
       if (hook === undefined) return yield* new WebhookFailed({ reason: "definition" });
       // An app-account webhook runs without an actor; a user-account webhook, as its actor.
-      const required = Object.hasOwn(state.deployment.requirements.accounts, hook.account)
-        ? state.deployment.requirements.accounts[hook.account]
+      const required = Object.hasOwn(state.version.requirements.accounts, hook.account)
+        ? state.version.requirements.accounts[hook.account]
         : undefined;
       if (required === undefined || (required.scope === "app") !== (actor === undefined))
         return yield* new WebhookFailed({ reason: "input" });
@@ -511,8 +512,8 @@ export const makeWebhooks = (
       const config = yield* runtime
         .webhook({
           app: parsed.app,
-          build: state.deployment.build,
-          database: ownsDatabase(state.deployment.requirements),
+          build: state.version.build,
+          database: ownsDatabase(state.version.requirements),
           ...context,
           command: {
             operation: "webhook-validate",
@@ -546,7 +547,7 @@ export const makeWebhooks = (
             }),
           );
           const current = yield* storedApp(db, { app: state.app.id });
-          if (current.activeDeployment !== state.app.activeDeployment)
+          if (current.activeVersion !== state.app.activeVersion)
             return yield* new WebhookConflict();
           // At most one subscription per key is not stopped; stopped ones are history.
           const keyed = yield* query(() =>
@@ -590,7 +591,7 @@ export const makeWebhooks = (
               owner: state.app.owner,
               actor: actor ?? null,
               key: parsed.key,
-              deployment: state.deployment.id,
+              deployment: state.version.id,
               name: parsed.name,
               sourceAccount,
               callbackUrl,

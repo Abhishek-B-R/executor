@@ -2,7 +2,7 @@ import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
-/** Durable configured apps and immutable deployments, sharing one execution path. */
+/** Durable configured apps and immutable versions, sharing one execution path. */
 import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
 import { SqlError } from "effect/sql";
 import {
@@ -13,20 +13,20 @@ import {
   AppNotDeployed,
   AppSlugTaken,
   AppRequirements,
-  RetainedDeployment,
+  RetainedVersion,
   type AppCopyOrigin,
   type AppCopySnapshot,
 } from "../contracts/apps.ts";
 import { makeAppAuthoring } from "./app-authoring.ts";
 import {
-  AppDeploymentChanged,
-  Deployment,
-  DeploymentBuildFailed,
+  AppVersionChanged,
+  Version,
+  VersionBuildFailed,
   BuildMemoryExceeded,
-  DeploymentNotFound,
-  DeploymentSummary,
+  VersionNotFound,
+  VersionSummary,
   SourceFiles,
-} from "../contracts/deployment.ts";
+} from "../contracts/version.ts";
 import type { Executor } from "../contracts/executor.ts";
 import {
   RuntimeBuildFailed,
@@ -37,12 +37,12 @@ import {
 import {
   AppCodeId,
   AppId,
-  DeploymentId,
+  VersionId,
   OwnerId,
   StorageError,
   JsonObject,
 } from "../contracts/shared.ts";
-import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
+import { StoredApp, StoredVersion } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
@@ -57,7 +57,7 @@ import type { Registry } from "../contracts/registry.ts";
 import { resolvePublication } from "./registry.ts";
 
 import type { BlobStorage } from "../contracts/blobs.ts";
-import { readDeploymentSource, writeDeploymentSource } from "./deployment-source.ts";
+import { readVersionSource, writeVersionSource } from "./version-source.ts";
 import { readInitialSource, writeInitialSource } from "./initial-source.ts";
 import {
   releasePublicFiles,
@@ -73,7 +73,7 @@ type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
 /** Read a configured app, applying an optional owner constraint. */
 
 /** Carry the runtime's stage, location and underlying failure to the deployer. */
-const deploymentBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFailed) => {
+const versionBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFailed) => {
   const { stage, dependency, location } = error;
   const hint =
     dependency === undefined ? undefined : `Add ${dependency} to package.json dependencies.`;
@@ -88,7 +88,7 @@ const deploymentBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuild
     location === undefined || detail?.includes(location.file) === true
       ? ""
       : ` in ${location.file}${location.line === undefined ? "" : `:${location.line}${location.column === undefined ? "" : `:${location.column}`}`}`;
-  return new DeploymentBuildFailed({
+  return new VersionBuildFailed({
     owner,
     name,
     reason: hint ?? error.declaration?.message ?? "App build failed",
@@ -115,7 +115,7 @@ export const storedApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[
     );
   });
 
-/** Lock the app before changing selections or deployment; only write its immutable code identity, then reread. */
+/** Lock the app before changing selections or version; only write its immutable code identity, then reread. */
 export const lockApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
   Effect.gen(function* () {
     const app = yield* storedApp(db, input);
@@ -128,74 +128,72 @@ export const lockApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]
     return yield* storedApp(db, input);
   });
 
-/** Read a deployment from this app's lineage, including its retained source and requirements. */
-export const storedDeployment = (
+/** Read a version from this app's lineage, including its retained source and requirements. */
+export const storedVersion = (
   db: Query,
-  app: Pick<StoredApp, "id" | "code" | "activeDeployment">,
-  deployment: DeploymentId | null = app.activeDeployment,
-  deploymentOwner?: OwnerId,
+  app: Pick<StoredApp, "id" | "code" | "activeVersion">,
+  version: VersionId | null = app.activeVersion,
+  versionOwner?: OwnerId,
 ) =>
   Effect.gen(function* () {
-    if (deployment === null) return yield* new AppNotDeployed({ app: app.id });
+    if (version === null) return yield* new AppNotDeployed({ app: app.id });
     const row = yield* query(() =>
       db.findFirst("deployments", {
         where: (b) =>
           b.and(
-            b("id", "=", deployment),
+            b("id", "=", version),
             b("code", "=", app.code),
-            deploymentOwner === undefined ? true : b("owner", "=", deploymentOwner),
+            versionOwner === undefined ? true : b("owner", "=", versionOwner),
           ),
       }),
     );
-    if (row === null)
-      return yield* Effect.fail(new DeploymentNotFound({ app: app.id, deployment }));
-    return yield* Schema.decodeUnknownEffect(StoredDeployment)(row).pipe(
+    if (row === null) return yield* Effect.fail(new VersionNotFound({ app: app.id, version }));
+    return yield* Schema.decodeUnknownEffect(StoredVersion)(row).pipe(
       Effect.mapError(() => new StorageError()),
     );
   });
 
-const StoredDeploymentRequirements = Schema.Struct({ requirements: AppRequirements });
+const StoredVersionRequirements = Schema.Struct({ requirements: AppRequirements });
 
-/** Whether any deployment of the app's code applied SQL migrations. */
+/** Whether any version of the app's code applied SQL migrations. */
 const hadMigrations = (db: Query, code: AppCodeId) =>
   query(() =>
     db.findMany("deployments", { select: ["requirements"], where: (b) => b("code", "=", code) }),
   ).pipe(
     Effect.flatMap((rows) =>
       Effect.forEach(rows, (row) =>
-        Schema.decodeUnknownEffect(StoredDeploymentRequirements)(row).pipe(
+        Schema.decodeUnknownEffect(StoredVersionRequirements)(row).pipe(
           Effect.mapError(() => new StorageError()),
         ),
       ),
     ),
-    Effect.map((deployed) => deployed.some((deployment) => deployment.requirements.sql === true)),
+    Effect.map((deployed) => deployed.some((version) => version.requirements.sql === true)),
   );
 const AppProjection = Schema.Struct({
   app: StoredApp,
-  deployment: Schema.NullOr(StoredDeploymentRequirements),
+  version: Schema.NullOr(StoredVersionRequirements),
 });
-const projectedApp = (row: { readonly app: unknown; readonly deployment: unknown }) =>
+const projectedApp = (row: { readonly app: unknown; readonly version: unknown }) =>
   Schema.decodeUnknownEffect(AppProjection)(row).pipe(
     Effect.mapError(() => new StorageError()),
-    Effect.flatMap(({ app, deployment }) => {
-      if (app.activeDeployment !== null && deployment === null)
-        return Effect.fail(new StorageError());
+    Effect.flatMap(({ app, version }) => {
+      if (app.activeVersion !== null && version === null) return Effect.fail(new StorageError());
       return Effect.succeed({
         ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
-        requirements: deployment === null ? { accounts: {} } : deployment.requirements,
+        requirements: version === null ? { accounts: {} } : version.requirements,
       });
     }),
   );
 
-/** The app `get` returns for a row read with its active deployment joined. */
+/** The app `get` returns for a row read with its active version joined. */
 export const gotApp = (row: { readonly deployment: unknown }) => {
-  const { deployment, ...app } = row;
-  return projectedApp({ app, deployment });
+  const { deployment: version, ...app } = row;
+  return projectedApp({ app, version });
 };
 
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
-  if (app.activeDeployment === null)
+  if (app.activeVersion === null)
     return Effect.succeed({
       ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
       requirements: { accounts: {} },
@@ -203,20 +201,20 @@ function project(db: Query, app: StoredApp) {
   return query(() =>
     db.findFirst("deployments", {
       select: ["requirements"],
-      where: (b) => b.and(b("id", "=", app.activeDeployment), b("code", "=", app.code)),
+      where: (b) => b.and(b("id", "=", app.activeVersion), b("code", "=", app.code)),
     }),
   ).pipe(
     Effect.flatMap((row) =>
       row === null
         ? Effect.fail(new StorageError())
-        : Schema.decodeUnknownEffect(StoredDeploymentRequirements)(row).pipe(
+        : Schema.decodeUnknownEffect(StoredVersionRequirements)(row).pipe(
             Effect.mapError(() => new StorageError()),
           ),
     ),
 
-    Effect.map((deployment): App => ({
+    Effect.map((version): App => ({
       ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
-      requirements: deployment.requirements,
+      requirements: version.requirements,
     })),
   );
 }
@@ -232,7 +230,7 @@ const appWriteFailure = (app: Pick<StoredApp, "owner" | "name" | "slug">) => (er
   return new StorageError();
 };
 /** Insert app identity while preserving name and derived-slug uniqueness errors. */
-/** A new active deployment re-registers the app's managed webhooks; removed sources keep removing. */
+/** A new active version re-registers the app's managed webhooks; removed sources keep removing. */
 const webhookSourcesPending = (db: Query, app: AppId) =>
   query(() =>
     db.updateMany("webhookSources", {
@@ -241,8 +239,13 @@ const webhookSourcesPending = (db: Query, app: AppId) =>
     }),
   );
 
-export const createApp = (db: Query, app: StoredApp) =>
-  db.create("apps", app).pipe(Effect.mapError(appWriteFailure(app)));
+export const createApp = (db: Query, app: StoredApp) => {
+  // Storage keeps the column's former name.
+  const { activeVersion, ...row } = app;
+  return db
+    .create("apps", { ...row, activeDeployment: activeVersion })
+    .pipe(Effect.mapError(appWriteFailure(app)));
+};
 
 /** Bind app operations; all network/build work finishes before any database transaction. */
 export const makeApps = (
@@ -309,7 +312,7 @@ export const makeApps = (
       const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
         Effect.mapError(
           () =>
-            new DeploymentBuildFailed({
+            new VersionBuildFailed({
               owner: input.owner,
               name: deployName,
               reason: "Invalid source files",
@@ -319,7 +322,7 @@ export const makeApps = (
         ),
       );
       const invalidSource = (message: string) =>
-        new DeploymentBuildFailed({
+        new VersionBuildFailed({
           owner: input.owner,
           name: deployName,
           reason: message,
@@ -341,20 +344,20 @@ export const makeApps = (
             Schema.is(BuildMemoryExceeded)(error)
               ? error
               : Schema.is(RuntimeProtocolUnsupported)(error)
-                ? new DeploymentBuildFailed({
+                ? new VersionBuildFailed({
                     owner: input.owner,
                     name: deployName,
                     reason: `${error.message} Declare a supported apps version.`,
                     message: `${error.message} Declare a supported apps version.`,
                   })
                 : Schema.is(RuntimeAppsDependencyMissing)(error)
-                  ? new DeploymentBuildFailed({
+                  ? new VersionBuildFailed({
                       owner: input.owner,
                       name: deployName,
                       reason: error.message,
                       message: error.message,
                     })
-                  : deploymentBuildFailed(input.owner, deployName, error),
+                  : versionBuildFailed(input.owner, deployName, error),
           ),
         );
       // Each requirement records its scope; a name is used in one scope only.
@@ -371,7 +374,7 @@ export const makeApps = (
       );
       if (repeated !== undefined) {
         const reason = `The requirement "${repeated[0]}" is declared as both an app and a user account.`;
-        return yield* new DeploymentBuildFailed({
+        return yield* new VersionBuildFailed({
           owner: input.owner,
           name: deployName,
           reason,
@@ -420,8 +423,8 @@ export const makeApps = (
         AppId.make(
           `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
         );
-      // Migrations are the database. A build without any would drop the ones an earlier deployment
-      // applied, whichever deployment is active now, so the app's whole deployment history decides.
+      // Migrations are the database. A build without any would drop the ones an earlier version
+      // applied, whichever version is active now, so the app's whole version history decides.
       // The build is not asked: bundles of earlier protocols cannot answer. Checked again under the
       // final app lock, since a concurrent deploy may publish migrations meanwhile.
       const droppedMigrations = (target: Query, app: AppCodeId) =>
@@ -431,9 +434,9 @@ export const makeApps = (
               Effect.flatMap((had) => {
                 if (!had) return Effect.void;
                 const message =
-                  "App migration failed: this app's database has applied migrations, but the build has no migrations/. Applied migrations cannot be removed: restore them and deploy again. The previous deployment is still active.";
+                  "App migration failed: this app's database has applied migrations, but the build has no migrations/. Applied migrations cannot be removed: restore them and deploy again. The previous version is still active.";
                 return Effect.fail(
-                  new DeploymentBuildFailed({
+                  new VersionBuildFailed({
                     owner: input.owner,
                     name: deployName,
                     stage: "migrate",
@@ -451,7 +454,7 @@ export const makeApps = (
       ).pipe(
         Effect.catchTag(
           "SourceError",
-          (error): Effect.Effect<never, DeploymentBuildFailed | StorageError> =>
+          (error): Effect.Effect<never, VersionBuildFailed | StorageError> =>
             error.reason === "limit"
               ? Effect.fail(
                   invalidSource(
@@ -478,7 +481,7 @@ export const makeApps = (
         yield* runtime.migrate({ app: appId, build: built.build }).pipe(
           Effect.mapError((error) => {
             const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
-            return new DeploymentBuildFailed({
+            return new VersionBuildFailed({
               owner: input.owner,
               name: deployName,
               stage: "migrate",
@@ -489,8 +492,8 @@ export const makeApps = (
           Effect.withSpan("sdk.apps.migrate"),
         );
 
-      const deployment = {
-        id: DeploymentId.make(
+      const version = {
+        id: VersionId.make(
           `dpl_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
         ),
         code,
@@ -499,8 +502,8 @@ export const makeApps = (
         build: built.build,
         createdAt: new Date(yield* Clock.currentTimeMillis),
       };
-      yield* writeDeploymentSource(blobs, deployment.id, retainedFiles);
-      // A new app owns an initial workspace independently of this immutable deployment.
+      yield* writeVersionSource(blobs, version.id, retainedFiles);
+      // A new app owns an initial workspace independently of this immutable version.
       if (before === null) yield* writeInitialSource(blobs, code, retainedFiles);
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -543,7 +546,7 @@ export const makeApps = (
           )(requirements).pipe(Effect.mapError(() => new StorageError()));
           yield* query(() =>
             tx.create("deployments", {
-              ...deployment,
+              ...version,
               requirements: encodedRequirements,
               fileCount: files.length,
             }),
@@ -555,7 +558,7 @@ export const makeApps = (
             owner: input.owner,
             name: existing?.name ?? deployName,
             slug: appSlug(existing?.name ?? deployName),
-            activeDeployment: promote ? deployment.id : existing.activeDeployment,
+            activeVersion: promote ? version.id : existing.activeVersion,
             copiedFrom: existing === undefined ? copiedFrom : existing.copiedFrom,
             createdAt: existing === undefined ? createdAt : existing.createdAt,
           };
@@ -571,7 +574,7 @@ export const makeApps = (
             yield* query(() =>
               tx.updateMany("apps", {
                 where: (b) => b("id", "=", app.id),
-                set: { activeDeployment: deployment.id, activatedSequence: sequence },
+                set: { activeDeployment: version.id, activatedSequence: sequence },
               }),
             );
           if (promote) yield* webhookSourcesPending(tx, app.id);
@@ -581,7 +584,7 @@ export const makeApps = (
           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
             Effect.mapError(() => new StorageError()),
           );
-          return { app: deployedApp, deployment };
+          return { app: deployedApp, version };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
@@ -609,15 +612,15 @@ export const makeApps = (
             : from
           : yield* Effect.gen(function* () {
               const parent = yield* storedApp(db, { app: from });
-              if (parent.activeDeployment !== null) {
-                const deployment = yield* storedDeployment(db, parent, parent.activeDeployment);
+              if (parent.activeVersion !== null) {
+                const version = yield* storedVersion(db, parent, parent.activeVersion);
                 return {
-                  files: yield* readDeploymentSource(blobs, deployment.id),
+                  files: yield* readVersionSource(blobs, version.id),
                   stored: storeBytes(blobs, parent.code),
                   origin: {
                     reference: `app:${parent.id}`,
                     name: parent.name,
-                    commit: deployment.sourceCommit,
+                    commit: version.sourceCommit,
                   },
                   activation: "deploy" as const,
                 };
@@ -684,8 +687,8 @@ export const makeApps = (
             orderBy: ["id", "asc"],
           }),
         );
-        return yield* Effect.forEach(rows, ({ deployment, ...app }) =>
-          projectedApp({ app, deployment }),
+        return yield* Effect.forEach(rows, ({ deployment: version, ...app }) =>
+          projectedApp({ app, version }),
         );
       }).pipe(Effect.withSpan("sdk.apps.list")),
     rename: (input: Parameters<Executor["apps"]["rename"]>[0]) =>
@@ -794,7 +797,7 @@ export const makeApps = (
         }),
       ).pipe(
         // The lineage's public files belong to no other app: release them once its row is gone.
-        // A failed release leaves files no deployment can serve; it does not undo the removal.
+        // A failed release leaves files no version can serve; it does not undo the removal.
         Effect.tap(({ code }) =>
           code === null
             ? Effect.void
@@ -811,24 +814,21 @@ export const makeApps = (
       transaction(db, (tx) =>
         Effect.gen(function* () {
           const app = yield* lockApp(tx, input);
-          if (
-            input.expectedDeployment !== undefined &&
-            app.activeDeployment !== input.expectedDeployment
-          ) {
+          if (input.expectedVersion !== undefined && app.activeVersion !== input.expectedVersion) {
             return yield* Effect.fail(
-              new AppDeploymentChanged({
+              new AppVersionChanged({
                 app: app.id,
-                expected: input.expectedDeployment,
-                current: app.activeDeployment,
+                expected: input.expectedVersion,
+                current: app.activeVersion,
               }),
             );
           }
-          const deployment = yield* storedDeployment(tx, app, input.deployment);
+          const version = yield* storedVersion(tx, app, input.version);
           yield* query(() =>
             tx.updateMany("apps", {
               where: (b) => b("id", "=", app.id),
               set: {
-                activeDeployment: deployment.id,
+                activeDeployment: version.id,
                 deploySequence: app.deploySequence + 1,
                 activatedSequence: app.deploySequence + 1,
               },
@@ -837,12 +837,12 @@ export const makeApps = (
           yield* webhookSourcesPending(tx, app.id);
           return {
             ...Struct.omit(app, ["deploySequence", "activatedSequence"]),
-            activeDeployment: deployment.id,
-            requirements: deployment.requirements,
+            activeVersion: version.id,
+            requirements: version.requirements,
           };
         }),
       ).pipe(Effect.withSpan("sdk.apps.activate")),
-    deployments: (input: Parameters<Executor["apps"]["deployments"]>[0]) =>
+    versions: (input: Parameters<Executor["apps"]["versions"]>[0]) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
           const app = yield* storedApp(tx, input);
@@ -852,36 +852,34 @@ export const makeApps = (
               where: (b) =>
                 b.and(
                   b("code", "=", app.code),
-                  input.deploymentOwner === undefined
-                    ? true
-                    : b("owner", "=", input.deploymentOwner),
+                  input.versionOwner === undefined ? true : b("owner", "=", input.versionOwner),
                 ),
               orderBy: ["createdAt", "desc"],
             }),
           );
-          const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(DeploymentSummary))(
+          const decoded = yield* Schema.decodeUnknownEffect(Schema.Array(VersionSummary))(
             rows,
           ).pipe(Effect.mapError(() => new StorageError()));
           return decoded
             .toSorted(
               (a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id),
             )
-            .map((deployment): DeploymentSummary => ({
-              id: deployment.id,
-              code: deployment.code,
-              owner: deployment.owner,
-              createdAt: deployment.createdAt,
-              fileCount: deployment.fileCount,
+            .map((version): VersionSummary => ({
+              id: version.id,
+              code: version.code,
+              owner: version.owner,
+              createdAt: version.createdAt,
+              fileCount: version.fileCount,
             }));
         }),
       ).pipe(Effect.withSpan("sdk.apps.deployments")),
-    // Code identity and retained deployments are immutable. These bounded reads
+    // Code identity and retained versions are immutable. These bounded reads
     // need no BEGIN/COMMIT round trips; concurrent removal fails closed.
-    deployment: (input: Parameters<Executor["apps"]["deployment"]>[0]) =>
+    version: (input: Parameters<Executor["apps"]["version"]>[0]) =>
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
-        const version = yield* storedDeployment(db, app, input.deployment, input.deploymentOwner);
-        return yield* Schema.decodeUnknownEffect(RetainedDeployment)(version).pipe(
+        const version = yield* storedVersion(db, app, input.version, input.versionOwner);
+        return yield* Schema.decodeUnknownEffect(RetainedVersion)(version).pipe(
           Effect.mapError(() => new StorageError()),
         );
       }).pipe(Effect.withSpan("sdk.apps.deployment")),
@@ -889,12 +887,12 @@ export const makeApps = (
       transaction(db, (tx) =>
         Effect.gen(function* () {
           const app = yield* storedApp(tx, input);
-          return yield* storedDeployment(tx, app, input.deployment, input.deploymentOwner);
+          return yield* storedVersion(tx, app, input.version, input.versionOwner);
         }),
       ).pipe(
-        Effect.flatMap((deployment) =>
-          readDeploymentSource(blobs, deployment.id).pipe(
-            Effect.map((files) => Deployment.make({ ...deployment, files })),
+        Effect.flatMap((version) =>
+          readVersionSource(blobs, version.id).pipe(
+            Effect.map((files) => Version.make({ ...version, files })),
             Effect.mapError(() => new StorageError()),
           ),
         ),

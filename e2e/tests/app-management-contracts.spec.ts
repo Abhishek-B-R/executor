@@ -52,7 +52,7 @@ const Created = Completed(
   Schema.Struct({
     app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
     deployed: Schema.Struct({
-      app: Schema.Struct({ id: Schema.String, activeDeployment: Schema.String }),
+      app: Schema.Struct({ id: Schema.String, activeVersion: Schema.String }),
     }),
     files: Schema.Array(File),
   }),
@@ -69,8 +69,8 @@ const Saved = Completed(
       files: Schema.optional(Schema.Never),
     }),
     deployed: Schema.Struct({
-      app: Schema.Struct({ id: Schema.String, activeDeployment: Schema.String }),
-      deployment: Schema.Struct({ id: Schema.String, files: Schema.optional(Schema.Never) }),
+      app: Schema.Struct({ id: Schema.String, activeVersion: Schema.String }),
+      version: Schema.Struct({ id: Schema.String, files: Schema.optional(Schema.Never) }),
     }),
   }),
 );
@@ -222,7 +222,7 @@ return { saved, deployed };`,
     const large = (yield* Schema.decodeUnknownEffect(Saved)(deployed)).execution.value;
     expect(large.saved.removed).toEqual({ count: 0, paths: [] });
     expect(large.deployed.app.id).toBe(app.app.id);
-    expect(large.deployed.deployment.id).toBe(large.deployed.app.activeDeployment);
+    expect(large.deployed.version.id).toBe(large.deployed.app.activeVersion);
 
     // deploy.md: a complete file list deletes what it leaves out, and the result names it before
     // anything is deployed. Committing the file again restores it.
@@ -396,7 +396,7 @@ return { saved, deployed };`,
     const result = (yield* Schema.decodeUnknownEffect(Saved)(deployed.structuredContent)).execution
       .value.deployed;
     expect(result.app.id).toBe(app);
-    expect(result.deployment.id).toBe(result.app.activeDeployment);
+    expect(result.version.id).toBe(result.app.activeVersion);
   });
 
 layer(HostedLive, { excludeTestServices: true })("Hosted app management contracts", (it) => {

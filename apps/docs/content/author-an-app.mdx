@@ -19,7 +19,7 @@ To type-check outside Executor, install exactly that version with
 tag is separate from the Executor beta series.
 
 Executor builds the app with the pinned package's server and browser framework.
-It retains the compiled code with the deployment, so host updates do not replace
+It retains the compiled code with the version, so host updates do not replace
 it. The exact version also keeps rebuilds on that version; a version range or
 tag can select a newer version on the next build. Change it only to upgrade the
 app. An unavailable or unsupported package fails the build and leaves the active
@@ -158,7 +158,7 @@ Apps written before `apps@0.0.1-beta.90` declared `{ accounts }` and read
 `ctx.accounts`, which now fail. Every such requirement was a caller's account,
 so it moves to `user`: `{ user: { accounts } }` and `ctx.user.accounts`. The
 Executor app's `app-authoring` skill has the steps in
-`upgrades/0.0.1-beta.90.md`. Nothing stored is converted: deployments already
+`upgrades/0.0.1-beta.90.md`. Nothing stored is converted: versions already
 running keep their members' schedules. Deploying a schedule as `appCron` or
 `appInterval` deletes the members' copies of it, with their settings, run
 history and pending approvals, and the app schedule starts paused until an app
@@ -422,7 +422,7 @@ the approval still decides.
 
 ## Deploying
 
-Deployment is an operation, not a command. Have your agent call it through the
+Deploying is an operation, not a command. Have your agent call it through the
 MCP endpoint. Read the version with `framework.release`, create the app from
 `index.ts` and the `package.json` that pins it, then deploy the same files:
 
@@ -478,8 +478,8 @@ executor apps source --app <app-id> | jq -r .revision.commit
 executor apps deploy --app <app-id> --commit <first-commit>
 ```
 
-The app activates only after the build succeeds, and earlier deployments are
-retained; see [Apps and deployments](/concepts/apps-and-deployments). Then
+The app activates only after the build succeeds, and earlier versions are
+retained; see [Apps and versions](/concepts/apps-and-versions). Then
 connect an account for each requirement and, in a new `execute`, call the path
 `tools.search` returns. An app without accounts is called by its slug:
 
@@ -533,7 +533,7 @@ deploy.
 
 The CLI also provides `executor apps source`, `executor apps commit`,
 `executor apps deploy --commit <sha>` and `executor apps deploy --files <dir>`.
-Deployment reads the chosen commit and leaves the Git branch unchanged. Ordinary
+Deploying reads the chosen commit and leaves the Git branch unchanged. Ordinary
 Git pushes save source without deploying it.
 
 Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
@@ -553,15 +553,15 @@ When a newer CLI release exists, the failure also says so and how to update.
 ## Update a hosted app
 
 Use `appManagement.deploy` with `{ files: [...] }` to deploy a complete file set,
-or `{ commit: "<sha>" }` to deploy an existing Git commit. File deployments do not
+or `{ commit: "<sha>" }` to deploy an existing Git commit. Deploying files does not
 save changes to Git. The app keeps its ID and stored data. The newest successful
-deployment becomes active. Use `apps.activate` to select a retained deployment;
+version becomes active. Use `apps.activate` to select a retained version;
 activation does not roll back stored data.
 
 ## Open an app UI
 
 React is the only supported app UI framework for now. Include `ui/index.html`,
-a React entry such as `ui/main.tsx`, and styles in the deployment. Declare
+a React entry such as `ui/main.tsx`, and styles in the app's files. Declare
 `react` and `react-dom` in the app's package dependencies. The host builds and
 activates the browser assets with the server code. No separate publish step is
 needed. SSR and React Server Components are not supported yet.

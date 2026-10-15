@@ -15,7 +15,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 
 const Bundle = Schema.Struct({
-  deployment: Schema.String,
+  version: Schema.String,
   revision: Schema.String,
   skills: Schema.Array(
     Schema.Struct({
@@ -160,7 +160,7 @@ export default defineApp({}, async (ctx) => ({
         const secondResponse = yield* api.request(actors.owner, "GET", `${base}/skill-bundle`);
         expect(secondResponse.status).toBe(200);
         const second = yield* body(Bundle, secondResponse);
-        expect(second.deployment).toBe(first.deployment);
+        expect(second.version).toBe(first.version);
         expect(second.revision).not.toBe(first.revision);
         expect(second.skills.find((skill) => skill.name === "packaged-guide")).toEqual(
           first.skills.find((skill) => skill.name === "packaged-guide"),

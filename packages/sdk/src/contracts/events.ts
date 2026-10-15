@@ -259,7 +259,7 @@ export interface EventOptions {
 
 /** Host-only event operations. */
 export interface ExecutorEvents {
-  /** The events an app's active deployment declares. Nothing is evaluated. */
+  /** The events an app's active version declares. Nothing is evaluated. */
   readonly definitions: (input: {
     readonly app: AppId;
   }) => Effect.Effect<readonly AppEventDefinition[], StorageError>;

@@ -2,7 +2,7 @@
  * The `1_app_framework_pin` data step commits `dependencies.apps` to every existing app without
  * redeploying it. Local and self-host run it at startup; this scenario starts its product with the
  * step held in report mode and gives apps every position whose `main` lacks a declaration. This
- * host builds only declared source, so the running deployments declare the published beta.0.
+ * host builds only declared source, so the running versions declare the published beta.0.
  * Positions whose running build has no declaration need a host that built undeclared source, and
  * are not reproduced here. It then applies the step and checks the report, the pins, a conflict
  * retried at the next start, the catch-up step pinning an app created meanwhile to beta.5, a later
@@ -55,7 +55,7 @@ export default defineApp({ accounts: {} }, {
 });
 const manifest = { name: "pin-fixture", private: true, type: "module", dependencies: {} };
 const pinnedManifest = `${JSON.stringify({ dependencies: { apps: release } }, null, 2)}\n`;
-/** Files a running deployment builds: the source, declaring the published protocol-1 beta.0. */
+/** Files a running version builds: the source, declaring the published protocol-1 beta.0. */
 const deployedFiles = (revision: string) => [
   index(revision),
   {
@@ -70,7 +70,7 @@ const App = Schema.Struct({
   id: Schema.String,
   code: Schema.String,
   name: Schema.String,
-  activeDeployment: Schema.NullOr(Schema.String),
+  activeVersion: Schema.NullOr(Schema.String),
 });
 type App = typeof App.Type;
 const Deployed = Schema.Struct({ app: App });
@@ -92,7 +92,7 @@ interface Surface {
   readonly commit: (app: App, files: Files, message: string) => Effect.Effect<void, unknown, Api>;
   readonly framework: (app: App) => Effect.Effect<string, unknown, Api>;
   readonly executorApp: Effect.Effect<App, unknown, Api>;
-  /** The files of the running deployment. */
+  /** The files of the running version. */
   readonly running: (app: App) => Effect.Effect<Files, unknown, Api>;
   readonly cleanup: (app: App) => Effect.Effect<unknown, unknown, Api>;
 }
@@ -276,7 +276,7 @@ const startupPin = (surface: Surface) =>
       status: "complete",
     });
 
-    // Apps in every position against their running deployment whose main declares no framework.
+    // Apps in every position against their running version whose main declares no framework.
     // A manifest that dropped its declaration after the running build.
     const packaged = yield* track(surface.deploy(unique("Packaged"), deployedFiles("first")));
     yield* surface.commit(
@@ -311,7 +311,7 @@ const startupPin = (surface: Surface) =>
       ]),
     );
     // The host-managed Executor app with protocol-1 source and no declaration on main, like every
-    // copy made before templates declared one. Its running deployment is the template's.
+    // copy made before templates declared one. Its running version is the template's.
     const executorApp = yield* surface.executorApp;
     const executorFiles = [index("executor")];
     yield* surface.commit(executorApp, executorFiles, "Edit the Executor app");
@@ -398,7 +398,7 @@ const startupPin = (surface: Surface) =>
         before[apps.indexOf(app)],
       );
 
-    // Nothing was redeployed: running deployments keep serving the framework they were built with.
+    // Nothing was redeployed: running versions keep serving the framework they were built with.
     expect(yield* Effect.forEach(apps, surface.get)).toEqual(running);
     expect(yield* surface.framework(diverged)).toBe("beta.0");
 

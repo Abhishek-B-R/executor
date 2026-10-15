@@ -417,18 +417,18 @@ export default defineApp({}, ${definition});`,
           ),
           Effect.map((rows) => rows.toSorted((a, b) => a.name.localeCompare(b.name))),
         );
-        const redeploy = (deployment: ReturnType<typeof files>) =>
+        const redeploy = (version: ReturnType<typeof files>) =>
           Effect.gen(function* () {
             const response = yield* api.request(
               actors.owner,
               "POST",
               `${prefix}/apps/${app.id}/deploy`,
-              { files: deployment },
+              { files: version },
             );
             expect(response.status, JSON.stringify(response.body)).toBe(200);
           });
 
-        // A deployment that cannot be evaluated proves nothing about its schedules.
+        // A version that cannot be evaluated proves nothing about its schedules.
         yield* redeploy(files(`async () => { throw new Error("Evaluation fails on purpose"); }`));
         expect(yield* saved).toEqual([
           { name: "evening", enabled: true },
@@ -437,7 +437,7 @@ export default defineApp({}, ${definition});`,
         ]);
         yield* browser.login(actors.owner);
         yield* openThroughBrowser(
-          "Open schedules while the active deployment fails to evaluate",
+          "Open schedules while the active version fails to evaluate",
           `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
         );
         yield* browser.use("Saved schedules stay pausable", (page) =>
@@ -448,7 +448,7 @@ export default defineApp({}, ${definition});`,
         yield* redeploy(declaring(everyThreeHours));
         expect(yield* saved).toEqual([{ name: "everyThreeHours", enabled: true }]);
         yield* refreshVisiblePage;
-        yield* browser.use("Discovery of the new deployment succeeds", (page) =>
+        yield* browser.use("Discovery of the new version succeeds", (page) =>
           page.getByText("Tools could not be loaded", { exact: true }).waitFor({ state: "hidden" }),
         );
         yield* browser.use("Removed schedules leave the list", (page) =>

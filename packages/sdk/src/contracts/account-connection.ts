@@ -41,7 +41,7 @@ export const AccountConnectionTargetChanged = UserFacingError.define({
   recovery: {
     action: "Close this form and start account setup again.",
     instructions:
-      "Read the current app deployment, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
+      "Read the current app version, account requirements, and intended account selection. Start a fresh connection against those requirements. Do not apply the old request to a changed target or overwrite a newer selection.",
   },
 });
 /** Parsed AccountConnectionTargetChanged failure. */

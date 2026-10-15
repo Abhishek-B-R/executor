@@ -12,9 +12,9 @@ import {
   ProviderId,
   StorageError,
   type AppId,
-  type DeploymentId,
+  type VersionId,
 } from "../contracts/shared.ts";
-import { storedApp, storedDeployment } from "./apps.ts";
+import { storedApp, storedVersion } from "./apps.ts";
 import { query, type Query } from "./database.ts";
 import { plainAccount } from "./linked-accounts.ts";
 
@@ -39,7 +39,7 @@ const readAccounts = (db: Query, ids: readonly AccountId[]) =>
   });
 
 /**
- * Resolve every requirement of the app's active deployment, or of `deployment` when pinned:
+ * Resolve every requirement of the app's active version, or of `version` when pinned:
  *
  * - App requirements use the app links (`appLinks`), oldest first: a plain one the newest (see
  *   `plainAccount`), many() every one. A plain one with no link fails with `AccountRequired`.
@@ -59,7 +59,7 @@ export const backgroundAccounts = (
   lifecycle: ResourceLifecycle | undefined,
   input: {
     readonly app: AppId;
-    readonly deployment?: DeploymentId | undefined;
+    readonly version?: VersionId | undefined;
     /** The subject a user-scope run is checked against; undefined for app-scope work. */
     readonly actor: string | undefined;
     readonly source?: AccountId | undefined;
@@ -67,8 +67,8 @@ export const backgroundAccounts = (
 ) =>
   Effect.gen(function* () {
     const app = yield* storedApp(db, { app: input.app });
-    const deployment = yield* storedDeployment(db, app, input.deployment);
-    const requirements = Object.entries(deployment.requirements.accounts);
+    const version = yield* storedVersion(db, app, input.version);
+    const requirements = Object.entries(version.requirements.accounts);
     const required = (scope: "app" | "user") =>
       requirements.filter(([, requirement]) => requirement.scope === scope);
     const resolved: {
@@ -76,7 +76,7 @@ export const backgroundAccounts = (
       user: Record<string, ReadonlyArray<AccountId>>;
     } = { app: {}, user: {} };
     const fail = (slot: string, scope: "app" | "user") =>
-      new AccountRequired({ app: app.id, deployment: deployment.id, slot, scope });
+      new AccountRequired({ app: app.id, version: version.id, slot, scope });
 
     const appRequirements = required("app");
     if (appRequirements.length > 0) {

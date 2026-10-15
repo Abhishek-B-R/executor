@@ -17,6 +17,7 @@ import {
   WebhookFailed,
   WebhookNotFound,
   WebhookSource,
+  WebhookSourceFields,
   WebhookSourceSummary,
   type WebhookSubscription,
 } from "../contracts/webhooks.ts";
@@ -46,13 +47,15 @@ const canonical = (value: Json): string =>
       : JSON.stringify(value);
 
 const StoredSource = Schema.Struct({
-  ...WebhookSource.fields,
+  ...WebhookSourceFields.fields,
   id: Schema.String,
   revision: Schema.Int,
   lease: Schema.NullOr(Schema.String),
   leaseUntil: Schema.Date,
   retries: Schema.Int,
-});
+})
+  // Storage keeps the columns' former names.
+  .pipe(Schema.encodeKeys({ reconciledVersion: "reconciledDeployment" }));
 type StoredSource = typeof StoredSource.Type;
 
 /**
@@ -64,7 +67,7 @@ const retryDelay = (retries: number) => Math.min(30_000 * 2 ** (retries - 1), 3_
 
 /**
  * Keys of managed subscriptions start with `setup-` and hash the definition, source, configuration
- * and deployment, so retries reuse a registration and a new deployment registers again. The
+ * and version, so retries reuse a registration and a new version registers again. The
  * actor and its accounts are not part of the key: callbacks resolve them at each delivery.
  */
 export const makeWebhookSources = (
@@ -107,7 +110,7 @@ export const makeWebhookSources = (
   const view = (row: StoredSource) =>
     Schema.decodeUnknownEffect(WebhookSource)(row).pipe(Effect.mapError(() => new StorageError()));
   /**
-   * The source's accounts on the active deployment: the account itself, the app links and, for a
+   * The source's accounts on the active version: the account itself, the app links and, for a
    * user link, the actor's others. An app link's source has no actor.
    */
   const accountsOf = (source: StoredSource) =>
@@ -145,7 +148,7 @@ export const makeWebhookSources = (
             if (
               (current.lease !== null && current.leaseUntil.getTime() > time) ||
               (automatic && current.status !== "pending" && current.leaseUntil.getTime() > time) ||
-              (current.status === "ready" && current.reconciledDeployment === app.activeDeployment)
+              (current.status === "ready" && current.reconciledVersion === app.activeVersion)
             )
               return { app, current, claimed: false };
             yield* query(() =>
@@ -178,24 +181,24 @@ export const makeWebhookSources = (
                   }
                 return;
               }
-              if (app.activeDeployment === null) {
+              if (app.activeVersion === null) {
                 status = "needs-setup";
                 failure = "deployment";
                 return;
               }
-              const deployment = app.activeDeployment;
+              const version = app.activeVersion;
               const accounts = yield* accountsOf(current);
               const state: InvocationSnapshot = yield* snapshot(db, {
                 app: app.id,
-                deployment,
+                version,
                 accounts,
               });
               const source = yield* storedAccount(db, current.account);
               const definitions = yield* resources.liveDefinitions(state);
               const desired = new Set<string>();
               for (const hook of definitions) {
-                const required = Object.hasOwn(state.deployment.requirements.accounts, hook.account)
-                  ? state.deployment.requirements.accounts[hook.account]
+                const required = Object.hasOwn(state.version.requirements.accounts, hook.account)
+                  ? state.version.requirements.accounts[hook.account]
                   : undefined;
                 // Only definitions of the source's scope whose requirement the run resolved to this
                 // account use it as their source: an app link serves the app-account webhooks of the
@@ -220,7 +223,7 @@ export const makeWebhookSources = (
                   name: hook.name,
                   account: current.account,
                   config,
-                  deployment,
+                  version,
                 });
                 desired.add(key);
                 // A registration kept from an earlier actor follows the source's current one.
@@ -302,8 +305,7 @@ export const makeWebhookSources = (
                 if (live === undefined || live.lease !== token)
                   return live === undefined ? undefined : yield* view(live);
                 const changed =
-                  live.revision !== current.revision ||
-                  liveApp.activeDeployment !== app.activeDeployment;
+                  live.revision !== current.revision || liveApp.activeVersion !== app.activeVersion;
                 const completedAt = yield* now;
                 // A removed source is deleted once its subscriptions have stopped.
                 if (!changed && removing && failure === null) {
@@ -339,7 +341,7 @@ export const makeWebhookSources = (
                               : 30_000),
                       ),
                       retries,
-                      ...(next === "ready" ? { reconciledDeployment: app.activeDeployment } : {}),
+                      ...(next === "ready" ? { reconciledDeployment: app.activeVersion } : {}),
                     },
                   }),
                 );

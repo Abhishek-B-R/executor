@@ -42,8 +42,8 @@ schema are a starting point; when one is missing or wrong, write your own tool
 beside it with the same account ([integrations.md](integrations.md#custom-tools-beside-generated-ones)).
 
 Load files through the MCP `skills` tool using the returned app slug,
-deployment and content revision, for example
-`{ app: "executor", name: "app-authoring", file: "ui.md", deployment, revision }`.
+version and content revision, for example
+`{ app: "executor", name: "app-authoring", file: "ui.md", version, revision }`.
 The management app's `skills.list` and `skills.read` read with the caller's
 linked accounts.
 
@@ -74,7 +74,7 @@ Use output schemas for typed results. Import server declarations as types only
 in browser code. Put shared schemas in a separate file. Read the relevant
 reference for return shapes and behavior instead of deploying probe apps.
 
-Deployment compiles TypeScript but does not replace a type check or prove that
+Deploying compiles TypeScript but does not replace a type check or prove that
 the page renders. Verify the requested behavior on the authenticated app page.
 If browser access is unavailable, report exactly what remains unverified.
 Never put credentials in source, browser code or tool arguments. Use the secure

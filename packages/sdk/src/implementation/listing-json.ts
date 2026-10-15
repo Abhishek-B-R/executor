@@ -4,10 +4,11 @@
  * large listing is the same `$defs` entries again and again. The text keeps each distinct entry
  * once, and the listing in memory shares one object per distinct entry among its tools.
  */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Effect, Schema } from "effect";
 import { AppAccounts } from "../contracts/apps.ts";
-import { DeploymentId, Json, type JsonObject } from "../contracts/shared.ts";
-import { Tool, ToolRouter } from "../contracts/tools.ts";
+import { VersionId, Json, type JsonObject } from "../contracts/shared.ts";
+import { Tool, ToolFields, ToolRouter } from "../contracts/tools.ts";
 import type { ToolListing } from "./listings.ts";
 
 /**
@@ -16,7 +17,8 @@ import type { ToolListing } from "./listings.ts";
  * Texts kept before account scopes named one flat record and fail to decode, so they are read
  * as missing and evaluated again.
  */
-const Catalog = Schema.Struct({ deployment: DeploymentId, accounts: AppAccounts });
+const CatalogFields = Schema.Struct({ version: VersionId, accounts: AppAccounts });
+const Catalog = CatalogFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** The schemas of a tool whose `$defs` entries can be shared. */
 const SchemaKey = Schema.Literals(["inputSchema", "outputSchema"]);
 type SchemaKey = typeof SchemaKey.Type;
@@ -27,9 +29,9 @@ type SchemaKey = typeof SchemaKey.Type;
  */
 /** A tool as format 2 keeps it: each `$defs` entry of a schema `shared` names is a position. */
 export const StoredTool = Schema.Struct({
-  ...Tool.fields,
+  ...ToolFields.fields,
   shared: Schema.optionalKey(Schema.Array(SchemaKey)),
-});
+}).pipe(withLegacyKeys({ version: "deployment" }));
 export type StoredTool = typeof StoredTool.Type;
 const SharedListing = Schema.Struct({
   format: Schema.Literal(2),

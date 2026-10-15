@@ -256,12 +256,12 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
       context,
       Effect.gen(function* () {
         const { api, actors, prefix, suffix, created, sales, engineering } = yield* resourceFixture;
-        const deployment = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
+        const version = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
           name: `Private ${suffix}`,
           files: [{ path: "index.ts", content: identitySource }, appsManifest],
         });
-        expect(deployment.status).toBe(200);
-        const app = yield* body(App, deployment);
+        expect(version.status).toBe(200);
+        const app = yield* body(App, version);
         created.apps.push(app.id);
         const call = { tool: "identity", kind: "query", input: {} };
         expect(

@@ -10,9 +10,9 @@ import { currentOwner, selectedVersion } from "./access.ts";
 
 /**
  * Check the app and resolve the caller's accounts under the request's explicit organization, for
- * the requirements of the deployment the read pins, after its lineage check.
+ * the requirements of the version the read pins, after its lineage check.
  */
-const skillAccounts = (input: Pick<typeof AppSkillInputs.list.Type, "app" | "deployment">) =>
+const skillAccounts = (input: Pick<typeof AppSkillInputs.list.Type, "app" | "version">) =>
   Effect.gen(function* () {
     yield* authorizeApp(input.app);
     const owner = yield* currentOwner;

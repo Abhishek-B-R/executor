@@ -1,5 +1,5 @@
 /** The accounts the caller linked for each of an app's requirements. */
-import type { Account, AppId, DeploymentId, LinkedAccounts } from "@executor-js/sdk/core";
+import type { Account, AppId, VersionId, LinkedAccounts } from "@executor-js/sdk/core";
 /** One account the caller linked to an app, as agents see it. */
 export type McpAccount = Pick<Account, "id" | "label" | "description">;
 /**
@@ -9,10 +9,10 @@ export type McpAccount = Pick<Account, "id" | "label" | "description">;
  */
 export type McpAppAccounts = LinkedAccounts<McpAccount>;
 /**
- * The app whose linked accounts are requested, for the requirements of its active deployment or
+ * The app whose linked accounts are requested, for the requirements of its active version or
  * of a retained one in its lineage that a read pins.
  */
 export interface McpTargetInput {
   readonly app: AppId;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
 }

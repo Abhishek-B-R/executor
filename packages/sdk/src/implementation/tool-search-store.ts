@@ -9,7 +9,7 @@ import {
   Json,
   StorageError,
   type AppId,
-  type DeploymentId,
+  type VersionId,
   type OwnerId,
   type ToolName,
 } from "../contracts/shared.ts";
@@ -22,7 +22,7 @@ export interface SearchListingRow {
   readonly listing: ToolSearchListing;
   readonly owner: OwnerId;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   /** The digest of the account set the listing was evaluated with; see `toolSearchTarget`. */
   readonly target: string;
   readonly at: number;
@@ -247,7 +247,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
           listing: row.listing,
           owner: row.owner,
           app: row.app,
-          deployment: row.deployment,
+          deployment: row.version,
           target: row.target,
           at: row.at,
           digest: row.digest,
@@ -270,7 +270,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
             return yield* supersede(row, now);
           }
           yield* sql`update executor_tool_search_listings
-            set deployment = ${row.deployment}, at = ${row.at}, digest = ${row.digest},
+            set deployment = ${row.version}, at = ${row.at}, digest = ${row.digest},
               routers = ${routers}, superseded = null
             where listing = ${row.listing}`;
           yield* removeRows([row.listing]);

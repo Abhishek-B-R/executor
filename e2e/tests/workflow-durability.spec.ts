@@ -173,7 +173,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
         yield* evidence.json("sleeping-workflow.json", {
           app: app.app.id,
           run: run.id,
-          deployment: app.app.activeDeployment,
+          version: app.app.activeVersion,
           hold,
           observed: yield* Clock.currentTimeMillis,
         });
@@ -182,7 +182,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
         const output = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ before: Schema.String, after: Schema.String, deadline: Schema.Number }),
         )(completed.output);
-        expect(completed.deployment).toBe(app.app.activeDeployment);
+        expect(completed.version).toBe(app.app.activeVersion);
         expect(yield* app.rows()).toEqual([
           { id: output.before, label: "before" },
           { id: output.after, label: "after" },

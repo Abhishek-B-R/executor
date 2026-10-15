@@ -22,7 +22,7 @@ const App = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   slug: Schema.String,
-  activeDeployment: Schema.String,
+  activeVersion: Schema.String,
   accounts: Schema.optional(Schema.Never),
 });
 const Inventory = Schema.Struct({
@@ -491,7 +491,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
           expect(call.body).toMatchObject({ _tag: "AccountRequired", slot: "service" });
         });
         yield* unlinked;
-        // A new deployment of the common app sends member setup past its fast path.
+        // A new version of the common app sends member setup past its fast path.
         const original = yield* body(
           Schema.Struct({
             files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),

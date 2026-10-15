@@ -200,7 +200,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           const rejected = yield* deploy(rejectedConfig);
           expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
           expect(rejected.body).toMatchObject({
-            _tag: "DeploymentBuildFailed",
+            _tag: "VersionBuildFailed",
             reason: "App build failed",
           });
           const accepted = yield* deploy(acceptedConfig);

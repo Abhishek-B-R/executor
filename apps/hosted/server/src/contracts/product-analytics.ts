@@ -18,7 +18,7 @@ export interface UsageProperties {
   readonly area?: string;
   readonly operation?: string;
   readonly app_id?: string;
-  readonly deployment_id?: string;
+  readonly version_id?: string;
   readonly account_id?: string;
   readonly provider_id?: string;
   readonly tool_name?: string;

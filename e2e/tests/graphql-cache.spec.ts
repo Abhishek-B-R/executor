@@ -1,4 +1,4 @@
-/** GraphQL metadata caching through real app deployment and an external introspection server. */
+/** GraphQL metadata caching through real app deploys and an external introspection server. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";

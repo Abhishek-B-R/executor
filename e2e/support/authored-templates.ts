@@ -1,6 +1,6 @@
 /**
  * App source written the way the app-authoring skill tells an agent to write it. The product
- * deploys and runs it through the ordinary deployment API; nothing here imports product code.
+ * deploys and runs it through the ordinary deploy API; nothing here imports product code.
  */
 import { withApps, mcpSdkVersion } from "./apps-release.ts";
 

@@ -5,6 +5,7 @@ import { Context, type Effect, type Redacted, type Stream, Schema } from "effect
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
+import type { LegacyVersionEndpoints } from "./apps.ts";
 import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
@@ -169,7 +170,7 @@ export interface ResourceLifecycle {
    * Called when a connection started for an app requirement saves its account, in the same
    * transaction, so the product can link the account to the requirement in its `scope`: for the
    * connecting subject for a user requirement, for the app for an app requirement. It runs under
-   * the app's lock, after the SDK checked that the active deployment still gives the requirement
+   * the app's lock, after the SDK checked that the active version still gives the requirement
    * the `scope` the connection was started for: `connectionCompleting` ran before the lock, so a
    * product that authorizes by scope checks its own record of the `connection` here. Fail with
    * `AccountConnectionTargetChanged` when the connection was started for another scope, and with
@@ -382,13 +383,13 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
      */
     readonly search: (input: ToolSearchInput) => Effect.Effect<ToolSearchPage, StorageError>;
   };
-  readonly apps: FlatExecutor["apps"] & {
+  readonly apps: Omit<FlatExecutor["apps"], (typeof LegacyVersionEndpoints)[number]> & {
     readonly workflows: FlatExecutor["appWorkflows"];
     readonly workflowRuns: FlatExecutor["appWorkflowRuns"];
     /**
      * Host-only: `copy` under an app ID the host reserved, such as one a storage migration
      * planned for a copy and parked state under. `save` saves the source without deploying it,
-     * for a copy whose deployment no longer builds. Fails like `copy`; an app that already has
+     * for a copy whose version no longer builds. Fails like `copy`; an app that already has
      * the ID fails with `StorageError`, so callers check for it first.
      */
     readonly copyAs: (

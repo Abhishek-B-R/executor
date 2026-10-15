@@ -1,4 +1,4 @@
-/** Install the bundled management app using the same deployment and account operations as user apps. */
+/** Install the bundled management app using the same deploy and account operations as user apps. */
 import { StorageError, sourceFilesEqual, type Executor } from "@executor-js/sdk/core";
 import { Effect, Redacted } from "effect";
 import type { SqlClient } from "effect/sql";

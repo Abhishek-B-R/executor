@@ -1,5 +1,6 @@
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
@@ -7,7 +8,7 @@ export { AppSlug, appSlug } from "./app-slug.ts";
 import { Effect, Schema } from "effect";
 import { StorageError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
-import { AccountId, AppCodeId, AppId, DeploymentId, OwnerId, ProviderId } from "./shared.ts";
+import { AccountId, AppCodeId, AppId, VersionId, OwnerId, ProviderId } from "./shared.ts";
 import {
   AccountFieldsInput,
   AccountFieldsInvalid,
@@ -24,15 +25,15 @@ import {
 } from "./source.ts";
 import { PublicationReference, RegistryError } from "./registry.ts";
 import {
-  AppDeploymentChanged,
-  Deployment,
-  DeploymentMetadata,
-  DeploymentBuildFailed,
+  AppVersionChanged,
+  Version,
+  VersionMetadata,
+  VersionBuildFailed,
   BuildMemoryExceeded,
-  DeploymentNotFound,
-  DeploymentSummary,
+  VersionNotFound,
+  VersionSummary,
   SourceFiles,
-} from "./deployment.ts";
+} from "./version.ts";
 
 /**
  * Whose accounts fill a requirement. An `app` requirement is filled by the app links, which the
@@ -47,12 +48,12 @@ export type AccountScope = typeof AccountScope.Type;
  * and before the dynamic factory runs. Provider metadata is data, not JS code.
  */
 export const AccountRequirement = Schema.Struct({
-  /** Recorded at deploy. Deployments saved before scopes declared only user requirements. */
+  /** Recorded at deploy. Versions saved before scopes declared only user requirements. */
   scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
   provider: ProviderId,
   definition: ProviderDefinition,
   cardinality: Schema.Literals(["one", "many"]),
-  /** This deployment's provider defines an account check for the slot. */
+  /** This version's provider defines an account check for the slot. */
   health: Schema.optionalKey(Schema.Literal(true)),
 });
 
@@ -77,12 +78,12 @@ export type AppRequirements = typeof AppRequirements.Type;
 export const ownsDatabase = (requirements: Pick<AppRequirements, "database" | "sql">) =>
   requirements.sql === true || requirements.database !== undefined;
 
-/** A retained deployment's build metadata and the requirements its code declares. */
-export const RetainedDeployment = Schema.Struct({
-  ...DeploymentMetadata.fields,
+/** A retained version's build metadata and the requirements its code declares. */
+export const RetainedVersion = Schema.Struct({
+  ...VersionMetadata.fields,
   requirements: AppRequirements,
 });
-export type RetainedDeployment = typeof RetainedDeployment.Type;
+export type RetainedVersion = typeof RetainedVersion.Type;
 
 /**
  * Requirement name -> one account ID for a plain requirement, or account IDs for many(). The
@@ -169,30 +170,38 @@ export const AppCopySnapshot = Schema.Struct({
   activation: Schema.Literals(["deploy", "save"]),
 });
 export type AppCopySnapshot = typeof AppCopySnapshot.Type;
-/** One independent app, its source repository and optional active deployment. */
-export const App = Schema.Struct({
+/** The fields of an app, before its wire encoding. */
+export const AppFields = Schema.Struct({
   id: AppId,
   slug: AppSlug,
   code: AppCodeId,
   repository: Schema.NullOr(AppCodeId),
   owner: OwnerId,
   name: Schema.NonEmptyString,
-  activeDeployment: Schema.NullOr(DeploymentId),
+  activeVersion: Schema.NullOr(VersionId),
   copiedFrom: Schema.NullOr(AppCopyOrigin),
   requirements: AppRequirements,
   createdAt: Schema.Date,
 });
+/**
+ * One independent app, its source repository and optional active version. Callers written before
+ * versions were named read `activeDeployment`.
+ */
+export const App = AppFields.pipe(withLegacyKeys({ activeVersion: "activeDeployment" }));
 
 export type App = typeof App.Type;
 
-/** Operations that just deployed code can return a non-null active deployment. */
-export const DeployedApp = App.mapFields((fields) => ({
+const DeployedAppFields = AppFields.mapFields((fields) => ({
   ...fields,
-  activeDeployment: DeploymentId,
+  activeVersion: VersionId,
 }));
+/** Operations that just deployed code can return a non-null active version. */
+export const DeployedApp = DeployedAppFields.pipe(
+  withLegacyKeys({ activeVersion: "activeDeployment" }),
+);
 export type DeployedApp = typeof DeployedApp.Type;
 
-/** Deploy complete files or read an existing commit; deployment never edits Git. */
+/** Deploy complete files or read an existing commit; deploying never edits Git. */
 export const DeployAppInput = Schema.Union([
   Schema.Struct({
     owner: OwnerId,
@@ -235,17 +244,17 @@ export const AppNotFound = UserFacingError.define({
 /** Parsed AppNotFound failure. */
 export type AppNotFound = typeof AppNotFound.Type;
 
-/** An undeployed app has source but no active executable deployment. */
+/** An undeployed app has source but no active executable version. */
 export const AppNotDeployed = UserFacingError.define({
   tag: "AppNotDeployed",
   status: 409,
   fields: { app: AppId },
   title: "This app is not deployed",
-  description: "The app has no active deployment to load.",
+  description: "The app has no active version to load.",
   recovery: {
     action: "Open Source and deploy the app before using its tools or accounts.",
     instructions:
-      "Check the current app’s source and deployment status. Resolve any build errors and deploy the intended source through the supported app flow. Verify tool discovery after deployment.",
+      "Check the current app’s source and active version. Resolve any build errors and deploy the intended source through the supported app flow. Verify tool discovery after deploying.",
   },
 });
 /** Parsed undeployed-app failure. */
@@ -295,7 +304,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
     ]),
   },
   recorded: ({ reason }) => `Account selection does not match the app's requirements: ${reason}`,
-  // Every reason except unknown_slot names a slot the app's current deployment declares, so the
+  // Every reason except unknown_slot names a slot the app's current version declares, so the
   // slot is the app's own requirement name, not a value the caller chose.
   presentation: ({ slot, reason }) =>
     (
@@ -303,7 +312,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
         unknown_slot: {
           title: "Account requirement not found",
           description:
-            "The app’s current deployment doesn’t declare the account requirement that was selected.",
+            "The app’s current version doesn’t declare the account requirement that was selected.",
           recovery: {
             action: "Open Accounts and choose accounts for the requirements this app declares now.",
             instructions:
@@ -360,7 +369,7 @@ export type AccountSelectionInvalid = typeof AccountSelectionInvalid.Type;
 export const AccountRequired = UserFacingError.define({
   tag: "AccountRequired",
   status: 409,
-  fields: { app: AppId, deployment: DeploymentId, slot: Schema.String, scope: AccountScope },
+  fields: { app: AppId, version: VersionId, slot: Schema.String, scope: AccountScope },
   presentation: ({ slot, scope }) =>
     scope === "app"
       ? {
@@ -465,9 +474,9 @@ export const AppInputs = {
   }),
   activate: Schema.Struct({
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     owner: Schema.optional(OwnerId),
-    expectedDeployment: Schema.optional(Schema.NullOr(DeploymentId)),
+    expectedVersion: Schema.optional(Schema.NullOr(VersionId)),
   }),
   rename: Schema.Struct({
     app: AppId,
@@ -477,20 +486,49 @@ export const AppInputs = {
   source: Schema.Struct({
     app: AppId,
     owner: Schema.optional(OwnerId),
-    deploymentOwner: Schema.optional(OwnerId),
-    deployment: Schema.optional(DeploymentId),
+    versionOwner: Schema.optional(OwnerId),
+    version: Schema.optional(VersionId),
   }),
-  // `deploymentOwner` is separate from `owner`: owner selects the configured app.
-  deployments: Schema.Struct({
+  // `versionOwner` is separate from `owner`: owner selects the configured app.
+  versions: Schema.Struct({
     app: AppId,
     owner: Schema.optional(OwnerId),
-    deploymentOwner: Schema.optional(OwnerId),
+    versionOwner: Schema.optional(OwnerId),
   }),
 };
 const appParams = { app: AppInputs.get.fields.app };
 const ownerQuery = { owner: AppInputs.get.fields.owner };
+// Versions were called deployments. Requests may still use those field names and responses repeat
+// them, so callers written before the rename keep working.
+const versionQuery = Schema.Struct({
+  owner: AppInputs.source.fields.owner,
+  versionOwner: AppInputs.source.fields.versionOwner,
+  version: AppInputs.source.fields.version,
+}).pipe(withLegacyKeys({ versionOwner: "deploymentOwner", version: "deployment" }));
+const versionsQuery = Schema.Struct({
+  owner: AppInputs.versions.fields.owner,
+  versionOwner: AppInputs.versions.fields.versionOwner,
+}).pipe(withLegacyKeys({ versionOwner: "deploymentOwner" }));
+const versionsOptions = {
+  params: appParams,
+  query: versionsQuery,
+  success: Schema.Array(VersionSummary),
+  error: [StorageError, AppNotFound],
+};
+const versionOptions = {
+  params: appParams,
+  query: versionQuery,
+  success: RetainedVersion,
+  error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
+};
 
-/** Creation and deployment share a build pipeline; copies own independent source. */
+/**
+ * Former paths of the version endpoints. Served beside them for callers written before versions
+ * were named, and left out of the Executor interface.
+ */
+export const LegacyVersionEndpoints = ["deployments", "deployment"] as const;
+
+/** Creating and deploying share a build pipeline; copies own independent source. */
 export const AppsGroup = HttpApiGroup.make("apps")
   .add(
     HttpApiEndpoint.post("checkCredentials", "/v1/apps/:app/credential-checks", {
@@ -556,9 +594,9 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNotFound,
         AppNameTaken,
         AppSlugTaken,
-        DeploymentNotFound,
+        VersionNotFound,
         AppNotDeployed,
-        DeploymentBuildFailed,
+        VersionBuildFailed,
         BuildMemoryExceeded,
         AccountNotFound,
         AccountSelectionInvalid,
@@ -566,11 +604,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
     }),
     HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
       payload: AppInputs.deploy,
-      success: Schema.Struct({ app: DeployedApp, deployment: DeploymentMetadata }),
+      success: Schema.Struct({ app: DeployedApp, version: VersionMetadata }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       error: [
         ...sourceErrors,
         StorageError,
-        DeploymentBuildFailed,
+        VersionBuildFailed,
         BuildMemoryExceeded,
         AppNameTaken,
         AppSlugTaken,
@@ -580,7 +620,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Returns the app and the new deployment's metadata; the files are not echoed. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful version activates automatically. Returns the app and the new version's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(
@@ -616,7 +656,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError, AppWebhooksActive, AppWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete one app, its schedules and its webhook sources. Saved accounts, retained deployments and other copies are kept. Repeating removal is safe.",
+      "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",
     ),
   )
   .add(
@@ -638,63 +678,55 @@ export const AppsGroup = HttpApiGroup.make("apps")
       params: appParams,
       query: ownerQuery,
       payload: Schema.Struct({
-        deployment: AppInputs.activate.fields.deployment,
-        expectedDeployment: AppInputs.activate.fields.expectedDeployment,
-      }),
+        version: AppInputs.activate.fields.version,
+        expectedVersion: AppInputs.activate.fields.expectedVersion,
+      }).pipe(withLegacyKeys({ version: "deployment", expectedVersion: "expectedDeployment" })),
       success: App,
-      // Same code lineage only. Managed webhooks re-register for the new deployment.
+      // Same code lineage only. Managed webhooks re-register for the new version.
       error: [
         StorageError,
         AppNotFound,
-        DeploymentNotFound,
+        VersionNotFound,
         AppNotDeployed,
-        AppDeploymentChanged,
+        AppVersionChanged,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
     }).annotate(
       OpenApi.Description,
-      "Activate a retained deployment in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedDeployment rejects a concurrent activation.",
+      "Activate a retained version in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedVersion rejects a concurrent activation. The former field names `deployment` and `expectedDeployment` are still accepted.",
     ),
   )
   .add(
-    HttpApiEndpoint.get("deployments", "/v1/apps/:app/deployments", {
-      params: appParams,
-      query: {
-        owner: AppInputs.deployments.fields.owner,
-        deploymentOwner: AppInputs.deployments.fields.deploymentOwner,
-      },
-      success: Schema.Array(DeploymentSummary),
-      error: [StorageError, AppNotFound],
-    }).annotate(OpenApi.Description, "List retained deployments in the app code lineage."),
-  )
-  .add(
-    HttpApiEndpoint.get("deployment", "/v1/apps/:app/deployment", {
-      params: appParams,
-      query: {
-        owner: AppInputs.source.fields.owner,
-        deploymentOwner: AppInputs.source.fields.deploymentOwner,
-        deployment: AppInputs.source.fields.deployment,
-      },
-      success: RetainedDeployment,
-      error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
-    }).annotate(
+    HttpApiEndpoint.get("versions", "/v1/apps/:app/versions", versionsOptions).annotate(
       OpenApi.Description,
-      "Read a retained deployment's build metadata and account requirements without fetching source files.",
+      "List retained versions in the app code lineage.",
     ),
+  )
+  .add(
+    HttpApiEndpoint.get("version", "/v1/apps/:app/version", versionOptions).annotate(
+      OpenApi.Description,
+      "Read a retained version's build metadata and account requirements without fetching source files.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("deployments", "/v1/apps/:app/deployments", versionsOptions)
+      .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/versions`.")
+      .annotate(OpenApi.Deprecated, true),
+  )
+  .add(
+    HttpApiEndpoint.get("deployment", "/v1/apps/:app/deployment", versionOptions)
+      .annotate(OpenApi.Description, "Former path of `GET /v1/apps/:app/version`.")
+      .annotate(OpenApi.Deprecated, true),
   )
   .add(
     HttpApiEndpoint.get("source", "/v1/apps/:app/source", {
       params: { app: AppId },
-      query: {
-        owner: AppInputs.source.fields.owner,
-        deploymentOwner: AppInputs.source.fields.deploymentOwner,
-        deployment: AppInputs.source.fields.deployment,
-      },
-      success: Deployment,
-      error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
+      query: versionQuery,
+      success: Version,
+      error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
     }).annotate(
       OpenApi.Description,
-      "Read source files for a retained deployment in the app code lineage.",
+      "Read source files for a retained version in the app code lineage.",
     ),
   );

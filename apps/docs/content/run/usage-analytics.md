@@ -30,7 +30,7 @@ version.
 - **Startup:** product, version, release channel, operating system,
   architecture, and the number of apps and accounts. Self-host adds the number
   of users and organizations.
-- **Usage:** when tools, app pages, app data, account connections, deployments
+- **Usage:** when tools, app pages, app data, account connections, deploys
   and scheduled runs succeed or fail, with how long they took, the error type,
   the HTTP status, the API operation name, the kind of sign-in an account uses,
   the client application's name and whether the request came from MCP, the API

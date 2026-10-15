@@ -943,7 +943,7 @@ class Rewrite {
         scope = "app";
         this.warn(
           node,
-          `${callee}(…, ${target}, …) became app${kind}: one schedule an app manager enables, run without a caller. No stored schedule is converted: deployments already running keep their members' schedules. Redeploying deletes the members' copies of this schedule, with their settings, run history and pending approvals, and the app schedule starts paused until an app manager enables it`,
+          `${callee}(…, ${target}, …) became app${kind}: one schedule an app manager enables, run without a caller. No stored schedule is converted: versions already running keep their members' schedules. Redeploying deletes the members' copies of this schedule, with their settings, run history and pending approvals, and the app schedule starts paused until an app manager enables it`,
         );
         this.appMutation(node, call, `${callee}(…, ${target}, …)`);
       }

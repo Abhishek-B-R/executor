@@ -36,7 +36,7 @@ const Published = Schema.Struct({ app: Schema.Struct({ id: Schema.String }) });
 const StoredApp = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
-  activeDeployment: Schema.NullOr(Schema.String),
+  activeVersion: Schema.NullOr(Schema.String),
 });
 
 layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy", (it) => {
@@ -86,7 +86,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
         expect(created.status, JSON.stringify(created.body)).toBe(200);
         const app = yield* body(StoredApp, created);
         apps.push(app.id);
-        expect(app.activeDeployment).toBeNull();
+        expect(app.activeVersion).toBeNull();
 
         // Two enabled profiles of it with different accounts: the oldest keeps the app, the other
         // becomes "(Profile 2)".
@@ -119,7 +119,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy profile undeployed copy",
         expect(copy, "the second profile's copy").toBeDefined();
         apps.unshift(copy!.id);
         // Copied as its app is: saved, not deployed.
-        expect(copy!.activeDeployment).toBeNull();
+        expect(copy!.activeVersion).toBeNull();
         // Each keeps its profile's account linked, though neither declares a requirement yet.
         expect(yield* localAccountLinks(agent, app.id)).toEqual([["service", first]]);
         expect(yield* localAccountLinks(agent, copy!.id)).toEqual([["service", second]]);

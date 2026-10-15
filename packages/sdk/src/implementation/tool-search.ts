@@ -105,7 +105,7 @@ export const makeToolSearch = (options: {
   };
   /** The target of an invocation state's listing. */
   const stateTarget = (state: InvocationSnapshot) =>
-    target(scopedSelection(state.deployment.requirements.accounts, state.accounts, state.scope));
+    target(scopedSelection(state.version.requirements.accounts, state.accounts, state.scope));
   /**
    * Digests of definitions, and what makes two targets' tools of one name the same result:
    * everything agents read but the name. Kept listings share their tool and definition objects,
@@ -202,7 +202,7 @@ export const makeToolSearch = (options: {
             listing: id,
             owner: state.app.owner,
             app: state.app.id,
-            deployment: state.deployment.id,
+            version: state.version.id,
             target: yield* stateTarget(state),
             at,
             digest: digested,

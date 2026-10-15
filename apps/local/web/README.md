@@ -12,12 +12,12 @@ sessions survive server restarts when the data directory and address stay the sa
 `@executor-js/local-server/contracts`. Every product request uses that client.
 Overview, apps, accounts, and tools subscribe to typed SSE query snapshots.
 Committed SDK/MCP writes update the mounted atoms automatically. Tool discovery
-follows every page and pins the deployment across pages. Unrelated writes only
+follows every page and pins the version across pages. Unrelated writes only
 rerun a cheap input query; they do not reload upstream catalogs.
 Source and schemas are rendered as text tokens, never evaluated in the browser.
 Streams reauthenticate on snapshots and idle heartbeats. Transport failures
 resubscribe from current state; query failures remain subscribed and can recover
-after a later write. Source follows the active deployment unless a retained
+after a later write. Source follows the active version unless a retained
 version is explicitly selected. No polling or manual refresh is required.
 
 The design follows the earlier Executor workspaces preview and current product:

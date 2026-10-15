@@ -112,6 +112,7 @@ export default defineConfig({
         },
       }),
   deployment: { output: "static", site: siteOrigin, base: "/docs" },
+  redirects: [{ from: "/concepts/apps-and-deployments", to: "/concepts/apps-and-versions" }],
   // The marketing site uses the same faces and the same colours in both modes,
   // following the system setting, so both halves of the public origin read as
   // one product.
@@ -150,7 +151,7 @@ export default defineConfig({
         label: "Concepts",
         items: [
           "/concepts/providers-and-accounts",
-          "/concepts/apps-and-deployments",
+          "/concepts/apps-and-versions",
           "/concepts/tools-and-approvals",
           "/concepts/organizations-and-access",
         ],

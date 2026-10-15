@@ -3,7 +3,7 @@
 Author app UIs as React SPAs. React is the only supported UI framework for now.
 Add `ui/index.html`, a module script such as `ui/main.tsx`, and styles. The host
 compiles browser assets alongside the server build. Declare `react` and
-`react-dom` in the deployment's package dependencies. The local product opens
+`react-dom` in the app's package dependencies. The local product opens
 each configured app on its own localhost subdomain.
 
 Use local React components or browser-compatible npm component libraries.
@@ -21,7 +21,7 @@ The full Tailwind import includes Preflight, which resets browser button and
 form styles. Importing only `theme.css` and `utilities.css` omits those resets;
 use that split only when you supply the required base styles yourself.
 
-For hosted apps, discover and call `appUi.location` after deployment:
+For hosted apps, discover and call `appUi.location` after deploying:
 
 ```js
 return await tools.executor.appUi.location({
@@ -32,11 +32,11 @@ return await tools.executor.appUi.location({
 The response is
 `{ status: "ready", url: "https://<app-slug>.<org-slug>.executor.website" }`
 on Executor Cloud. Self-host uses its configured app domain. Use the returned
-URL rather than constructing one. Before the first deployment it fails with
+URL rather than constructing one. Before the first deploy it fails with
 `AppNotDeployed`. `status: "unavailable"` has `url: null` and a `reason`:
-`"no_ui"` when the deployment has no UI, as for tool-only apps, or
+`"no_ui"` when the active version has no UI, as for tool-only apps, or
 `"no_app_domain"` when the host has no app domain. `"pending"` and `"failed"`
-report the setup of the team's app domain. Deployment builds and activates the UI;
+report the setup of the team's app domain. Deploying builds and activates the UI;
 there is no separate publish step. Give the URL to the user to open in a
 browser. The browser completes sign-in using their Executor session. MCP
 credentials do not grant a browser session. A `403` response alone does not
@@ -57,7 +57,7 @@ external effects. All callbacks use Promises; the framework runs Effect internal
 
 Do not include an app ID or credentials in browser code. The host binds both
 identity and authentication. Compiled imports and `ui/public/` files are retained
-with the deployment. Import images and fonts from scripts or CSS. In `ui/index.html`,
+with the version. Import images and fonts from scripts or CSS. In `ui/index.html`,
 reference files with relative URLs. From script code, request `ui/public/` files
 by absolute path, such as `fetch("/data.json")`. The page has no `<base>`, so
 links, `#` fragments and history URLs resolve against the page itself. Each
@@ -77,8 +77,8 @@ them. Unknown extensions are `application/octet-stream`. They may be binary.
 directly, such as `<script type="module" src="/assets/index.js">`; it is
 served as it is, not compiled. A compiled file may not take the path of a
 public file. Public files support byte ranges and revalidate against their
-content, so media seeks and unchanged files are cheap. Each deployment serves
-its own files; activating an older deployment serves its files again.
+content, so media seeks and unchanged files are cheap. Each version serves
+its own files; activating an older version serves its files again.
 
 ## Hook result
 

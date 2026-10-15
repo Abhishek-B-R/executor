@@ -70,7 +70,7 @@ export function AppAccounts({
   const { organization } = useOrganizationRoute();
   const { data } = useQuery(appAccessAtom({ organization, app: app.id }));
   const canUse = Option.isSome(data) && data.value.canUse;
-  const deployed = app.activeDeployment !== null;
+  const deployed = app.activeVersion !== null;
   const registry = useContext(RegistryContext);
   const revalidate = (account: AccountSummary["id"]) => {
     const check = checkAppAccountAtom({ organization, app: app.id, account });
@@ -105,7 +105,7 @@ export function AppAccounts({
   const target = (scope: AccountScope) => ({
     organization,
     app: app.id,
-    deployment: app.activeDeployment,
+    version: app.activeVersion,
     scope,
   });
   const editing = (scope: AccountScope): LinkEditing<HostedError> => ({
@@ -324,7 +324,7 @@ function AppConnectionFields({
     appConnectionAtoms({
       organization,
       app,
-      deployment: current.activeDeployment,
+      version: current.activeVersion,
       scope,
       requirement: slot,
       provider: form.provider.id,

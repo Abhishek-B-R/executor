@@ -16,15 +16,15 @@ import {
   accountProblemBlocks,
 } from "./ui-account-notice.ts";
 import { appPrivateHeaders } from "./ui-auth.ts";
-import { deploymentDocument } from "./ui-document.ts";
+import { versionDocument } from "./ui-document.ts";
 import { appFailureBootstrap } from "./ui-errors.ts";
 
 /**
- * Render an authorized deployment with a host-owned deployment watcher. Account problems that stop
+ * Render an authorized version with a host-owned version watcher. Account problems that stop
  * the app replace its document with a page that links to their fix; others add a dismissible card.
  */
 export const appDocument = <E, R>(options: {
-  readonly deployment: string;
+  readonly version: string;
   /** The account IDs the page runs with, by requirement. */
   readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
   readonly origin: string;
@@ -47,7 +47,7 @@ export const appDocument = <E, R>(options: {
         contentType: file.contentType,
         headers: appPrivateHeaders,
       });
-    // The page's origin serves the active deployment, so the same URL can change content on the
+    // The page's origin serves the active version, so the same URL can change content on the
     // next activation: browsers revalidate against the content hash.
     if (file !== undefined) return yield* storedFile(file, "private, no-cache");
     if (pathname.includes(".") && pathname !== "/index.html")
@@ -67,7 +67,7 @@ export const appDocument = <E, R>(options: {
         headers: appPrivateHeaders,
       });
     const context = JSON.stringify({
-      deployment: options.deployment,
+      version: options.version,
       accounts: options.accountIds,
     }).replaceAll("<", "\\u003c");
     const telemetry = yield* CurrentTelemetryConfig;
@@ -79,7 +79,7 @@ export const appDocument = <E, R>(options: {
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
     const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
     return HttpServerResponse.text(
-      deploymentDocument(new TextDecoder().decode(document.body), options.deployment).replace(
+      versionDocument(new TextDecoder().decode(document.body), options.version).replace(
         "<!--executor-ui-->",
         boot,
       ),
@@ -88,7 +88,7 @@ export const appDocument = <E, R>(options: {
   });
 
 /**
- * A deployment's public file, read from the host's store. The deployment lists it, so bytes that
+ * A version's public file, read from the host's store. The version lists it, so bytes that
  * are gone are a storage fault, never a missing page.
  */
 export const storedAppFile = <E1, E2>(
@@ -199,7 +199,7 @@ const storedFile = (file: AppUiStoredFile, cacheControl: string) =>
   });
 
 /** Serve an asset only after the host has checked current access and file existence.
- * Asset URLs name their deployment, so their bytes never change: the browser keeps them for a year
+ * Asset URLs name their version, so their bytes never change: the browser keeps them for a year
  * and does not ask again. Shared proxies never store them. Revoking access stops every new request
  * and all app data, while bytes a browser already downloaded stay in its cache.
  * HTML remains an uncached host-rendered entry point; other HTML files are served as they are.

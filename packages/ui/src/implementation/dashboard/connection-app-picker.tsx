@@ -71,7 +71,7 @@ export function appChoices(
   return { app, options, needsAccount: requirements.length > 0 };
 }
 
-/** The events an app's active deployment declares, by name. */
+/** The events an app's active version declares, by name. */
 export const declaredEventNames = (app: App | undefined): readonly string[] =>
   Object.keys(app?.requirements.events ?? {}).toSorted();
 
@@ -244,7 +244,7 @@ export function ConnectionAppRow({
       )}
       {selection !== undefined && selection.tools.kind === "selected" && expanded && (
         <div className="mx-4 mb-3 overflow-hidden rounded-md border bg-background sm:ml-[72px]">
-          {app.activeDeployment === null ? (
+          {app.activeVersion === null ? (
             <p className="px-4 py-6 text-xs text-muted-foreground">
               Deploy this app to choose individual tools.
             </p>

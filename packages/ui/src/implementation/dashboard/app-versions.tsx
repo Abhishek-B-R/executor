@@ -1,46 +1,44 @@
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { QueryResult, useQuery } from "./context.tsx";
-import type { AppDeploymentsProps } from "../../contracts/dashboard.ts";
-import { DeploymentSourceLoading } from "./app-loading.tsx";
+import type { AppVersionsProps } from "../../contracts/dashboard.ts";
+import { VersionSourceLoading } from "./app-loading.tsx";
 import { SourceBrowser } from "./source-browser.tsx";
 import { cn } from "../lib/utils.ts";
 
-/** Deployment history and retained files occupy a full page; selection never changes the running app. */
-export function AppDeployments<E>({
+/** Version history and retained files occupy a full page; selection never changes the running app. */
+export function AppVersions<E>({
   app,
-  deployments,
-  deployment,
-  onDeploymentChange,
+  versions,
+  version,
+  onVersionChange,
   query,
   file,
   Failure,
   actions,
-}: AppDeploymentsProps<E>) {
+}: AppVersionsProps<E>) {
   const { result, refresh } = useQuery(query);
-  const isActive = deployment === app.activeDeployment;
+  const isActive = version === app.activeVersion;
   return (
-    <section aria-label="App deployments" className="flex min-h-0 flex-1 flex-col">
+    <section aria-label="App versions" className="flex min-h-0 flex-1 flex-col">
       <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
         <nav
-          aria-label="Deployment history"
+          aria-label="Version history"
           className="min-h-0 overflow-auto border-r bg-muted/15 p-2 max-[900px]:max-h-48 max-[900px]:border-r-0 max-[900px]:border-b"
         >
-          {deployments.map((item, index) => (
+          {versions.map((item, index) => (
             <button
               key={item.id}
               type="button"
-              aria-pressed={item.id === deployment}
-              onClick={() =>
-                onDeploymentChange(item.id === app.activeDeployment ? undefined : item.id)
-              }
+              aria-pressed={item.id === version}
+              onClick={() => onVersionChange(item.id === app.activeVersion ? undefined : item.id)}
               className={cn(
                 "block w-full rounded-md px-3 py-3 text-left transition-colors hover:bg-muted focus-visible:outline-ring",
-                item.id === deployment && "bg-muted",
+                item.id === version && "bg-muted",
               )}
             >
               <span className="flex items-center justify-between gap-3 text-sm font-medium">
-                Version {deployments.length - index}
-                {item.id === app.activeDeployment && (
+                Version {versions.length - index}
+                {item.id === app.activeVersion && (
                   <span className="rounded border px-1.5 py-0.5 text-[10px] font-normal">
                     Active
                   </span>
@@ -55,7 +53,7 @@ export function AppDeployments<E>({
         <div className="flex min-h-0 min-w-0 flex-col">
           <div className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-3 border-b px-5 py-3 max-[740px]:px-4">
             <h3 className="text-sm font-medium">
-              {isActive ? "Active deployment" : "Previous deployment"}
+              {isActive ? "Active version" : "Previous version"}
             </h3>
             {actions}
           </div>
@@ -63,7 +61,7 @@ export function AppDeployments<E>({
             result={result}
             Failure={Failure}
             retry={refresh}
-            pending={<DeploymentSourceLoading />}
+            pending={<VersionSourceLoading />}
           >
             {(source) => (
               <>

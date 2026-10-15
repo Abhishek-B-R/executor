@@ -380,7 +380,7 @@ layer(HostedLive, { excludeTestServices: true })("Apps from before routers", (it
         const unpinned = yield* saveAndDeploy(actors.owner, path, { files: legacy("second") });
         expect(unpinned.status, JSON.stringify(unpinned.body)).toBe(422);
         expect(unpinned.body).toMatchObject({
-          _tag: "DeploymentBuildFailed",
+          _tag: "VersionBuildFailed",
           reason: `Add "apps": "${appsVersion}" to package.json dependencies. Every app declares the exact apps version it uses; ${appsVersion} is this host's.`,
         });
         expect((yield* call("mutations.save", { text: "still one" })).body).toBe("protocol 1");

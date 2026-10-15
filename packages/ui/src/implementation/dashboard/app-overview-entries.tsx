@@ -29,8 +29,8 @@ export function AppOverviewEntries<E>({
       >
         <EntryHeader app={app} view="skills" label="Skills" />
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-          {app.activeDeployment === null ? (
-            <EmptyState size="card" heading="h3" title="No deployment yet">
+          {app.activeVersion === null ? (
+            <EmptyState size="card" heading="h3" title="No version yet">
               Deploy this app to view its skills.
             </EmptyState>
           ) : (
@@ -50,8 +50,8 @@ export function AppOverviewEntries<E>({
       >
         <EntryHeader app={app} view="workflows" label="Workflows" />
         <div className="flex min-h-0 flex-1 flex-col overflow-auto">
-          {app.activeDeployment === null ? (
-            <EmptyState size="card" heading="h3" title="No deployment yet">
+          {app.activeVersion === null ? (
+            <EmptyState size="card" heading="h3" title="No version yet">
               Deploy this app to view its workflows.
             </EmptyState>
           ) : (
@@ -101,7 +101,7 @@ function EntryHeader({
   return (
     <div className="mb-1 flex min-h-9 shrink-0 items-center justify-between gap-3 border-b pb-3">
       <h3 className="text-sm font-medium">{label}</h3>
-      {app.activeDeployment !== null && (
+      {app.activeVersion !== null && (
         <AppLink
           app={app.id}
           view={view}

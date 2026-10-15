@@ -7,7 +7,7 @@ import { SqlClient } from "effect/sql";
  * alike, with `copy`: the reserved ID of the app copy its account set became (see SDK 4.0.13 and
  * `executor_profile_app_copies`), or null when it stays with the app. `plain` marks the account a
  * plain requirement used, as SDK 4.0.13 reads it: the first existing account selected for a
- * requirement that is not many() in the app's active deployment, or, without one, a single
+ * requirement that is not many() in the app's active version, or, without one, a single
  * selection.
  */
 const profileAccounts = `select i.id as profile, i.app, i.subject, i.created_at, linked.account,
@@ -35,7 +35,7 @@ const profileAccounts = `select i.id as profile, i.app, i.subject, i.created_at,
 /**
  * Every existing account an enabled profile that is not being removed selected, with the
  * requirement it selected it for, its position in that selection and `plain`: whether the
- * requirement is not many() in the app's active deployment (or, for an app without one, the
+ * requirement is not many() in the app's active version (or, for an app without one, the
  * selection was a single account). `copy` is as in {@link profileAccounts}.
  */
 const profileLinks = `select i.app, i.subject, i.created_at, b.key as requirement, a.id as account,

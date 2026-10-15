@@ -10,7 +10,7 @@ import type {
   AccountId,
   AccountScope,
   AppId,
-  DeploymentId,
+  VersionId,
   OAuthClientSelection,
 } from "@executor-js/sdk";
 import { DashboardClient } from "./api.ts";
@@ -21,8 +21,8 @@ import { refreshAppDiscovery } from "./app-discovery.ts";
 /** One dialog's connection for an app requirement. `account` replaces that account's credentials. */
 export function appConnectionAtoms(key: {
   readonly app: AppId;
-  /** The deployment whose discovery the page shows, read again once the account is linked. */
-  readonly deployment: DeploymentId | null;
+  /** The version whose discovery the page shows, read again once the account is linked. */
+  readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly account?: AccountId | undefined;

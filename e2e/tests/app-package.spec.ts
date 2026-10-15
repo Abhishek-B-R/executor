@@ -1,4 +1,4 @@
-/** Published framework selection is exercised through the real hosted deployment and UI APIs. */
+/** Published framework selection is exercised through the real hosted deploy and UI APIs. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -145,7 +145,7 @@ layer(HostedLive, { excludeTestServices: true })("Packaged apps", (it) => {
         });
         expect(rejected.status).toBe(422);
         expect(rejected.body).toMatchObject({
-          _tag: "DeploymentBuildFailed",
+          _tag: "VersionBuildFailed",
           reason:
             "This app's apps framework uses host protocol 99. This host supports protocol 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13. Declare a supported apps version.",
         });

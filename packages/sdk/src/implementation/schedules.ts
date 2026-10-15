@@ -327,7 +327,7 @@ export const makeSchedules = (
       yield* query(() => db.deleteMany("schedules", { where: (b) => b("id", "=", id) }));
     });
   /**
-   * Bring saved settings to the active deployment's declarations: delete those of every schedule
+   * Bring saved settings to the active version's declarations: delete those of every schedule
    * it no longer declares, with their run history, and give each schedule whose timing changed the
    * new timing and its next occurrence. Declarations can depend on accounts, so each schedule is
    * checked against the app evaluated as its own actor, with the accounts its runs use; schedules
@@ -374,7 +374,7 @@ export const makeSchedules = (
               (schedule.scope === "app") === (setting.actor === null),
           );
           if (found !== undefined && sameTiming(found.timing, setting.timing)) return undefined;
-          return { setting, deployment: declared.value.deployment, timing: found?.timing };
+          return { setting, version: declared.value.version, timing: found?.timing };
         }),
       );
       const changed = checked.filter((item) => item !== undefined);
@@ -382,10 +382,10 @@ export const makeSchedules = (
       yield* transaction(db, () =>
         Effect.gen(function* () {
           const locked = yield* lockApp(db, { app });
-          for (const { setting, deployment, timing } of changed) {
+          for (const { setting, version, timing } of changed) {
             // A later activation reconciles against its own declarations, and a schedule
             // configured or claimed since it was evaluated is checked again by the next one.
-            if (locked.activeDeployment !== deployment) continue;
+            if (locked.activeVersion !== version) continue;
             const current = yield* query(() =>
               db.findFirst("schedules", {
                 where: (b) => b.and(b("id", "=", setting.id), b("revision", "=", setting.revision)),

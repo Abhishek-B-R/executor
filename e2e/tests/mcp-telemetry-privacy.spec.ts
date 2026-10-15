@@ -502,7 +502,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             });
             expect(build.status, JSON.stringify(build.body)).toBe(422);
             const buildReply = JSON.stringify(build.body);
-            expect(buildReply).toContain("DeploymentBuildFailed");
+            expect(buildReply).toContain("VersionBuildFailed");
             expect(buildReply).toContain(sourceMarker);
             yield* delivered("build-failed", yield* latestTrace, ["sdk.apps.deploy"]);
 

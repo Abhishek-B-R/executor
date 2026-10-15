@@ -101,7 +101,7 @@ The SDK stores no links.
 - `ResourceLifecycle.appLinks({ app })` returns the app links for background
   work, beside `userLinks({ app, subject })`. Each link names its requirement.
 - `linkedRequirements(requirements, scope, links)` groups one scope's links by
-  requirement, and `resolveLinkedAccounts({ app, deployment, appLinks,
+  requirement, and `resolveLinkedAccounts({ app, version, appLinks,
 userLinks })` resolves both scopes. An app and a user requirement may share a
   provider or an account.
 - App-scope schedules and app-account webhook sources have no actor.
@@ -183,7 +183,7 @@ Schedules show their scope.
   handler `MutationContext<typeof requirements, "app">` when it declares its
   context without a type.
 - Stored data: no app links are created. Existing links stay user links, now
-  keyed by requirement; see [remove profiles](remove-profiles.md). Deployments of protocol 12 and earlier keep running with
+  keyed by requirement; see [remove profiles](remove-profiles.md). Versions of protocol 12 and earlier keep running with
   their schedules as user schedules, one copy per member. Deploying a
   declaration as an app schedule replaces those copies: activation deletes the
   members' copies of it with their settings, run history and pending approvals,

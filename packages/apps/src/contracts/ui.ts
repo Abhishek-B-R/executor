@@ -1,18 +1,21 @@
 /** Browser-to-host operations bind identity and authentication outside authored app code. */
 import { Schema, type Effect, type Stream } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { JsonValue } from "./schema.ts";
 
 /**
  * Non-secret page context injected by the serving host. `accounts` names the account IDs the page
  * runs with, by requirement, when the app has requirements.
  */
-export const UiContext = Schema.Struct({
-  deployment: Schema.NonEmptyString,
+const UiContextFields = Schema.Struct({
+  version: Schema.NonEmptyString,
   accounts: Schema.optional(
     Schema.Record(Schema.NonEmptyString, Schema.Array(Schema.NonEmptyString)),
   ),
 });
+// Pages built with framework releases before versions were named read and send `deployment`.
+export const UiContext = UiContextFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** A problem with one of the page's accounts, from stored state. Labels are the owner's own names. */
 export type UiAccountProblem =
   | { readonly provider: string; readonly reason: "missing" | "removed" | "incompatible" }
@@ -43,7 +46,7 @@ export interface AppUiRange {
   readonly length: number;
 }
 /**
- * A public file the deployment's source served from `ui/public/`, which the host copied to its
+ * A public file the version's source served from `ui/public/`, which the host copied to its
  * own store. `etag` names its exact bytes. Hosts authorize access before reading it.
  */
 export interface AppUiStoredFile {
@@ -55,12 +58,12 @@ export interface AppUiStoredFile {
   ) => Effect.Effect<Stream.Stream<Uint8Array, UiFailed>, UiFailed>;
 }
 export type AppUiAsset = AppUiFile | AppUiStoredFile;
-/** Requests name an operation on this app and the page's deployment, never another app or account. */
+/** Requests name an operation on this app and the page's version, never another app or account. */
 export const UiOperation = Schema.Struct({
-  ...UiContext.fields,
+  ...UiContextFields.fields,
   name: Schema.NonEmptyString,
   input: JsonValue,
-});
+}).pipe(withLegacyKeys({ version: "deployment" }));
 /** The app session is absent or its parent login was revoked. */
 export class UiUnauthorized extends Schema.TaggedError<UiUnauthorized>()(
   "UiUnauthorized",
@@ -73,8 +76,11 @@ export class UiForbidden extends Schema.TaggedError<UiForbidden>()(
   {},
   { httpApiStatus: 403 },
 ) {}
-/** The page should reload before starting another operation. */
-export class UiDeploymentChanged extends Schema.TaggedError<UiDeploymentChanged>()(
+/**
+ * The page should reload before starting another operation. The tag keeps its former name: pages
+ * built with earlier framework releases reload on it.
+ */
+export class UiVersionChanged extends Schema.TaggedError<UiVersionChanged>()(
   "UiDeploymentChanged",
   {},
   { httpApiStatus: 409 },
@@ -97,7 +103,7 @@ export const UiSnapshot = Schema.Union([
   Schema.Struct({ type: Schema.Literal("failure"), error: UiFailed }),
   Schema.Struct({ type: Schema.Literal("heartbeat") }),
 ]);
-const errors = [UiUnauthorized, UiForbidden, UiDeploymentChanged, UiFailed] as const;
+const errors = [UiUnauthorized, UiForbidden, UiVersionChanged, UiFailed] as const;
 /** Portable serving contract; the host authenticates and resolves the configured app. */
 export const AppUiApi = HttpApi.make("app-ui").add(
   HttpApiGroup.make("ui")

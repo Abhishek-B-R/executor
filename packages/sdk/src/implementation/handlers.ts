@@ -111,12 +111,12 @@ export const executorHandlers = (executor: Executor) =>
         .handle("activate", ({ params, query, payload }) =>
           executor.apps.activate({ ...params, ...query, ...payload }),
         )
+        .handle("versions", ({ params, query }) => executor.apps.versions({ ...params, ...query }))
+        .handle("version", ({ params, query }) => executor.apps.version({ ...params, ...query }))
         .handle("deployments", ({ params, query }) =>
-          executor.apps.deployments({ ...params, ...query }),
+          executor.apps.versions({ ...params, ...query }),
         )
-        .handle("deployment", ({ params, query }) =>
-          executor.apps.deployment({ ...params, ...query }),
-        )
+        .handle("deployment", ({ params, query }) => executor.apps.version({ ...params, ...query }))
         .handle("source", ({ params, query }) => executor.apps.source({ ...params, ...query }))
         .handle("history", ({ params, query }) => executor.apps.history({ ...params, ...query }))
         .handle("revision", ({ params, query }) => executor.apps.revision({ ...params, ...query })),

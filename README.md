@@ -6,7 +6,7 @@ Run `bun run workspace:check` before using the shared preview; use
 [the workspace lifecycle](AGENTS.md#workspace-lifecycle) for commits and merge handoff.
 
 Executor SDK, app framework and the first local server package. Account/app
-persistence, encrypted credentials, deployment and tool execution now work.
+persistence, encrypted credentials, deploying and tool execution now work.
 The local MCP endpoint runs codemode over app tools and Executor management tools.
 The local dashboard shows apps, accounts, live tools and retained source.
 Provider OAuth supports supplied clients, DCR, CIMD, and token refresh.
@@ -101,13 +101,13 @@ Keep contracts flat, one cohesive area per file.
 - `packages/sdk/src/contracts/`
   - `provider.ts`: normalized definitions, named auth methods and derived references
   - `account.ts`: reusable accounts, API-key fields, OAuth start/completion and lookups
-  - `apps.ts`: apps, requirements, source, deployment and account errors
-  - `deployment.ts`: immutable source versions and retained builds
+  - `apps.ts`: apps, requirements, source, version and account errors
+  - `version.ts`: immutable source versions and retained builds
   - `tools.ts`: existing tool seam, using accounts the product resolves from links
   - `shared.ts`: branded IDs, owners, JSON and secret boundary types
   - `http.ts`: one HTTP contract, composed from accounts/apps/tools
   - `executor.ts`: the Promise SDK projected from that contract
-  - `storage.ts`: parsers for persisted accounts, deployments and configured apps
+  - `storage.ts`: parsers for persisted accounts, versions and configured apps
   - `runtime.ts`: pluggable build, inspect and call operations
 - `packages/sdk/src/implementation/`: native account/app/tool operations, database
   transactions, runtime adapters, provider identity and HTTP handlers
@@ -136,7 +136,7 @@ Keep contracts flat, one cohesive area per file.
   in several apps, and select multiple Gmail accounts
 - [Two users](playground/sdk/two-users.ts): separate configured apps and accounts;
   the product applies its own owner checks
-- [Deployments](playground/sdk/deployments.ts): retained code and the existing rollback seam
+- [Versions](playground/sdk/versions.ts): retained code and the existing rollback seam
 
 The in-process SDK takes `{ storage, sources, blobs, runtime, credentials }`. The Vercel example
 can use those adapters; OAuth and remote examples remain sketches. Source-file
@@ -145,7 +145,7 @@ reads use Effect's filesystem service and assume the repository root. See the
 
 ## Storage schema
 
-`executorDatabase` declares providers, accounts, deployments, apps, OAuth records
+`executorDatabase` declares providers, accounts, versions, apps, OAuth records
 and configured-app documents with fumadb-effect. The caller supplies an Effect SQL
 driver Layer, creates `makeExecutorStorage`, runs its `migrate` Effect, and owns
 the connection lifetime. The [PGlite example](playground/sdk/storage.ts) initializes the schema
@@ -155,15 +155,15 @@ Accounts store metadata and opaque encrypted credential bytes. The credential
 adapter owns encryption, envelope format and key custody. The local server
 uses AES-GCM with an explicitly configured key. Parsed storage
 records redact the bytes; public account records contain only metadata.
-Deployments retain a Git commit reference, file count, build reference and declared
-account requirements. Source reads load files from Git; SQL stores no source bytes. Public app requirements come from the active deployment. No
+Versions retain a Git commit reference, file count, build reference and declared
+account requirements. Source reads load files from Git; SQL stores no source bytes. Public app requirements come from the active version. No
 live tool catalog is stored.
 
 The schema enforces unique app names per owner, account provider references,
-and active deployments from the app's code lineage. Owners may differ across
+and active versions from the app's code lineage. Owners may differ across
 related records. Saved account maps preserve missing slots, scalar IDs and
 explicit empty arrays. SDK operations check account existence, provider matching,
-cardinality and duplicate selections inside those maps. Deployments are inserted
+cardinality and duplicate selections inside those maps. Versions are inserted
 as immutable rows; selection and activation changes are transactional.
 
 Live queries track storage reads and update after committed writes. The dashboard
@@ -208,7 +208,7 @@ stay out of returned metadata. Public SDK calls take plain credential fields;
 host contracts redact them at entry. OAuth client configuration, state, PKCE,
 refresh tokens and grant storage belong to the trusted host.
 
-An app owns source, deployment, requirements and shared data. It holds no account selections. `apps.deploy`
+An app owns source, versions, requirements and shared data. It holds no account selections. `apps.deploy`
 creates, builds and activates a new app, keyed by `(owner,name)`.
 `apps.copy({ from, owner, name })` copies running source into an independent app
 with fresh Git history and deploys it. Unfinished apps copy their working source
@@ -225,15 +225,15 @@ requirement uses its one linked account and `.many()` every linked account; see
 Requirements apply to the whole app, including tools that use only part of its
 context.
 
-`AppCodeId` groups the deployments belonging to one independent app; it has no
-separate CRUD API. A deployment retains immutable source, its deploying owner,
+`AppCodeId` groups the versions belonging to one independent app; it has no
+separate CRUD API. A version retains immutable source, its deploying owner,
 and a compiled-build reference. Code activation changes the app's pointer and
 re-registers managed webhooks. New calls validate their accounts against the active
 requirements. It does not copy accounts, rewrite links, or migrate app data.
 
 Tool calls identify the app and the accounts they use. The host snapshots the
-deployment and account IDs for that invocation, checks product authorization, resolves current credentials, and
-evaluates the dynamic app. An explicit deployment pins code only. The local MCP adapter evaluates catalogs for each execute and names tools by
+version and account IDs for that invocation, checks product authorization, resolves current credentials, and
+evaluates the dynamic app. An explicit version pins code only. The local MCP adapter evaluates catalogs for each execute and names tools by
 configured app ID. Durable indexing and cross-call revision handling remain deferred.
 
 Each tool can declare its own `approval` callback or use `always()` / `never()`

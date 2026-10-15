@@ -105,8 +105,8 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Context ${randomUUID().slice(0, 8)}`;
         const created: { app?: string; account?: string; linked?: boolean } = {};
-        /** Wait until the linked account's webhook source is ready on the deployment. */
-        const settleSource = (deployment: string) =>
+        /** Wait until the linked account's webhook source is ready on the version. */
+        const settleSource = (version: string) =>
           Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + 15000;
             for (;;) {
@@ -121,13 +121,12 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
                   Schema.Struct({
                     account: Schema.String,
                     status: Schema.String,
-                    reconciledDeployment: Schema.NullOr(Schema.String),
+                    reconciledVersion: Schema.NullOr(Schema.String),
                   }),
                 ),
                 response,
               )).find((source) => source.account === created.account);
-              if (current?.status === "ready" && current.reconciledDeployment === deployment)
-                return;
+              if (current?.status === "ready" && current.reconciledVersion === version) return;
               expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(
                 deadline,
               );
@@ -252,11 +251,11 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
           ),
         });
         expect(updated.status).toBe(200);
-        const { activeDeployment } = yield* body(
-          Schema.Struct({ activeDeployment: Schema.String }),
+        const { activeVersion } = yield* body(
+          Schema.Struct({ activeVersion: Schema.String }),
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}`),
         );
-        yield* settleSource(activeDeployment);
+        yield* settleSource(activeVersion);
         const subscriptions = yield* body(
           Schema.Array(Subscription),
           yield* api.request(actors.owner, "GET", `${prefix}/apps/${app}/webhooks`),

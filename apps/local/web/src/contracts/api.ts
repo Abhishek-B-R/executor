@@ -10,7 +10,7 @@ import {
   DashboardOverview,
   DashboardTools,
 } from "@executor-js/local-server/contracts";
-import type { AppId, ApprovalRequestId, DeploymentId, Json, ToolName } from "@executor-js/sdk";
+import type { AppId, ApprovalRequestId, VersionId, Json, ToolName } from "@executor-js/sdk";
 import { Cause, Clock, Data, Effect, Option, Schedule, Schema, Stream } from "effect";
 import { HttpClientError } from "effect/http";
 import { AsyncResult, Atom, AtomHttpApi } from "effect/reactivity";
@@ -175,7 +175,7 @@ export const overviewAtom = acknowledgedQuery(
   ),
 );
 
-/** Follow current configuration and deployment activation while this app is mounted. */
+/** Follow current configuration and version activation while this app is mounted. */
 export const appAtom = Atom.family((app: AppId) =>
   liveQueryAtom({
     name: "app",
@@ -187,14 +187,13 @@ export const appAtom = Atom.family((app: AppId) =>
   }).pipe(acknowledgedQuery),
 );
 
-/** Immutable retained source follows the deployment selected by its live app atom. */
-export const sourceAtom = Atom.family(
-  (key: { readonly app: AppId; readonly deployment: DeploymentId }) =>
-    DashboardClient.query("dashboard", "sourceDisplay", hydrated({ params: key })),
+/** Immutable retained source follows the version selected by its live app atom. */
+export const sourceAtom = Atom.family((key: { readonly app: AppId; readonly version: VersionId }) =>
+  DashboardClient.query("dashboard", "sourceDisplay", hydrated({ params: key })),
 );
 class SourceFileKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   readonly path: string;
 }> {}
 const sourceFileQuery = Atom.family((key: SourceFileKey) =>
@@ -202,28 +201,28 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
     "dashboard",
     "sourceDisplayFile",
     hydrated({
-      params: { app: key.app, deployment: key.deployment },
+      params: { app: key.app, version: key.version },
       query: { path: key.path },
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
-/** One display file of a retained deployment, read when the listing did not inline it. */
+/** One display file of a retained version, read when the listing did not inline it. */
 export const sourceFileAtom = (key: ConstructorParameters<typeof SourceFileKey>[0]) =>
   sourceFileQuery(new SourceFileKey(key));
 
 /**
- * Tool discovery follows the app's deployment. It is read again after linking, unlinking or
+ * Tool discovery follows the app's version. It is read again after linking, unlinking or
  * connecting an account, and by the page's normal refresh on returning to it.
  */
 class ToolKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment?: DeploymentId | null | undefined;
+  readonly version?: VersionId | null | undefined;
 }> {}
 const toolQueries = Atom.family((key: ToolKey) =>
   liveQueryAtom({
     name: "tools",
     // Every part of the key selects a distinct subscription, including those the request omits.
-    key: { app: key.app, deployment: key.deployment },
+    key: { app: key.app, version: key.version },
     success: DashboardTools,
     query: Effect.flatMap(DashboardClient, (client) =>
       client.dashboard.liveTools({
@@ -234,7 +233,7 @@ const toolQueries = Atom.family((key: ToolKey) =>
   }).pipe(refreshedOnFocus, currentQuery),
 );
 
-/** One catalog per app and deployment. */
+/** One catalog per app and version. */
 export const toolsAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolQueries(new ToolKey(key));
 
@@ -265,7 +264,7 @@ export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[
 
 class CallKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
   readonly tool: ToolName;
   readonly kind: "query" | "mutation";
 }> {}
@@ -279,7 +278,7 @@ const calls = Atom.family(({ app, ...target }: CallKey) =>
     ),
   ),
 );
-/** Each tool call runs with the app's linked accounts and the page's deployment. */
+/** Each tool call runs with the app's linked accounts and the page's version. */
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
 const toolRunApprovals = Atom.family((endpoint: string) => toolRunApproval(BrowserAtoms, endpoint));

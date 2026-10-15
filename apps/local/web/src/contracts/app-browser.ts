@@ -4,10 +4,10 @@ import { workflowBindings } from "./resources.ts";
 import type { DashboardError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
 /**
- * One discovery cache per app and deployment. Linking or unlinking an account reads it again, as
+ * One discovery cache per app and version. Linking or unlinking an account reads it again, as
  * does the page's normal refresh.
  */
-import type { App, AppId, DeploymentId } from "@executor-js/sdk";
+import type { App, AppId, VersionId } from "@executor-js/sdk";
 import { Cause, Data, Match, Option } from "effect";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { DashboardClient } from "./api.ts";
@@ -20,7 +20,7 @@ const denied = Match.type<DashboardError>().pipe(
     DashboardForbidden: () => true,
     AppNotFound: () => true,
     AppSkillNotFound: () => true,
-    DeploymentNotFound: () => true,
+    VersionNotFound: () => true,
   }),
   Match.orElse(() => false),
 );
@@ -34,9 +34,9 @@ const protectedQuery = <A, E extends DashboardError>(
 
 class AppKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment: DeploymentId | null;
+  readonly version: VersionId | null;
 }> {}
-const query = (key: AppKey) => ({ deployment: key.deployment ?? undefined });
+const query = (key: AppKey) => ({ version: key.version ?? undefined });
 const skills = Atom.family((key: AppKey) =>
   DashboardClient.query(
     "appBrowser",
@@ -61,12 +61,12 @@ const bundle = Atom.family((key: AppKey) =>
 export function appBrowserBindings(
   app: App,
 ): SkillBindings<DashboardError> & WorkflowBindings<DashboardError> {
-  const key = new AppKey({ app: app.id, deployment: app.activeDeployment });
+  const key = new AppKey({ app: app.id, version: app.activeVersion });
   return {
     skills: skills(key),
     ...workflowBindings({
       app: app.id,
-      deployment: app.activeDeployment ?? undefined,
+      version: app.activeVersion ?? undefined,
     }),
     bundle: bundle(key),
   };

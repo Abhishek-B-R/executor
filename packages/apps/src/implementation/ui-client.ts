@@ -17,7 +17,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { externalTrace, pendingSpan } from "@executor-js/telemetry";
 import { FetchHttpClient, HttpClientError } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { AppUiApi, UiContext, UiDeploymentChanged, UiFailed } from "../contracts/ui.ts";
+import { AppUiApi, UiContext, UiVersionChanged, UiFailed } from "../contracts/ui.ts";
 import { AppQueryFailed, type OperationReference } from "../contracts/live.ts";
 import { JsonValue } from "../contracts/schema.ts";
 import { decoderOf, type Schema } from "./schema.ts";
@@ -70,13 +70,13 @@ const visibleResult = <E>(
       });
 };
 
-/** A scoped page client. Host-injected context carries only the deployment, never credentials. */
+/** A scoped page client. Host-injected context carries only the version, never credentials. */
 export const createAppClient = () => {
   const { runtime, atoms } = makeBrowserTelemetry(
     browserSettings("/_executor/api/telemetry", "executor-app-web"),
   );
   const browser = atoms(Layer.empty);
-  const deploymentChanged = Effect.sync(() => {
+  const versionChanged = Effect.sync(() => {
     window.dispatchEvent(new Event("executor:deployment-changed"));
   });
   let pendingWrites = 0;
@@ -128,7 +128,7 @@ export const createAppClient = () => {
       const value = yield* api.ui[kind]({ payload: yield* payload(name, input) });
       return yield* EffectSchema.decodeUnknownEffect(decoderOf(output))(value);
     }).pipe(
-      Effect.tapErrorTag("UiDeploymentChanged", () => deploymentChanged),
+      Effect.tapErrorTag("UiDeploymentChanged", () => versionChanged),
       Effect.withSpan(`ui.app.${kind}`, { attributes: { "executor.operation.name": name } }),
     );
   const source = (name: string, input: JsonValue, output: Schema<unknown, boolean>) =>
@@ -202,7 +202,7 @@ export const createAppClient = () => {
                     if (frame.type === "failure") return Effect.fail(frame.error);
                     const server = externalTrace(frame.trace);
                     return Effect.gen(function* () {
-                      // This page's own schema rejects its deployment's snapshot; retrying cannot help.
+                      // This page's own schema rejects its version's snapshot; retrying cannot help.
                       const value = yield* EffectSchema.decodeUnknownEffect(decoderOf(output))(
                         frame.value,
                       ).pipe(Effect.mapError(() => new AppQueryFailed()));
@@ -253,10 +253,10 @@ export const createAppClient = () => {
             }),
           ).pipe(
             // Keep the last snapshot while the watcher replaces the document.
-            // Unmount or client disposal interrupts the deployment-change wait.
+            // Unmount or client disposal interrupts the version-change wait.
             Stream.catch((error) =>
-              EffectSchema.is(UiDeploymentChanged)(error)
-                ? Stream.unwrap(deploymentChanged.pipe(Effect.as(Stream.never)))
+              EffectSchema.is(UiVersionChanged)(error)
+                ? Stream.unwrap(versionChanged.pipe(Effect.as(Stream.never)))
                 : Stream.fail(error),
             ),
             Stream.tap((value) =>

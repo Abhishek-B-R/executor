@@ -19,7 +19,7 @@ import {
   ElicitationFailed,
   resolveLinkedAccounts,
   type AppId,
-  type DeploymentId,
+  type VersionId,
   type Executor,
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
@@ -44,7 +44,7 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
     listApps: (input = {}) => executor.apps.list(input),
     listAccounts: (input) =>
       executor.apps.get({ app: input.app }).pipe(
-        Effect.flatMap((app) => appVersion(executor, app, input.deployment)),
+        Effect.flatMap((app) => appVersion(executor, app, input.version)),
         // Agents see the user requirements' accounts only; the app's are its app links.
         Effect.flatMap((version) => versionRequirementAccounts(sql, executor, version)),
         Effect.map((accounts) => accounts.userLinks),
@@ -89,20 +89,18 @@ export const localMcpBackend = <G extends Error>(
       if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
       return yield* resolveLinkedAccounts({
         app: version.app.id,
-        deployment: version.deployment,
+        version: version.version,
         appLinks,
         userLinks: targetedLinks(authority, version.app.id, linked),
       });
     });
-  /** Calls and listings run on the active deployment; skill reads on the deployment they pin. */
-  const resolved = <
-    I extends { readonly app: AppId; readonly deployment?: DeploymentId | undefined },
-  >(
+  /** Calls and listings run on the active version; skill reads on the version they pin. */
+  const resolved = <I extends { readonly app: AppId; readonly version?: VersionId | undefined }>(
     input: I,
     pinned: boolean,
   ) =>
     executor.apps.get({ app: input.app }).pipe(
-      Effect.flatMap((app) => appVersion(executor, app, pinned ? input.deployment : undefined)),
+      Effect.flatMap((app) => appVersion(executor, app, pinned ? input.version : undefined)),
       Effect.flatMap(accounts),
       Effect.map((accounts) => ({ ...input, accounts })),
     );

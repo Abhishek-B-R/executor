@@ -148,7 +148,7 @@ const userLinkRecords = (app: AppId, requirement?: string) =>
     );
   });
 
-/** The requirement in this scope of the app's active deployment, or `RequirementMismatch`. */
+/** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
 const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
   const required = Object.hasOwn(app.requirements.accounts, requirement)
     ? app.requirements.accounts[requirement]

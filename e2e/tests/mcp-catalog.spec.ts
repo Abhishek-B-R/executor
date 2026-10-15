@@ -1,4 +1,4 @@
-/** MCP catalog caching through real app deployment, storage and upstream HTTP boundaries. */
+/** MCP catalog caching through real app deploys, storage and upstream HTTP boundaries. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Config, Effect, Layer, Option, Schedule, Schema } from "effect";
@@ -368,7 +368,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             expect(response.status).toBe(200);
             yield* body(Schema.Json, response);
             const elapsed = performance.now() - start;
-            // Deployment indexing may also discover in the background.
+            // Indexing after a deploy may also discover in the background.
             // Every uncached call must issue its own tools/list regardless.
             expect((yield* control(origin)).counters.list).toBeGreaterThan(before);
             return elapsed;

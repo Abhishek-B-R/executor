@@ -99,7 +99,7 @@ export function ConnectPage() {
           query={connectionToolListAtom({
             organization,
             app: app.id,
-            deployment: app.activeDeployment ?? undefined,
+            version: app.activeVersion ?? undefined,
           })}
           Failure={HostedFailure}
           names={names}

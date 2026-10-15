@@ -1,5 +1,5 @@
 import { Context, Schema, type Effect } from "effect";
-import { DeploymentMetadata, SourceFilePath, type SourceTextFile } from "@executor-js/sdk/core";
+import { VersionMetadata, SourceFilePath, type SourceTextFile } from "@executor-js/sdk/core";
 
 /**
  * Formats source text for display only; stored source is never rewritten. A file the formatter
@@ -57,12 +57,12 @@ export type SourceDisplayEntry = typeof SourceDisplayEntry.Type;
 /** Every source file, in stored order, with contents inlined only within the budget. */
 export const SourceDisplayEntries = Schema.NonEmptyArray(SourceDisplayEntry);
 
-/** A retained deployment's display listing. The deployment ID pins single-file reads. */
-export const DeploymentDisplay = Schema.Struct({
-  ...DeploymentMetadata.fields,
+/** A retained version's display listing. The version ID pins single-file reads. */
+export const VersionDisplay = Schema.Struct({
+  ...VersionMetadata.fields,
   files: SourceDisplayEntries,
 });
-export type DeploymentDisplay = typeof DeploymentDisplay.Type;
+export type VersionDisplay = typeof VersionDisplay.Type;
 
-/** Select one file of an immutable revision or deployment for a display read. */
+/** Select one file of an immutable revision or version for a display read. */
 export const SourceDisplayFileQuery = { path: SourceFilePath };

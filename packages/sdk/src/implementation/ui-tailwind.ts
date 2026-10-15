@@ -9,7 +9,7 @@ const directives =
   /@(?:tailwind|theme|apply|utility|variant|custom-variant|config|plugin|source)\b|--(?:alpha|spacing)\(/;
 const decode = (file: UiBuildFile) => new TextDecoder().decode(file.body);
 
-/** Compile opted-in styles with one deployment's browser candidates; plain CSS is unchanged. */
+/** Compile opted-in styles with one version's browser candidates; plain CSS is unchanged. */
 export const compileUiTailwind = <E, R>(
   assets: readonly UiBuildFile[],
   html: string,

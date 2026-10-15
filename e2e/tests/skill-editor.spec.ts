@@ -272,7 +272,7 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
         );
         expect(skillFile(running)).toBe(edited);
-        yield* page("The deployment status clears", (page) =>
+        yield* page("The deploy status clears", (page) =>
           page.getByRole("status").filter({ hasText: "Saved" }).waitFor({ state: "hidden" }),
         );
         yield* browser.checkpoint("Saved and deployed");

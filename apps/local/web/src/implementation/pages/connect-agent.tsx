@@ -24,7 +24,7 @@ export function ConnectAgentPage() {
         <ConnectionToolPicker
           query={toolListAtom({
             app: app.id,
-            deployment: app.activeDeployment,
+            version: app.activeVersion,
           })}
           Failure={Failure}
           names={names}

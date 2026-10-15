@@ -23,7 +23,7 @@ import { Button } from "../components/button.tsx";
 import { SkillContent } from "./skill-content.tsx";
 import { SkillSize } from "./skill-size.tsx";
 import {
-  SkillDeployment,
+  SkillVersion,
   SkillFileEditor,
   type Committed,
   type SkillEditing,
@@ -53,14 +53,14 @@ export function AppSkills<E>({
   // Editable skills read the working source, then the deployed catalog. Neither depends on the
   // other, so both start here instead of the catalog waiting for the source.
   const catalog: Atom.Atom<AsyncResult.AsyncResult<AppSkillBundle | undefined, E>> =
-    app.activeDeployment === null ? undeployedCatalog : bindings.bundle;
+    app.activeVersion === null ? undeployedCatalog : bindings.bundle;
   const editable = editing !== undefined && canEdit;
   usePreload(...(editable ? [editing.atoms.workspace(app.id), catalog] : [catalog]));
   useAtomMount(catalog);
   return (
     <section aria-label="App skills" className="flex min-h-0 flex-1 flex-col overflow-hidden">
       {committed !== undefined && editing !== undefined && (
-        <SkillDeployment
+        <SkillVersion
           key={committed.commit}
           app={app}
           commit={committed.commit}
@@ -87,8 +87,8 @@ export function AppSkills<E>({
             />
           )}
         </QueryView>
-      ) : app.activeDeployment === null ? (
-        <EmptyStatePanel title="No deployment yet">
+      ) : app.activeVersion === null ? (
+        <EmptyStatePanel title="No version yet">
           The app owner needs to deploy this app before its skills are available.
         </EmptyStatePanel>
       ) : (
@@ -126,9 +126,9 @@ function EditableSkills<E>({
   readonly onCommitted: (result: Committed) => void;
 }) {
   const { result, data, refresh } = useQuery<AppSkillBundle | undefined, E>(
-    app.activeDeployment === null ? undeployedCatalog : bindings.bundle,
+    app.activeVersion === null ? undeployedCatalog : bindings.bundle,
   );
-  // The catalog atom is keyed by deployment, so every deploy (including the one after Save)
+  // The catalog atom is keyed by version, so every deploy (including the one after Save)
   // starts a new atom at Initial. Keep the last loaded catalog until the new one arrives;
   // replacing the workspace with the skeleton would remount the open editor.
   const loaded = AsyncResult.isInitial(result)
@@ -281,7 +281,7 @@ function SkillFiles<E>({
     ...skill,
     revision: catalog.revision,
     app: catalog.app,
-    deployment: catalog.deployment,
+    version: catalog.version,
     file: resource.path,
     content: resource.content,
     files: skill.files.map((item) => item.path),

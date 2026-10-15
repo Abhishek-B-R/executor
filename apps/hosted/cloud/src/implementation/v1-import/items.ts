@@ -1,7 +1,7 @@
 /**
  * One v1 item becomes v2 resources: an integration an app, a connection a personal account linked
  * to its app for the importing user, a policy per-tool approvals inside its integration's app, a
- * toolkit a scoped MCP connection, an artifact an app's source without a deployment. Each returns
+ * toolkit a scoped MCP connection, an artifact an app's source without a version. Each returns
  * the resource it created, or why the item cannot be imported; a defect or storage failure
  * fails the request instead and the item is retried.
  */
@@ -703,7 +703,7 @@ export const importIntegration = (
     Effect.catchTags({
       // The build's message names its stage and the failure in the generated source. Builds bind
       // no accounts, so it holds no credentials.
-      DeploymentBuildFailed: (error) => fail(`The generated app did not build. ${error.message}`),
+      VersionBuildFailed: (error) => fail(`The generated app did not build. ${error.message}`),
       BuildMemoryExceeded: () => fail("The generated app is too large to build."),
       AppNotFound: () => fail("Its imported app was removed."),
     }),
@@ -1243,7 +1243,7 @@ export const artifactNote = (mapping: {
 };
 
 /**
- * Save the artifact as an app without a deployment: `apps.create` keeps its source and builds
+ * Save the artifact as an app without a version: `apps.create` keeps its source and builds
  * nothing, so it does not run until it is repaired. An earlier import's app gets a new commit.
  */
 export const importArtifact = (

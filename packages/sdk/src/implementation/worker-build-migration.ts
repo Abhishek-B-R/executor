@@ -11,7 +11,7 @@ import { sourceText } from "../contracts/source.ts";
 import { Effect, Option, Schema } from "effect";
 import { type BlobKey, BlobStore } from "../contracts/blobs.ts";
 import { UiAsset } from "../contracts/runtime.ts";
-import type { BuildId, DeploymentId } from "../contracts/shared.ts";
+import type { BuildId, VersionId } from "../contracts/shared.ts";
 import {
   AppProtocolVersion,
   type FrameworkIdentity,
@@ -20,7 +20,7 @@ import {
   RetainedWorkerBuild,
   WorkerBundle,
 } from "../contracts/worker-build.ts";
-import { readDeploymentSource } from "./deployment-source.ts";
+import { readVersionSource } from "./version-source.ts";
 import {
   buildKey,
   decodeJson,
@@ -83,10 +83,10 @@ const Manifest = Schema.fromJsonString(
   }),
 );
 
-/** The `apps` release a deployment's retained source declares, if it can be read. */
-const declaredApps = (deployment: DeploymentId) =>
+/** The `apps` release an app version's retained source declares, if it can be read. */
+const declaredApps = (version: VersionId) =>
   Effect.gen(function* () {
-    const files = yield* readDeploymentSource(yield* BlobStore, deployment);
+    const files = yield* readVersionSource(yield* BlobStore, version);
     const manifest = sourceText(files, "package.json");
     if (manifest === undefined) return undefined;
     const declared = Schema.decodeUnknownOption(Manifest)(manifest).pipe(
@@ -98,27 +98,27 @@ const declaredApps = (deployment: DeploymentId) =>
 
 /**
  * Where a framework's version label came from: the published release with its hash, the exact
- * version the deployment declares, or neither. The hash alone decides which object a build links.
+ * version the app version declares, or neither. The hash alone decides which object a build links.
  */
 export type FrameworkLabelSource = "release" | "declared" | "unreleased";
 
 /**
  * Label a framework hash: the published release with that hash (the declared one when several
- * releases share it, otherwise the oldest); else the deployment's declared `dependencies.apps`
+ * releases share it, otherwise the oldest); else the app version's declared `dependencies.apps`
  * when it is an exact version; else `unreleased`.
  */
-const frameworkLabel = (sha256: string, deployment: DeploymentId) =>
+const frameworkLabel = (sha256: string, version: VersionId) =>
   Effect.gen(function* () {
     const releases = publishedFrameworks[sha256];
     if (releases !== undefined) {
       if (releases.length === 1) return { version: releases[0], source: "release" as const };
-      const declared = yield* declaredApps(deployment);
+      const declared = yield* declaredApps(version);
       return {
         version: declared !== undefined && releases.includes(declared) ? declared : releases[0],
         source: "release" as const,
       };
     }
-    const declared = yield* declaredApps(deployment);
+    const declared = yield* declaredApps(version);
     return declared !== undefined && exactVersion.test(declared)
       ? { version: declared, source: "declared" as const }
       : { version: "unreleased", source: "unreleased" as const };
@@ -216,11 +216,11 @@ export interface BuildSplit {
 /**
  * Split one build. Apply writes the framework if absent (checking an existing one's hash), then
  * the record last, and verifies the read-back. Report does the same reads and checks in memory and
- * writes nothing. `deployment` is any deployment of the build, for its declared `apps` version.
+ * writes nothing. `version` is any version of the build, for its declared `apps` version.
  */
 export const splitInlinedWorkerBuild = (
   build: BuildId,
-  deployment: DeploymentId,
+  version: VersionId,
   mode: "report" | "apply",
 ) =>
   Effect.gen(function* () {
@@ -266,7 +266,7 @@ export const splitInlinedWorkerBuild = (
       version: "unlabelled",
       modules: frameworkModules,
     });
-    const label = yield* frameworkLabel(sha256, deployment);
+    const label = yield* frameworkLabel(sha256, version);
     const identity: FrameworkIdentity = { version: label.version, sha256 };
     const framework: RetainedFramework = { ...identity, modules: frameworkModules };
     const record: RetainedWorkerBuild = {

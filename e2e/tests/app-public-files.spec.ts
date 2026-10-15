@@ -98,10 +98,10 @@ const page = `<!doctype html><html><head><title>Public files</title>
 <script type="module" src="/assets/main.js"></script></head>
 <body><main><h1>Public files</h1><img alt="Pixel" src="images/pixel.png"></main></body></html>`;
 
-const App = Schema.Struct({ id: Schema.String, activeDeployment: Schema.NullOr(Schema.String) });
+const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.NullOr(Schema.String) });
 const Created = Schema.fromJsonString(Schema.Struct({ id: Schema.String }));
 const Deployed = Schema.fromJsonString(
-  Schema.Struct({ deployment: Schema.Struct({ id: Schema.String }) }),
+  Schema.Struct({ version: Schema.Struct({ id: Schema.String }) }),
 );
 const SourceEntry = Schema.Union([
   Schema.Struct({ path: Schema.String, object: Schema.String, size: Schema.Number }),
@@ -308,8 +308,7 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           );
           const deployed = yield* cli(["deploy", "--app", app.id, "--files", directory]);
           expect(deployed.code, deployed.stderr).toBe(0);
-          const deployment = (yield* Schema.decodeUnknownEffect(Deployed)(deployed.stdout))
-            .deployment.id;
+          const version = (yield* Schema.decodeUnknownEffect(Deployed)(deployed.stdout)).version.id;
 
           // Reads list binary and oversized public files by their blob; text stays inline.
           const working = yield* body(
@@ -345,7 +344,7 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             ),
           ).toBe(1);
           expect(yield* servedMismatches(sample(files), "/")).toEqual([]);
-          const pinned = `/_executor/assets/${deployment}/`;
+          const pinned = `/_executor/assets/${version}/`;
           expect(yield* servedMismatches(sample(files).slice(0, 12), pinned)).toEqual([]);
 
           // Ranges, blob validators and caching.
@@ -504,7 +503,7 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.ignore),
           );
-          const original = app.activeDeployment;
+          const original = app.activeVersion;
           const redeployed = yield* api.request(
             actors.owner,
             "POST",
@@ -515,11 +514,11 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           const url = yield* waitForAppUrl(actors.owner, `${prefix}/apps/${app.id}/ui`);
           yield* browser.login(actors.owner);
           yield* openPrivateApp(url);
-          yield* browser.use("The second deployment runs", (page) =>
+          yield* browser.use("The second version runs", (page) =>
             page.locator('body[data-version="second"]').waitFor({ state: "attached" }),
           );
           expect(yield* servedMismatches(second, "/")).toEqual([]);
-          // The first deployment's files stay at its own pinned URLs while the second is active.
+          // The first version's files stay at its own pinned URLs while the second is active.
           expect(yield* servedMismatches(first, `/_executor/assets/${original}/`)).toEqual([]);
 
           const current = yield* body(
@@ -530,15 +529,15 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/activate`,
-            { deployment: original, expectedDeployment: current.activeDeployment },
+            { version: original, expectedVersion: current.activeVersion },
           );
           expect(activated.status).toBe(200);
-          // Activation reloads open pages; the reloaded page runs the first deployment's entry.
-          yield* browser.use("The first deployment runs again", (page) =>
+          // Activation reloads open pages; the reloaded page runs the first version's entry.
+          yield* browser.use("The first version runs again", (page) =>
             page.locator('body[data-version="first"]').waitFor({ state: "attached" }),
           );
           expect(yield* servedMismatches(first, "/")).toEqual([]);
-          const gone = yield* browser.use("A file only the second deployment had", (page) =>
+          const gone = yield* browser.use("A file only the second version had", (page) =>
             page.evaluate(() =>
               fetch("/media/added.bin", { cache: "no-store" }).then((response) => response.status),
             ),

@@ -21,7 +21,7 @@ import {
   WorkflowApp,
 } from "../contracts/workflows.ts";
 import { AccountScope, SelectedAccounts } from "../contracts/apps.ts";
-import { AppId, DeploymentId, OwnerId, StorageError, type Json } from "../contracts/shared.ts";
+import { AppId, VersionId, OwnerId, StorageError, type Json } from "../contracts/shared.ts";
 import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
@@ -29,7 +29,7 @@ import type { Executor } from "../contracts/executor.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp, storedDeployment } from "./apps.ts";
+import { storedApp, storedVersion } from "./apps.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { invocationScope, scopedSelection } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
@@ -44,14 +44,16 @@ const StoredRun = Schema.Struct({
   scope: AccountScope,
   owner: OwnerId,
   key: Schema.String,
-  deployment: DeploymentId,
+  version: VersionId,
   name: Schema.String,
   accounts: SelectedAccounts,
   status: Schema.Literals(["queued", "running", "complete", "errored", "terminated"]),
   failure: Schema.NullOr(WorkflowFailure.fields.reason),
   encrypted: Schema.RedactedFromValue(Schema.Uint8Array),
   createdAt: Schema.Date,
-});
+})
+  // Storage keeps the column's former name.
+  .pipe(Schema.encodeKeys({ version: "deployment" }));
 const Payload = Schema.Struct({
   input: WorkflowValue,
   request: WorkflowValue,
@@ -141,7 +143,7 @@ export const makeWorkflowRuns = (
       return yield* Schema.decodeUnknownEffect(WorkflowRun)({
         id: row.id,
         app: row.app,
-        deployment: row.deployment,
+        version: row.version,
         workflow: row.name,
         createdAt: row.createdAt.toISOString(),
         status: row.status,
@@ -192,11 +194,11 @@ export const makeWorkflowRuns = (
       "engine",
       true,
     );
-  /** The run's captured deployment, scope and accounts, checked against the actor it started for. */
+  /** The run's captured version, scope and accounts, checked against the actor it started for. */
   const captured = (row: typeof StoredRun.Type) =>
     snapshot(db, {
       app: row.app,
-      deployment: row.deployment,
+      version: row.version,
       captured: { accounts: row.accounts, scope: row.scope },
     }).pipe(Effect.provideService(CurrentActor, row.actor ?? undefined));
   const context: WorkflowHost["context"] = (run) =>
@@ -210,7 +212,7 @@ export const makeWorkflowRuns = (
           ...(yield* resolve(state, resolveAccount).pipe(
             Effect.provideService(CurrentActor, state.actor),
           )),
-          database: ownsDatabase(state.deployment.requirements),
+          database: ownsDatabase(state.version.requirements),
           workflowControls: controls(state),
         };
       }),
@@ -234,8 +236,8 @@ export const makeWorkflowRuns = (
         return {
           runId: run,
           app: row.app,
-          build: state.deployment.build,
-          deployment: row.deployment,
+          build: state.version.build,
+          version: row.version,
           name: row.name,
           input: payload.input,
         };
@@ -267,7 +269,7 @@ export const makeWorkflowRuns = (
                         "SHA-256",
                         new TextEncoder().encode(
                           stable({
-                            deployment: current.deployment,
+                            version: current.version,
                             name: input.name,
                             input: input.input,
                           }),
@@ -447,7 +449,7 @@ export const makeWorkflowRuns = (
           runtime
             .workflow({
               app: input.app,
-              build: state.deployment.build,
+              build: state.version.build,
               ...bound,
               command: { operation: "workflow-validate", name: input.workflow, input: input.input },
             })
@@ -475,10 +477,7 @@ export const makeWorkflowRuns = (
               }),
             );
             const currentApp = yield* storedApp(db, { app: state.app.id });
-            if (
-              inherited === undefined &&
-              currentApp.activeDeployment !== state.app.activeDeployment
-            )
+            if (inherited === undefined && currentApp.activeVersion !== state.app.activeVersion)
               return yield* failure("conflict");
             const accountIds = [...new Set(Object.values(state.accounts).flat())].sort();
             for (const account of accountIds) {
@@ -499,7 +498,7 @@ export const makeWorkflowRuns = (
                 actor: actor ?? null,
                 scope: state.scope,
                 key,
-                deployment: state.deployment.id,
+                deployment: state.version.id,
                 name: input.workflow,
                 accounts: state.accounts,
                 status: "queued",
@@ -612,7 +611,7 @@ export const makeWorkflowRuns = (
             ...input,
             app,
             accounts: scopedSelection(
-              inherited.deployment.requirements.accounts,
+              inherited.version.requirements.accounts,
               inherited.accounts,
               inherited.scope,
             ),
@@ -640,7 +639,7 @@ export const makeWorkflowRuns = (
           safe(
             runtime.workflow({
               app: input.app,
-              build: state.deployment.build,
+              build: state.version.build,
               ...context,
               command: { operation: "workflows" },
             }),
@@ -664,15 +663,15 @@ export const makeWorkflowRuns = (
           if (input.owner !== undefined && row.owner !== input.owner)
             return yield* failure("not_found");
           // Each account keeps the scope its requirement had when the run started, whatever later
-          // deployments declare.
-          const deployment = yield* storedDeployment(db, app, row.deployment).pipe(
+          // versions declare.
+          const version = yield* storedVersion(db, app, row.version).pipe(
             Effect.catchTags({
-              DeploymentNotFound: () => failure("not_found"),
+              VersionNotFound: () => failure("not_found"),
               AppNotDeployed: () => failure("not_found"),
             }),
           );
           return {
-            accounts: scopedSelection(deployment.requirements.accounts, row.accounts, row.scope),
+            accounts: scopedSelection(version.requirements.accounts, row.accounts, row.scope),
             actor: row.actor,
           };
         }),

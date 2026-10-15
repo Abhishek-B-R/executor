@@ -68,11 +68,11 @@ export function AppSchedules<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }) {
   const { AppLink } = useDashboard();
-  if (app.activeDeployment === null)
+  if (app.activeVersion === null)
     return (
       <SchedulesLayout>
         <EmptyState
-          title="No deployment yet"
+          title="No version yet"
           action={
             <Button
               asChild
@@ -342,7 +342,7 @@ function DeclarationRow<E>({
         <p className="text-xs text-muted-foreground">{timingText(declaration.timing)}</p>
         {!declared && copy !== undefined && (
           <p className="text-xs text-muted-foreground">
-            The current deployment does not declare this schedule.
+            The current version does not declare this schedule.
           </p>
         )}
         {required !== undefined ? (

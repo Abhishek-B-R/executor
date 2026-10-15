@@ -3,7 +3,7 @@ import {
   LocalOwnerMigration,
 } from "@executor-js/app-management/contracts/local-owners";
 import {
-  DeploymentDisplay,
+  VersionDisplay,
   SourceDisplayFile,
   SourceDisplayFileQuery,
 } from "@executor-js/app-management/contracts/source-display";
@@ -38,12 +38,12 @@ import {
   AppId,
   AppName,
   AppNotFound,
-  AppDeploymentChanged,
+  AppVersionChanged,
   CredentialsError,
   Cursor,
-  Deployment,
-  DeploymentId,
-  DeploymentNotFound,
+  Version,
+  VersionId,
+  VersionNotFound,
   OwnerId,
   PageLimit,
   StorageError,
@@ -57,7 +57,7 @@ import {
   ProviderNotFound,
   AppNameTaken,
   AppSlugTaken,
-  DeploymentBuildFailed,
+  VersionBuildFailed,
   BuildMemoryExceeded,
   SkillDefinitionInvalid,
   OAuthClientSelection,
@@ -426,17 +426,17 @@ export const DashboardOverview = Schema.Struct({
 });
 export type DashboardOverview = typeof DashboardOverview.Type;
 /** Retained versions without loading every source file into the browser's list view. */
-export const DeploymentSummary = Schema.Struct({
-  id: DeploymentId,
+export const VersionSummary = Schema.Struct({
+  id: VersionId,
   owner: OwnerId,
   createdAt: Schema.Date,
   fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
 });
-export type DeploymentSummary = typeof DeploymentSummary.Type;
-/** Current configuration plus retained deployments in the same code lineage, newest first. */
+export type VersionSummary = typeof VersionSummary.Type;
+/** Current configuration plus retained versions in the same code lineage, newest first. */
 export const DashboardApp = Schema.Struct({
   app: App,
-  deployments: Schema.Array(DeploymentSummary),
+  versions: Schema.Array(VersionSummary),
   canDelete: Schema.Boolean,
   uiUrl: Schema.NullOr(HttpUrl),
 });
@@ -444,7 +444,7 @@ export type DashboardApp = typeof DashboardApp.Type;
 
 /**
  * Complete account-dependent catalog and the routers that group it. Tool schemas remain dynamic,
- * never retained deployment metadata.
+ * never retained version metadata.
  */
 export const DashboardTools = Schema.Struct({
   tools: Schema.Array(Tool),
@@ -484,7 +484,7 @@ const toolErrors = [
   CredentialsError,
   AppNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
+  VersionNotFound,
   AppEvaluationFailed,
   ToolListingTimedOut,
   AppProviderFailed,
@@ -579,32 +579,28 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      HttpApiEndpoint.get("source", "/dashboard/api/apps/:app/deployments/:deployment", {
-        params: { app: AppId, deployment: DeploymentId },
-        success: Deployment,
-        error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
+      HttpApiEndpoint.get("source", "/dashboard/api/apps/:app/versions/:version", {
+        params: { app: AppId, version: VersionId },
+        success: Version,
+        error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.get("sourceDisplay", "/dashboard/api/apps/:app/versions/:version/display", {
+        params: { app: AppId, version: VersionId },
+        success: VersionDisplay,
+        error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound],
       }),
     )
     .add(
       HttpApiEndpoint.get(
-        "sourceDisplay",
-        "/dashboard/api/apps/:app/deployments/:deployment/display",
-        {
-          params: { app: AppId, deployment: DeploymentId },
-          success: DeploymentDisplay,
-          error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
-        },
-      ),
-    )
-    .add(
-      HttpApiEndpoint.get(
         "sourceDisplayFile",
-        "/dashboard/api/apps/:app/deployments/:deployment/display/file",
+        "/dashboard/api/apps/:app/versions/:version/display/file",
         {
-          params: { app: AppId, deployment: DeploymentId },
+          params: { app: AppId, version: VersionId },
           query: SourceDisplayFileQuery,
           success: SourceDisplayFile,
-          error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound, ...sourceErrors],
+          error: [StorageError, AppNotFound, AppNotDeployed, VersionNotFound, ...sourceErrors],
         },
       ),
     )
@@ -614,7 +610,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
         query: {
           cursor: Schema.optional(Cursor),
           limit: Schema.optional(PageLimit),
-          deployment: Schema.optional(DeploymentId),
+          version: Schema.optional(VersionId),
         },
         success: ToolPage,
         error: toolErrors,
@@ -628,7 +624,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
           kind: Schema.optional(ToolKind),
           input: Json,
-          deployment: Schema.optional(DeploymentId),
+          version: Schema.optional(VersionId),
         }),
         success: BrowserToolRun,
         error: [
@@ -636,7 +632,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           CredentialsError,
           AppNotFound,
           AppNotDeployed,
-          DeploymentNotFound,
+          VersionNotFound,
           AppEvaluationFailed,
           AppProviderFailed,
           AccountNotFound,
@@ -708,13 +704,13 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           CatalogImportFailed,
           StorageError,
           ...sourceErrors,
-          DeploymentBuildFailed,
+          VersionBuildFailed,
           BuildMemoryExceeded,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
           AppNotFound,
-          AppDeploymentChanged,
+          AppVersionChanged,
           AccountNotFound,
           AccountSelectionInvalid,
         ],
@@ -728,13 +724,13 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           CatalogImportFailed,
           StorageError,
           ...sourceErrors,
-          DeploymentBuildFailed,
+          VersionBuildFailed,
           BuildMemoryExceeded,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
           AppNotFound,
-          AppDeploymentChanged,
+          AppVersionChanged,
           AccountNotFound,
           AccountSelectionInvalid,
         ],

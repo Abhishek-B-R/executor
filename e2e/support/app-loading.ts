@@ -12,10 +12,10 @@ const tabs = [
   { view: "tools", title: "Tools", loading: "Loading tools" },
   { view: "source", title: "Working source", loading: "Loading source" },
   { view: "history", title: "Working source", loading: "Loading source history" },
-  { view: "deployments", title: "Deployments", loading: "Loading deployments" },
+  { view: "versions", title: "Versions", loading: "Loading versions" },
   { view: "settings", title: "Settings", loading: "Loading settings" },
 ] as const;
-const redundantTitles = ["Overview", "Accounts", "Deployments", "Settings"];
+const redundantTitles = ["Overview", "Accounts", "Versions", "Settings"];
 /**
  * The bounds of a section's header row once it is laid out. An in-app navigation shows the route's
  * pending view and then the page itself; an element being swapped out has no layout, so the
@@ -80,7 +80,7 @@ const contentBox = (
         tools: '[aria-label="Loading tools"]',
         source: '[aria-label="Loading files"]',
         history: '[aria-label="Loading history"] > div > div:first-child',
-        deployments: '[aria-label="Loading deployments"]',
+        versions: '[aria-label="Loading versions"]',
         settings: '[aria-label="Loading settings"] > div > div:first-child',
       }[view]
     : {
@@ -89,7 +89,7 @@ const contentBox = (
         tools: ".tools-section",
         source: '[aria-label="Source browser"]',
         history: '[aria-label="Source history"] li:first-child',
-        deployments: '[aria-label="App deployments"]',
+        versions: '[aria-label="App versions"]',
         settings: '[aria-label="App name"]',
       }[view];
   return page.locator(region).boundingBox();
@@ -105,7 +105,7 @@ export const checkAppLoading = (input: {
   readonly tools: readonly string[];
   readonly workspace: readonly string[];
   readonly history: readonly string[];
-  readonly deployments?: readonly string[];
+  readonly versions?: readonly string[];
   readonly source: readonly string[];
   readonly viewports?: readonly { readonly width: number; readonly height: number }[];
 }) =>
@@ -204,7 +204,7 @@ export const checkAppLoading = (input: {
                 ? yield* holdQuery(input.tools, "continue", { allRequests: true })
                 : tab.view === "source" || tab.view === "history"
                   ? yield* holdQuery(input.workspace, "continue", { allRequests: true })
-                  : tab.view === "deployments"
+                  : tab.view === "versions"
                     ? yield* holdQuery(input.source, "continue", { allRequests: true })
                     : undefined;
             const history =
@@ -212,8 +212,8 @@ export const checkAppLoading = (input: {
                 ? yield* holdQuery(input.history, "continue", { allRequests: true })
                 : undefined;
             const versions =
-              tab.view === "deployments" && input.deployments
-                ? yield* holdQuery(input.deployments, "continue", { allRequests: true })
+              tab.view === "versions" && input.versions
+                ? yield* holdQuery(input.versions, "continue", { allRequests: true })
                 : undefined;
             yield* openThroughBrowser(
               `Open ${tab.view}`,
@@ -289,7 +289,7 @@ export const checkAppLoading = (input: {
             yield* metadata.release;
             if (versions) {
               yield* versions.requested;
-              yield* browser.checkpoint(`${viewport.width} deployment list pending`);
+              yield* browser.checkpoint(`${viewport.width} version list pending`);
               yield* versions.release;
             }
             if (content) {
@@ -347,7 +347,7 @@ export const checkAppLoading = (input: {
                 }
                 break;
               case "source":
-              case "deployments":
+              case "versions":
                 yield* browser.use("The source viewport arrives", (page) =>
                   page.getByRole("region", { name: "Source browser", exact: true }).waitFor(),
                 );

@@ -259,7 +259,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* issuer.configure({ rejected: false });
         const discovery = yield* oauthSetupIssuer;
         yield* discovery.configure({ discovery: "missing" });
-        const discoveryDeployment = yield* session.send(
+        const discoveryVersion = yield* session.send(
           "POST",
           "/v1/apps/deploy",
           {
@@ -277,8 +277,8 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           },
           headers,
         );
-        expect(discoveryDeployment.status).toBe(200);
-        const { app: discoveryApp } = yield* body(Published, discoveryDeployment);
+        expect(discoveryVersion.status).toBe(200);
+        const { app: discoveryApp } = yield* body(Published, discoveryVersion);
         yield* Effect.addFinalizer(() =>
           session
             .send("DELETE", `/v1/apps/${discoveryApp.id}`, undefined, headers)

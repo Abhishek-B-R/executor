@@ -20,7 +20,7 @@ import { appsManifest } from "../support/apps-release.ts";
 
 /** Key replacements, each followed by one tool call and one workflow run. */
 const rotations = 12;
-const Deployment = Schema.Struct({
+const Version = Schema.Struct({
   app: Schema.Struct({
     id: Schema.String,
     requirements: Schema.Struct({
@@ -78,7 +78,7 @@ const localApp = (resource: string) =>
       ],
     });
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-    const { app } = yield* body(Deployment, deployed);
+    const { app } = yield* body(Version, deployed);
     resources.app = app.id;
     const path = `/v1/apps/${app.id}`;
     const connect = (token: string) =>

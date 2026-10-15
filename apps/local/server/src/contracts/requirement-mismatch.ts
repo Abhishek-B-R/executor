@@ -8,8 +8,8 @@ const mismatch = {
     title: "This app has no such account requirement here",
     description: (scope: AccountScope) =>
       scope === "app"
-        ? "The app's active deployment doesn't declare this requirement as one of its own, linked for every call."
-        : "The app's active deployment doesn't declare this requirement as one you link for yourself.",
+        ? "The app's active version doesn't declare this requirement as one of its own, linked for every call."
+        : "The app's active version doesn't declare this requirement as one you link for yourself.",
     action: (scope: AccountScope) =>
       scope === "app"
         ? "Link the account to one of the app's own requirements, or to a user requirement under Your accounts."
@@ -23,7 +23,7 @@ const mismatch = {
   },
 } as const;
 /**
- * The account cannot be linked to this requirement in this scope: the app's active deployment
+ * The account cannot be linked to this requirement in this scope: the app's active version
  * does not declare the requirement in it (`requirement`), or the account's provider is not the
  * requirement's (`provider`).
  */

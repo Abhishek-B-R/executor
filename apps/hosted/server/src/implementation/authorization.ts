@@ -9,7 +9,7 @@ import {
   invocationAccounts,
   type AppAccounts,
   type AppId,
-  type DeploymentId,
+  type VersionId,
   type ToolInvocation,
   type ToolKind,
   type ToolName,
@@ -44,9 +44,9 @@ export interface ToolAuthorization {
 }
 /**
  * Check exact tool identity before executing or resuming work, independent of HTTP/MCP
- * authentication. A read-only rule reads the tool's live flag from the pinned deployment with the
+ * authentication. A read-only rule reads the tool's live flag from the pinned version with the
  * call's accounts, unless the caller passes the tool this check read before with the same
- * accounts; an unknown tool or missing flag is forbidden. Callers resolve the deployment and every
+ * accounts; an unknown tool or missing flag is forbidden. Callers resolve the version and every
  * account first; one grant entry must permit the tool and the whole set of user accounts. When only
  * a read-only rule permits it, the call runs as a query: one that names a mutation is forbidden.
  */
@@ -55,7 +55,7 @@ export const authorizeTool = (
     readonly app: AppId;
     readonly tool: ToolName;
     readonly accounts: AppAccounts;
-    readonly deployment?: DeploymentId | undefined;
+    readonly version?: VersionId | undefined;
     readonly kind?: ToolKind | undefined;
   },
   described?: ToolIdentity,
@@ -91,7 +91,7 @@ export const authorizeSavedTool = (invocation: ToolInvocation) =>
   authorizeTool({
     app: invocation.app,
     tool: invocation.tool,
-    deployment: invocation.deployment,
+    version: invocation.version,
     accounts: invocationAccounts(invocation),
     kind: invocation.kind,
   }).pipe(

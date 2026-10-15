@@ -38,7 +38,7 @@ interface Skill {
 type Creating = { readonly kind: "skill" } | { readonly kind: "file"; readonly skill: string };
 type Selection = { readonly skill: string; readonly file: string };
 
-/** Working source is editable before deployment; app-provided skills remain available read-only. */
+/** Working source is editable before deploying; app-provided skills remain available read-only. */
 export function SkillWorkspace<E>({
   app,
   source,

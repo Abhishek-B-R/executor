@@ -5,10 +5,10 @@
  * release, with only their pin moved to beta.84, a protocol 12 release that still builds their source.
  * Self-host runs it at startup; this scenario starts the product with data steps held in report
  * mode and deploys Executor-shaped apps (one account slot, a provider named `Executor`) on the
- * published beta.9: one untouched, one whose `main` holds an earlier deployment's source, one whose
+ * published beta.9: one untouched, one whose `main` holds an earlier version's source, one whose
  * `main` holds the running source under only the framework pin an earlier data step committed
  * before member setup deployed the template over it, one with that pin and another dependency, one
- * whose `main` holds an earlier deployment's source under only that pin before a later deploy
+ * whose `main` holds an earlier version's source under only that pin before a later deploy
  * replaced it, the same with another edit, one with an edit on `main`, and one on beta.10, beside
  * an app with another provider on beta.9. The untouched app is recorded as the organization's
  * default Executor app. A report start writes nothing; an apply start redeploys the four eligible
@@ -110,7 +110,7 @@ const sorted = (files: Files) => files.toSorted((left, right) => (left.path < ri
 const App = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
-  activeDeployment: Schema.NullOr(Schema.String),
+  activeVersion: Schema.NullOr(Schema.String),
 });
 type App = typeof App.Type;
 const Deployed = Schema.Struct({ app: App });
@@ -120,6 +120,7 @@ const RunningSource = Schema.Struct({
 const Metadata = Schema.Struct({ metadata: Schema.NullOr(Schema.String) });
 const ExecutorDefaults = Schema.fromJsonString(
   Schema.Struct({
+    // Organization metadata keeps the former key.
     executorDefaults: Schema.Struct({ app: Schema.String, deployment: Schema.String }),
   }),
 );
@@ -240,7 +241,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
           // Behind and pinned: a pin step committed the then-running source under the framework pin,
           // and member setup later deployed a newer template from files, which never writes Git.
           // Those first sources declared no framework; deploys now require one, so the first
-          // deployment declares the old release and the pin commit replaces it, as the pin would add.
+          // version declares the old release and the pin commit replaces it, as the pin would add.
           const behindPinnedFirst = source("Executor", oldRelease, "behind-pinned-first");
           const behindPinned = yield* deploy("Executor behind pinned", behindPinnedFirst);
           yield* request("POST", `/apps/${behindPinned.id}/commits`, {
@@ -291,7 +292,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
           ];
           const state = Effect.forEach(apps, (app) =>
             Effect.all({
-              deployment: get(app).pipe(Effect.map((current) => current.activeDeployment)),
+              version: get(app).pipe(Effect.map((current) => current.activeVersion)),
               commit: workspace(app).pipe(Effect.map((current) => current.revision.commit)),
             }),
           );
@@ -321,7 +322,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
             { sql: `SELECT metadata FROM "organization" WHERE id = $1`, params: [organization] },
             {
               sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}', jsonb_build_object('installed', true, 'app', $2::text, 'deployment', $3::text))::text WHERE id = $1`,
-              params: [organization, untouched.id, before[0]?.deployment ?? null],
+              params: [organization, untouched.id, before[0]?.version ?? null],
             },
           ]);
           const metadata = (yield* Schema.decodeUnknownEffect(Metadata)(recordedBefore[0]?.[0]))
@@ -362,10 +363,10 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
           // and main holds them too. Its account still answers, and the default follows it.
           const redeployed = yield* get(untouched);
           expect(redeployed.id).toBe(untouched.id);
-          expect(redeployed.activeDeployment).not.toBe(before[0]?.deployment);
+          expect(redeployed.activeVersion).not.toBe(before[0]?.version);
           expect(defaults.executorDefaults).toEqual({
             app: untouched.id,
-            deployment: redeployed.activeDeployment,
+            deployment: redeployed.activeVersion,
           });
           const expected = sorted(repinned(untouchedFiles, oldRelease, targetRelease));
           expect(sorted(yield* running(untouched))).toEqual(expected);
@@ -385,7 +386,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor app redeploy data ste
           expect(sorted(yield* running(pinned))).toEqual(pinnedExpected);
           expect(sorted((yield* workspace(pinned)).files)).toEqual(pinnedExpected);
 
-          // Main under the pin on an earlier deployment's source gets the running source with the new
+          // Main under the pin on an earlier version's source gets the running source with the new
           // pin; the pin commit stays in its history.
           const behindPinnedExpected = sorted(
             repinned(behindPinnedFiles, oldRelease, targetRelease),

@@ -338,7 +338,7 @@ const SkillListing = Schema.Struct({
 const skillRead = <A, E>(
   effect: Effect.Effect<A, E | HttpClientError.HttpClientError | Schema.SchemaError>,
 ) => effect.pipe(Effect.catchIf(isTransportFailure, hostFailure));
-/** Skills come from each app's deployment on the host; the CLI bundles no guidance. */
+/** Skills come from each app's version on the host; the CLI bundles no guidance. */
 const readSkills = (args: {
   readonly host: string;
   readonly organization: Option.Option<string>;
@@ -359,7 +359,7 @@ const readSkills = (args: {
     const catalog = (app: App) => skillRead(skills.list({ params: { app: app.id }, query: {} }));
     if (Option.isNone(args.app)) {
       const results = yield* Effect.forEach(
-        apps.filter((app) => app.activeDeployment !== null),
+        apps.filter((app) => app.activeVersion !== null),
         (app) =>
           catalog(app).pipe(
             Effect.map((found) => ({ app: app.slug, catalogs: [found] })),
@@ -869,7 +869,7 @@ export const appsCommand = (platform: string) =>
         ),
       }).pipe(
         Command.withDescription(
-          "Build a saved commit, or save a source directory and build it, and make it the app's active deployment. A failed build leaves the active deployment unchanged and reports the failing stage, file and line",
+          "Build a saved commit, or save a source directory and build it, and make it the app's active version. A failed build leaves the active version unchanged and reports the failing stage, file and line",
         ),
         Command.withExamples([
           {

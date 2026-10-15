@@ -1,6 +1,6 @@
 ---
-title: Apps and deployments
-description: "An app owns its source and data. A deployment is an immutable, retained version of its code."
+title: Apps and versions
+description: "An app owns its source and data. A version is an immutable, retained build of its code."
 ---
 
 ## App
@@ -32,19 +32,19 @@ An app can also require accounts of its own, which people who can edit it link
 for everyone. See [Providers and accounts](/concepts/providers-and-accounts).
 
 Managing an app does not grant use of somebody else's accounts. Every caller
-runs the app's active deployment and shares the app's stored data.
+runs the app's active version and shares the app's stored data.
 
-## Deployment
+## Version
 
-A **deployment** is one immutable version of an app's source and build. A build
-must succeed before it becomes the running version. Earlier deployments remain
+A **version** is one immutable snapshot of an app's source and build. A build
+must succeed before it becomes the running version. Earlier versions remain
 available for rollback. Rollback changes the running code; it does not rewind
 app data or external actions.
 
 Source edits and Git pushes do not deploy automatically. An agent reads working
 source, commits changes against that revision, then deploys the saved commit.
-Deployment accepts complete files or an existing Git commit. It does not edit Git.
-The newest successful deployment becomes active.
+Deploying accepts complete files or an existing Git commit. It does not edit Git.
+The newest successful version becomes active.
 
 ## Public apps
 

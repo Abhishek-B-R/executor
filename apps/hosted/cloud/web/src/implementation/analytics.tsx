@@ -194,6 +194,8 @@ export const pageContext = (pathname: string, search = "") => {
       "workflows",
       "settings",
       "source",
+      "versions",
+      // The former name of `versions`, in links saved before the rename.
       "deployments",
     ].includes(view)
       ? view

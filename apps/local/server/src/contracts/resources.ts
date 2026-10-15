@@ -1,13 +1,14 @@
 /** Paired-dashboard access to workflow history and webhook lifecycle metadata. */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import {
   AccountId,
   AppId,
-  DeploymentId,
+  VersionId,
   WorkflowRunId,
   HostedWorkflow,
   WorkflowRun,
   WorkflowRunPage,
-  StartWorkflow,
+  StartWorkflowFields,
   ListWorkflowRuns,
   WorkflowErrors,
   WebhookSubscription,
@@ -29,7 +30,9 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
       params: app,
-      query: { deployment: Schema.optional(DeploymentId) },
+      query: Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: Schema.Array(HostedWorkflow),
       error: WorkflowErrors,
     }),
@@ -37,7 +40,9 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
       params: app,
-      payload: StartWorkflow.mapFields(({ app: _app, accounts: _accounts, ...fields }) => fields),
+      payload: StartWorkflowFields.mapFields(
+        ({ app: _app, accounts: _accounts, ...fields }) => fields,
+      ).pipe(withLegacyKeys({ version: "deployment" })),
       success: WorkflowRun,
       error: WorkflowErrors,
     }),

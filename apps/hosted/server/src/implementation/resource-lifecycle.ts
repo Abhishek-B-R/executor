@@ -368,7 +368,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           // The SDK supplies the connection's reconnect target and the app requirement it links
           // to, so the product checks its own access rows only. Whether the requirement's scope
           // lets this member complete it is checked by `appAccountConnected`, under the app's
-          // lock, against the deployment the SDK completes against. A member who lost the access
+          // lock, against the version the SDK completes against. A member who lost the access
           // the connection needs, such as management of the account it reconnects, is refused.
           const refused = new AccountConnectionRefused(connection.target);
           const reconnect = connection.reconnectAccount;
@@ -575,8 +575,8 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         ),
       // An account connected for a user requirement is linked for its connecting member; one for
       // an app requirement is linked for everyone. This runs under the app's lock, with the scope the
-      // active deployment gives the requirement now; `connectionCompleting` ran before the lock,
-      // so a deployment activated since may have changed it. The connection must have been
+      // active version gives the requirement now; `connectionCompleting` ran before the lock,
+      // so a version activated since may have changed it. The connection must have been
       // started for this scope, or its target changed; and by its completing member, who for a
       // user requirement may use the app, and for an app requirement manages the app and may use
       // the account, now that the account's access record exists. Otherwise the member is refused.

@@ -15,7 +15,7 @@ const App = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
   code: Schema.String,
-  activeDeployment: Schema.NullOr(Schema.String),
+  activeVersion: Schema.NullOr(Schema.String),
   copiedFrom: Schema.NullOr(
     Schema.Struct({
       reference: Schema.String,
@@ -80,8 +80,8 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
         const copy = yield* body(App, copied);
         yield* remember(copy);
         expect(copy.code).not.toBe(original.code);
-        expect(copy.activeDeployment).not.toBeNull();
-        expect(copy.activeDeployment).not.toBe(original.activeDeployment);
+        expect(copy.activeVersion).not.toBeNull();
+        expect(copy.activeVersion).not.toBe(original.activeVersion);
         expect(copied.body).not.toHaveProperty("accounts");
         expect(copy.copiedFrom?.reference).toBe(`app:${original.id}`);
         expect(copy.copiedFrom?.name).toBe(original.name);
@@ -138,7 +138,7 @@ layer(HostedLive, { excludeTestServices: true })("Independent app copies", (it) 
           }),
         );
         yield* remember(saved);
-        expect(saved.activeDeployment).toBeNull();
+        expect(saved.activeVersion).toBeNull();
         expect(saved.copiedFrom?.reference).toBe(`app:${unfinished.id}`);
 
         yield* browser.login(actors.owner);

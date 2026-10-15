@@ -25,7 +25,7 @@ const IconApp = Schema.Struct({
 });
 const Inventory = Schema.Struct({ apps: Schema.Array(IconApp) });
 const BuildFailed = Schema.Struct({
-  _tag: Schema.Literal("DeploymentBuildFailed"),
+  _tag: Schema.Literal("VersionBuildFailed"),
   stage: Schema.String,
   message: Schema.String,
 });
@@ -96,7 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("App icons", (it) => {
           api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
         );
 
-        // The build recorded the icons with the deployment: the app and the inventory carry them
+        // The build recorded the icons with the version: the app and the inventory carry them
         // at once, before anything evaluated the app or listed its tools.
         expect(app.requirements.icons).toEqual(icons);
         const read = yield* body(IconApp, yield* api.request(actors.owner, "GET", path));

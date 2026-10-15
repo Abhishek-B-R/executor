@@ -20,18 +20,18 @@ _Avoid_: Integration, connection as a replacement name for the saved account.
 
 **App**:
 Software with its own name, owner, source, account selections, and data. An app can
-exist before its first deployment. Configured copies can share code and select
+exist before its first version. Configured copies can share code and select
 different accounts.
 _Avoid_: Integration, artifact project as a separate kind of app.
 
 **Undeployed app**:
-An app with editable source and no active deployment. It is the same app as
-after deployment, not a separate draft resource.
+An app with editable source and no active version. It is the same app as
+after deploying, not a separate draft resource.
 _Avoid_: Draft app.
 
 **Working source**:
 The app's current editable source. Saving changes does not change the running
-deployment.
+version.
 
 **Source revision**:
 An immutable state of an app's source files.
@@ -63,10 +63,11 @@ update it.
 **App code**:
 The authored program and revision history behind configured copies.
 
-**Deployment**:
-An immutable executable version of app code. Activating another deployment
-changes the running code, not stored app data. Configured copies can select
-deployments from the same code lineage.
+**Version**:
+An immutable executable version of app code. Deploying creates a version.
+Activating another version changes the running code, not stored app data.
+Configured copies can select versions from the same code lineage.
+_Avoid_: Deployment as a name for the retained version.
 
 **Account slot**:
 An app-wide named requirement, in one scope. A provider requires one account;
@@ -91,7 +92,7 @@ user requirement for their calls. A plain requirement keeps one link per scope
 (and member): linking another replaces it. `.many()` keeps every link.
 
 **Owner**:
-The opaque product identity to which an account, configured app or deployment
+The opaque product identity to which an account, configured app or version
 belongs. Ownership does not grant access to another resource.
 
 **Tool**:

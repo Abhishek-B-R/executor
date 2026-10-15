@@ -1,7 +1,7 @@
 /** Shared HTML planning and output checks for Node and Worker browser compilers. */
 import { Effect, Path, Schema } from "effect";
 import { parse, serialize, type DefaultTreeAdapterMap } from "parse5";
-import { SourceFilePath } from "../contracts/deployment.ts";
+import { SourceFilePath } from "../contracts/version.ts";
 import type { CodeFiles } from "../contracts/source.ts";
 import { publicFileContentType } from "../contracts/public-files.ts";
 import { RuntimeBuildFailed } from "../contracts/runtime.ts";

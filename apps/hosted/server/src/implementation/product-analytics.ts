@@ -110,7 +110,7 @@ export const withExecutorAnalytics = (executor: Executor): Executor => ({
         Effect.tap((result) =>
           recordUsage("app_deployed", {
             app_id: result.app.id,
-            deployment_id: result.deployment.id,
+            version_id: result.version.id,
           }),
         ),
       ),

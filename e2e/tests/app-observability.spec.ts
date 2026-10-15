@@ -285,7 +285,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         ).toBe("Keep this draft");
 
         if (target.metadata.target === "cloud") {
-          const deployment = yield* body(
+          const version = yield* body(
             Schema.Struct({ build: Schema.String }),
             yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/source`),
           );
@@ -297,7 +297,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               name: "hostCache",
               input: {
                 key: new URL(
-                  `/_executor/runtime-build-cache/${encodeURIComponent(deployment.build)}`,
+                  `/_executor/runtime-build-cache/${encodeURIComponent(version.build)}`,
                   target.metadata.origin,
                 ).href,
               },
@@ -621,7 +621,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         yield* browser.login(actors.member);
         // Test the query stream's own authorization heartbeat. The independent
-        // deployment watcher otherwise reloads to a 403 page first.
+        // version watcher otherwise reloads to a 403 page first.
         let blockedVersions = 0;
         yield* browser.use("Keep revocation observable in the query stream", (page) =>
           page.route("**/_executor/version", (route) => {

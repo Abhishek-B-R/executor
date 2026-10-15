@@ -5,7 +5,7 @@ export * from "./account.ts";
 export * from "./account-connection.ts";
 export * from "./oauth.ts";
 export * from "./oauth-clients.ts";
-export * from "./deployment.ts";
+export * from "./version.ts";
 export * from "./skill-source.ts";
 export * from "./skills.ts";
 export * from "./apps.ts";

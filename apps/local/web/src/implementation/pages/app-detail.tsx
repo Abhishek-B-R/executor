@@ -38,7 +38,7 @@ import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
 import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
 import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
 import { AppTools } from "./app-tools.tsx";
-import { AppSource, AppDeployments } from "./app-source.tsx";
+import { AppSource, AppVersions } from "./app-source.tsx";
 import {
   AppOverview,
   AppOverviewAccounts,
@@ -50,7 +50,7 @@ import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard
 import { emptyManyRequirements, type AppView } from "@executor-js/ui/contracts/dashboard";
 class PreviewKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment: App["activeDeployment"];
+  readonly version: App["activeVersion"];
 }> {}
 const overviewToolsAtom = Atom.family((key: PreviewKey) =>
   Atom.map(
@@ -60,12 +60,7 @@ const overviewToolsAtom = Atom.family((key: PreviewKey) =>
 );
 
 /** Views that read only the app. The others also read its linked accounts. */
-const appWideViews: ReadonlySet<AppView> = new Set([
-  "settings",
-  "deployments",
-  "source",
-  "history",
-]);
+const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
 /** Links with their checks by this app, over the live inventory's sign-in details. */
 const withSummaries = (
@@ -191,7 +186,7 @@ export function AppDetailPage({
                   }
                 />
               );
-            if (tab === "deployments") return <AppDeployments data={current} />;
+            if (tab === "versions") return <AppVersions data={current} />;
             return <AppSource data={current} view={tab === "history" ? "history" : "source"} />;
           }}
         </QueryResult>
@@ -216,7 +211,7 @@ export function AppDetailPage({
               user: withSummaries(userRows, overview.accounts),
             };
             const requirements = requirementAccounts(current.app, linked);
-            const deployment = String(current.app.activeDeployment);
+            const version = String(current.app.activeVersion);
             const ready = missingRequirements(requirements).length === 0;
             const gate = (children: ReactNode) =>
               ready
@@ -279,7 +274,7 @@ export function AppDetailPage({
                             ready
                               ? [
                                   {
-                                    key: deployment,
+                                    key: version,
                                     query: appBrowserBindings(current.app).workflows,
                                   },
                                 ]
@@ -304,11 +299,11 @@ export function AppDetailPage({
                         ready
                           ? [
                               {
-                                key: deployment,
+                                key: version,
                                 query: overviewToolsAtom(
                                   new PreviewKey({
                                     app: id,
-                                    deployment: current.app.activeDeployment,
+                                    version: current.app.activeVersion,
                                   }),
                                 ),
                               },

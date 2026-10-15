@@ -4,10 +4,10 @@ import { workflowBindings } from "./resources.ts";
 import type { HostedError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
 /**
- * One discovery cache per app and deployment. Linking or unlinking an account reads it again
+ * One discovery cache per app and version. Linking or unlinking an account reads it again
  * (see `refreshAppDiscovery`), as does the page's normal refresh.
  */
-import type { App, AppId, DeploymentId } from "@executor-js/sdk";
+import type { App, AppId, VersionId } from "@executor-js/sdk";
 import { Data } from "effect";
 import { Atom } from "effect/reactivity";
 import { HostedClient } from "./api.ts";
@@ -17,9 +17,9 @@ import type { OrganizationReference } from "@executor-js/hosted-server/organizat
 class AppKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment: DeploymentId | null;
+  readonly version: VersionId | null;
 }> {}
-const query = (key: AppKey) => ({ deployment: key.deployment ?? undefined });
+const query = (key: AppKey) => ({ version: key.version ?? undefined });
 const skills = Atom.family((key: AppKey) =>
   HostedClient.query(
     "skills",
@@ -45,13 +45,13 @@ export function appBrowserBindings(
   organization: OrganizationReference,
   app: App,
 ): SkillBindings<HostedError> & WorkflowBindings<HostedError> {
-  const key = new AppKey({ organization, app: app.id, deployment: app.activeDeployment });
+  const key = new AppKey({ organization, app: app.id, version: app.activeVersion });
   return {
     skills: skills(key),
     ...workflowBindings({
       organization,
       app: app.id,
-      deployment: app.activeDeployment ?? undefined,
+      version: app.activeVersion ?? undefined,
     }),
     bundle: bundle(key),
   };

@@ -123,7 +123,7 @@ function ToolPicture({ clock }: ClockProps) {
 }
 
 const skills = [
-  { title: "Investigate an error", steps: ["Find recent failures", "Compare deployments"] },
+  { title: "Investigate an error", steps: ["Find recent failures", "Compare versions"] },
   { title: "Write a daily digest", steps: ["Gather today’s updates", "Summarize what changed"] },
   { title: "Review a pull request", steps: ["Read the changes", "Flag bugs worth fixing"] },
 ] as const;

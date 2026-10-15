@@ -15,7 +15,7 @@ import { checkScopedAccounts } from "./access.ts";
 /**
  * Check current app use, that the run is the caller's own or was started without an actor, and
  * every account that contributed to the retained run, by the scope its requirement had on the
- * run's pinned deployment: an app account by its current app link, a user account by the caller's
+ * run's pinned version: an app account by its current app link, a user account by the caller's
  * use.
  */
 export const requireWorkflowAccess = (

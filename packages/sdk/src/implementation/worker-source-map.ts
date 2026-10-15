@@ -6,7 +6,7 @@ import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
 import type { Plugin } from "esbuild";
 import { Schema } from "effect";
 import { DatabaseFieldReserved } from "apps/contracts";
-import type { SourceFiles, SourceLocation } from "../contracts/deployment.ts";
+import type { SourceFiles, SourceLocation } from "../contracts/version.ts";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 
 /** The bundler reads source from its `virtual:` namespace; report the authored path. */

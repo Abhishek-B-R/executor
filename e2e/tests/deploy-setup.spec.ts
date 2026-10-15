@@ -1,7 +1,7 @@
 /**
  * A deploy leaves every webhook source of its app `pending` until setup registers its webhooks on
- * the new deployment. Each deploy wakes webhook source setup (Cloud's schedule coordinator,
- * self-host's setup worker), so setup reaches the new deployment without a reconcile and without
+ * the new version. Each deploy wakes webhook source setup (Cloud's schedule coordinator,
+ * self-host's setup worker), so setup reaches the new version without a reconcile and without
  * waiting for polling. A schedule keeps its saved setting when its timing changes. Member setup,
  * which links the default Executor app's managed key and redeploys that app, wakes setup from the
  * background job it runs in.
@@ -19,7 +19,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { removeAppWhenStopped } from "../support/webhook-sources.ts";
 import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
 
-/** A linked account's webhook source registers `incoming` on each deployment. */
+/** A linked account's webhook source registers `incoming` on each version. */
 const source = (
   timing: string,
 ) => `import { defineApp, defineProvider, secrets, mutation, userInterval, userCron, object, string, router } from "apps";
@@ -31,14 +31,14 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
 const hourly = "userInterval({ hours: 24 }, tick, {})";
 const daily = 'userCron({ expression: "0 9 * * *", timezone: "UTC" }, tick, {})';
 
-const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 const Redeployed = Schema.Struct({ app: Deployed });
-/** A webhook source's setup state: the deployment its webhooks were last registered on. */
+/** A webhook source's setup state: the version its webhooks were last registered on. */
 const Sources = Schema.Array(
   Schema.Struct({
     account: Schema.String,
     status: Schema.String,
-    reconciledDeployment: Schema.NullOr(Schema.String),
+    reconciledVersion: Schema.NullOr(Schema.String),
   }),
 );
 const Schedules = Schema.Array(
@@ -49,7 +49,7 @@ const Schedules = Schema.Array(
   }),
 );
 /**
- * Setup must reach the new deployment this soon after its deploy answers. Without a wake Cloud
+ * Setup must reach the new version this soon after its deploy answers. Without a wake Cloud
  * waits for the coordinator's minute heartbeat, which stalled a redeploy for over 20 s.
  */
 const deadline = "15 seconds";
@@ -113,42 +113,40 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
               const source = sources.find((item) => item.account === account);
               return {
                 status: source?.status ?? "missing",
-                reconciledDeployment: source?.reconciledDeployment ?? null,
+                reconciledVersion: source?.reconciledVersion ?? null,
               };
             }),
           );
           const observed: Array<{ step: string; status: string; current: boolean }> = [];
           yield* Effect.addFinalizer(() => evidence.json("setup-observations.json", observed));
-          /** Setup is ready for exactly this deployment, not still on the one before. */
-          const setUp = (step: string, deployment: string) =>
+          /** Setup is ready for exactly this version, not still on the one before. */
+          const setUp = (step: string, version: string) =>
             readSetup.pipe(
               Effect.tap((setup) =>
                 Effect.sync(() =>
                   observed.push({
                     step,
                     status: setup.status,
-                    current: setup.reconciledDeployment === deployment,
+                    current: setup.reconciledVersion === version,
                   }),
                 ),
               ),
               Effect.flatMap((setup) =>
-                setup.status === "ready" && setup.reconciledDeployment === deployment
+                setup.status === "ready" && setup.reconciledVersion === version
                   ? Effect.void
                   : Effect.fail(
-                      new Error(`${step}: setup is ${setup.status} on the earlier deployment`),
+                      new Error(`${step}: setup is ${setup.status} on the earlier version`),
                     ),
               ),
               Effect.retry({ schedule: Schedule.spaced("250 millis") }),
               Effect.timeout(deadline),
               Effect.catchTag("TimeoutError", () =>
                 Effect.fail(
-                  new Error(
-                    `${step}: setup did not reach deployment ${deployment} within ${deadline}`,
-                  ),
+                  new Error(`${step}: setup did not reach version ${version} within ${deadline}`),
                 ),
               ),
             );
-          yield* setUp("link", app.activeDeployment);
+          yield* setUp("link", app.activeVersion);
           expect(
             (yield* api.request(actors.owner, "PATCH", `${path}/schedules/tick`, {
               enabled: true,
@@ -164,8 +162,8 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
               });
               expect(response.status, JSON.stringify(response.body)).toBe(200);
               const { app: live } = yield* body(Redeployed, response);
-              yield* setUp(step, live.activeDeployment);
-              return live.activeDeployment;
+              yield* setUp(step, live.activeVersion);
+              return live.activeVersion;
             });
           const cron = yield* redeploy("interval to cron", daily);
           const schedules = yield* body(

@@ -13,7 +13,7 @@ import {
   type AppAccounts,
   type AppRequirements,
 } from "../contracts/apps.ts";
-import type { AccountId, AppId, DeploymentId } from "../contracts/shared.ts";
+import type { AccountId, AppId, VersionId } from "../contracts/shared.ts";
 import type { ToolInvocation } from "../contracts/tools.ts";
 
 /** One requirement's cardinality and the caller's linked accounts for it, oldest link first. */
@@ -34,7 +34,7 @@ export interface RequirementLink<A> {
 
 /**
  * Group one scope's links by the requirement each names, keeping their order, oldest first. A link
- * names its requirement; one whose requirement is not a requirement of this scope in the deployment
+ * names its requirement; one whose requirement is not a requirement of this scope in the version
  * is left out, so an app requirement is filled only by app links and a user requirement only by the
  * caller's user links, even when they share a provider or an account.
  */
@@ -65,7 +65,7 @@ export const plainAccount = <A>(accounts: readonly A[]): A | undefined => accoun
 /** One scope's requirements resolved: plain ones to their account, many() to every one. */
 const resolveScope = (
   app: AppId,
-  deployment: DeploymentId,
+  version: VersionId,
   scope: AccountScope,
   requirements: LinkedAccounts,
 ): Effect.Effect<Record<string, ReadonlyArray<AccountId>>, AccountRequired> =>
@@ -77,34 +77,33 @@ const resolveScope = (
         continue;
       }
       const account = plainAccount(requirement.accounts);
-      if (account === undefined)
-        return yield* new AccountRequired({ app, deployment, slot, scope });
+      if (account === undefined) return yield* new AccountRequired({ app, version, slot, scope });
       resolved[slot] = [account.id];
     }
     return resolved;
   });
 
 /**
- * Resolve every requirement of the deployment for one call: app requirements from the app links,
+ * Resolve every requirement of the version for one call: app requirements from the app links,
  * user requirements from the caller's user links (see {@link linkedRequirements}). A plain
  * requirement uses its account (see {@link plainAccount}); with none it fails with
- * `AccountRequired`. many() uses every account. An app with requirements and no active deployment
+ * `AccountRequired`. many() uses every account. An app with requirements and no active version
  * fails with `AppNotDeployed`.
  */
 export const resolveLinkedAccounts = (input: {
   readonly app: AppId;
-  readonly deployment: DeploymentId | null;
+  readonly version: VersionId | null;
   readonly appLinks: LinkedAccounts;
   readonly userLinks: LinkedAccounts;
 }) =>
   Effect.gen(function* () {
     if (Object.keys(input.appLinks).length === 0 && Object.keys(input.userLinks).length === 0)
       return { app: {}, user: {} } satisfies AppAccounts;
-    const deployment = input.deployment;
-    if (deployment === null) return yield* new AppNotDeployed({ app: input.app });
+    const version = input.version;
+    if (version === null) return yield* new AppNotDeployed({ app: input.app });
     return {
-      app: yield* resolveScope(input.app, deployment, "app", input.appLinks),
-      user: yield* resolveScope(input.app, deployment, "user", input.userLinks),
+      app: yield* resolveScope(input.app, version, "app", input.appLinks),
+      user: yield* resolveScope(input.app, version, "user", input.userLinks),
     } satisfies AppAccounts;
   });
 

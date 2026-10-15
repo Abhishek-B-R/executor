@@ -1,6 +1,6 @@
 /**
  * Pin existing apps to an explicit `apps` framework through ordinary source commits.
- * Nothing is redeployed: running deployments keep serving, and the next deploy of the working
+ * Nothing is redeployed: running versions keep serving, and the next deploy of the working
  * source resolves the declared framework instead of whichever one the host then provides.
  */
 import { Effect, Option, Schema } from "effect";
@@ -10,7 +10,7 @@ import {
   sourceText,
   SourceFiles,
   type App,
-  type Deployment,
+  type Version,
   type Executor,
   type SourceSnapshot,
 } from "@executor-js/sdk/core";
@@ -59,8 +59,8 @@ export interface FrameworkPinHost {
 }
 
 /**
- * Where a working branch whose files differ from the running deployment stands.
- * - `behind`: main holds exactly the source of an earlier deployment that the running one replaced.
+ * Where a working branch whose files differ from the running version stands.
+ * - `behind`: main holds exactly the source of an earlier version that the running one replaced.
  *   Direct file deploys never write Git, so this is how they leave main.
  * - `unpublished`: the running source is in main's recent history and main has moved on from it.
  * - `diverged`: neither; main has work the running source lacks and the reverse may also hold.
@@ -69,15 +69,15 @@ const workspacePosition = (
   host: FrameworkPinHost,
   app: App,
   workspace: SourceSnapshot,
-  running: Deployment,
+  running: Version,
 ) =>
   Effect.gen(function* () {
     const target = { owner: app.owner, app: app.id };
-    const replaced = (yield* host.executor.apps.deployments(target)).filter(
-      (deployment) => deployment.createdAt.getTime() < running.createdAt.getTime(),
+    const replaced = (yield* host.executor.apps.versions(target)).filter(
+      (version) => version.createdAt.getTime() < running.createdAt.getTime(),
     );
-    for (const deployment of replaced) {
-      const source = yield* host.executor.apps.source({ ...target, deployment: deployment.id });
+    for (const version of replaced) {
+      const source = yield* host.executor.apps.source({ ...target, version: version.id });
       if (sourceFilesEqual(workspace.files, source.files)) return "behind" as const;
     }
     const history = yield* host.executor.apps.history(target);
@@ -131,10 +131,10 @@ const canonical = (value: unknown): unknown =>
       : value;
 
 /**
- * Whether `workspace` is a framework pin commit on `deployed`, a deployment's source, and nothing
+ * Whether `workspace` is a framework pin commit on `deployed`, a version's source, and nothing
  * else. Member setup upgrades an untouched Executor app by deploying the host's template, which
  * never writes Git, so `main` keeps the pin these steps committed on the source it replaced: the
- * running source's own files, or, when `main` was behind, an earlier deployment's. Every file but
+ * running source's own files, or, when `main` was behind, an earlier version's. Every file but
  * `package.json` must match `deployed` byte for byte. The manifests must be equal JSON once
  * `dependencies.apps` is removed from both, where `main` declares exactly a release these steps
  * write, and once `name` is removed from `deployed` where `main` has none, as the template only
@@ -178,7 +178,7 @@ export const pinnedBeforeDeploy = (workspace: SourceFiles, deployed: SourceFiles
 
 /**
  * Classify one app and, when applying, commit its pin on top of the revision that was read.
- * A working branch behind the running deployment receives the running source with the pin, so
+ * A working branch behind the running version receives the running source with the pin, so
  * the next deploy from main keeps what runs today. Every other position pins main's own files:
  * all existing source is written for the protocol-1 framework, and a manifest rolls nothing back.
  */
@@ -191,7 +191,7 @@ const pinApp = (host: FrameworkPinHost, release: string, listed: App, mode: Data
     // Declared first: an applied pin is not deployed yet, so a repeat run still reads it as declared.
     if (working.kind === "declared") return "declared" as const;
     const running =
-      app.activeDeployment === null ? undefined : yield* host.executor.apps.source(target);
+      app.activeVersion === null ? undefined : yield* host.executor.apps.source(target);
     const position =
       running === undefined
         ? ("undeployed" as const)

@@ -62,7 +62,7 @@ export default defineApp({}, async () => ({
             tools: paths.map((path) => `${path}/tools/index`),
             workspace: paths.map((path) => `${path}/workspace/display`),
             history: paths.map((path) => `${path}/history`),
-            deployments: paths.map((path) => `${path}/deployments`),
+            versions: paths.map((path) => `${path}/versions`),
             source: paths.map((path) => `${path}/source/display`),
           });
         }),

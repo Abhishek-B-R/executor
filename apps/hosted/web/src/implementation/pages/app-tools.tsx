@@ -42,7 +42,7 @@ export function AppTools({
   const catalog = {
     organization,
     app: app.id,
-    deployment: app.activeDeployment ?? undefined,
+    version: app.activeVersion ?? undefined,
   };
   if (readiness.state === "not-deployed")
     return <p className="p-5 text-sm text-muted-foreground">Deploy this app to load its tools.</p>;
@@ -63,7 +63,7 @@ export function AppTools({
     );
   return (
     <ToolBrowser
-      key={`${app.id}:${app.activeDeployment}`}
+      key={`${app.id}:${app.activeVersion}`}
       query={toolCatalogAtom(catalog)}
       detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
       Failure={ToolsFailure}
@@ -89,7 +89,7 @@ export function AppTools({
           call={callToolAtom({
             organization,
             app: app.id,
-            deployment: app.activeDeployment ?? undefined,
+            version: app.activeVersion ?? undefined,
             tool: tool.name,
             kind: tool.readOnly === true ? "query" : "mutation",
           })}

@@ -1,14 +1,15 @@
 /** Organization authorization surrounds app-scoped workflow lifecycle operations. */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   AppId,
-  DeploymentId,
+  VersionId,
   WorkflowRunId,
   HostedWorkflow,
   WorkflowRun,
   WorkflowRunPage,
-  StartWorkflow,
+  StartWorkflowFields,
   ListWorkflowRuns,
   WorkflowErrors,
 } from "@executor-js/sdk/core";
@@ -29,7 +30,9 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.get("definitions", `${path}/workflows`, {
       params: app,
-      query: { deployment: Schema.optional(DeploymentId) },
+      query: Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: Schema.Array(HostedWorkflow),
       error: errors,
     }),
@@ -37,7 +40,9 @@ export const HostedWorkflows = HttpApiGroup.make("workflows")
   .add(
     HttpApiEndpoint.post("start", `${path}/workflow-runs`, {
       params: app,
-      payload: StartWorkflow.mapFields(({ app: _app, accounts: _accounts, ...fields }) => fields),
+      payload: StartWorkflowFields.mapFields(
+        ({ app: _app, accounts: _accounts, ...fields }) => fields,
+      ).pipe(withLegacyKeys({ version: "deployment" })),
       success: WorkflowRun,
       error: errors,
     }),

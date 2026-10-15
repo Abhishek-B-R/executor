@@ -439,7 +439,7 @@ const beforeTheApp = [
   "AccountChoiceUnsupported",
   "AppNotFound",
   "AppNotDeployed",
-  "DeploymentNotFound",
+  "VersionNotFound",
   "AccountNotFound",
   "AccountRequired",
   "AccountSelectionInvalid",

@@ -163,10 +163,10 @@ CREATE TABLE checkpoints (label TEXT NOT NULL);
 `,
   },
 ];
-export const WorkflowApp = Schema.Struct({ id: Schema.String, activeDeployment: Schema.String });
+export const WorkflowApp = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
 export const WorkflowRun = Schema.Struct({
   id: Schema.String,
-  deployment: Schema.String,
+  version: Schema.String,
   status: Schema.String,
   output: Schema.optionalKey(Schema.Json),
   error: Schema.optionalKey(Schema.String),

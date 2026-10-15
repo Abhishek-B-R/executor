@@ -19,7 +19,7 @@ export function appProviderFailure(
   const match = selected.find(({ account }) => account.id === error.accountId);
   return new AppProviderFailed({
     app: state.app.id,
-    deployment: state.deployment.id,
+    version: state.version.id,
     reason: error.reason,
     status: error.status,
     ...(error.phase === undefined ? {} : { phase: error.phase }),

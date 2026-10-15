@@ -5,7 +5,8 @@ import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executo
 import {
   scopeGeneratedPackage,
   type AppId,
-  type DeploymentId,
+  type VersionId,
+  type SourceFilePath,
   type OwnerId,
 } from "@executor-js/sdk/core";
 import { Effect } from "effect";
@@ -35,7 +36,7 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
           // A snapshot reads no registry or earlier app; those failures belong to other copy sources.
           Effect.catchTags({
             RegistryError: Effect.die,
-            DeploymentNotFound: Effect.die,
+            VersionNotFound: Effect.die,
             AppNotDeployed: Effect.die,
           }),
           Effect.flatMap(deployedCopy),
@@ -79,7 +80,7 @@ export const importCustomApp = (owner: OwnerId, input: CustomAppInput) =>
     const { app } = yield* executor.apps.deploy({ owner, name: input.name, files });
     return app;
   });
-/** Direct source deployment uses the same create-only operation as a catalog install. */
+/** Deploying source directly uses the same create-only operation as a catalog install. */
 export const deployApp = (owner: OwnerId, input: typeof DeployApp.Type) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -93,35 +94,35 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
     const app = yield* executor.apps.get({ ...input, owner });
     return app;
   });
-/** Retained source is administrative data; deployments from other owners stay private. */
-export const appDeployments = (owner: OwnerId, app: AppId) =>
+/** Retained source is administrative data; versions from other owners stay private. */
+export const appVersions = (owner: OwnerId, app: AppId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    return yield* executor.apps.deployments({ owner, app, deploymentOwner: owner });
+    return yield* executor.apps.versions({ owner, app, versionOwner: owner });
   });
-/** An explicit app and optional version select source, never a free-standing deployment ID. */
-export const appSource = (owner: OwnerId, app: AppId, deployment?: DeploymentId) =>
+/** An explicit app and optional version select source, never a free-standing version ID. */
+export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     return yield* executor.apps.source({
       owner,
-      deploymentOwner: owner,
+      versionOwner: owner,
       app,
-      ...(deployment === undefined ? {} : { deployment }),
+      ...(version === undefined ? {} : { version }),
     });
   });
 /** Activation moves a pointer; it never rewinds app data or upstream side effects. */
 export const activateApp = (
   owner: OwnerId,
   app: AppId,
-  deployment: DeploymentId,
-  expectedDeployment: DeploymentId | null,
+  version: VersionId,
+  expectedVersion: VersionId | null,
 ) =>
   Effect.gen(function* () {
-    yield* appSource(owner, app, deployment);
+    yield* appSource(owner, app, version);
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(app, "manage");
-    const saved = yield* executor.apps.activate({ owner, app, deployment, expectedDeployment });
+    const saved = yield* executor.apps.activate({ owner, app, version, expectedVersion });
     return saved;
   });
 /** Keep the configured identity and selections while changing its organization-local name. */
@@ -143,6 +144,16 @@ export const removeApp = (owner: OwnerId, input: { readonly app: AppId }) =>
   });
 
 /** Resolve current authority before running app operations. */
+/** One file of a version's source, rendered for display. */
+const versionDisplayFile = (
+  params: { readonly app: AppId; readonly version: VersionId },
+  path: SourceFilePath,
+) =>
+  Effect.flatMap(appManagerOwner(params.app), (owner) =>
+    appSource(owner, params.app, params.version).pipe(
+      Effect.flatMap((source) => sourceDisplayFile(source.files, path)),
+    ),
+  );
 export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handlers) =>
   handlers
     .handle("install", ({ payload }) =>
@@ -155,29 +166,29 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
       Effect.flatMap(currentOwner, (owner) => deployApp(owner, payload)),
     )
     .handle("get", ({ params }) => Effect.flatMap(currentOwner, (owner) => getApp(owner, params)))
+    .handle("versions", ({ params }) =>
+      Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
+    )
     .handle("deployments", ({ params }) =>
-      Effect.flatMap(appManagerOwner(params.app), (owner) => appDeployments(owner, params.app)),
+      Effect.flatMap(appManagerOwner(params.app), (owner) => appVersions(owner, params.app)),
     )
     .handle("source", ({ params, query }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        appSource(owner, params.app, query.deployment),
+        appSource(owner, params.app, query.version),
       ),
     )
     .handle("sourceDisplay", ({ params, query }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        appSource(owner, params.app, query.deployment).pipe(Effect.flatMap(sourceDisplay)),
+        appSource(owner, params.app, query.version).pipe(Effect.flatMap(sourceDisplay)),
       ),
     )
-    .handle("sourceDisplayFile", ({ params, query }) =>
-      Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        appSource(owner, params.app, params.deployment).pipe(
-          Effect.flatMap((source) => sourceDisplayFile(source.files, query.path)),
-        ),
-      ),
+    .handle("sourceDisplayFile", ({ params, query }) => versionDisplayFile(params, query.path))
+    .handle("legacySourceDisplayFile", ({ params, query }) =>
+      versionDisplayFile(params, query.path),
     )
     .handle("activate", ({ params, payload }) =>
       Effect.flatMap(appManagerOwner(params.app), (owner) =>
-        activateApp(owner, params.app, payload.deployment, payload.expectedDeployment),
+        activateApp(owner, params.app, payload.version, payload.expectedVersion),
       ),
     )
     .handle("rename", ({ params, payload }) =>

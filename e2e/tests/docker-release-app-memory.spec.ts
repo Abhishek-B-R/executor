@@ -52,18 +52,18 @@ it.live(
             Array.from({ length: count }, (_, index) => from + index),
             (index) => server.deploy(`Installed ${index}`, files),
           );
-        // The first deployments compile the parts of the server's code they are the first to use.
+        // The first deploys compile the parts of the server's code they are the first to use.
         yield* deploy(3, 0);
         const before = yield* executable;
         expect(before, "the product's workerd process is found").toBeGreaterThan(0);
         const apps = 10;
         yield* deploy(apps, 3);
         const grown = (yield* executable) - before;
-        // Each deployment kept about 9 MB before. Code first used by these deployments, and
+        // Each version kept about 9 MB before. Code first used by these deploys, and
         // short-lived isolates' code not yet released, stay well below 2 MB for each app.
         expect(
           grown / apps,
-          `executable memory grew by ${Math.round(grown / 1024)} MB over ${apps} deployments`,
+          `executable memory grew by ${Math.round(grown / 1024)} MB over ${apps} deploys`,
         ).toBeLessThan(2048);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

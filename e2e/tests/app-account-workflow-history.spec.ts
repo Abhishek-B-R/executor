@@ -1,7 +1,7 @@
 /**
  * Reading a retained workflow run checks each account it captured by the scope its requirement had
- * on the run's deployment: an app account by its current app link, a user account by the caller's
- * use, whatever later deployments declare.
+ * on the run's version: an app account by its current app link, a user account by the caller's
+ * use, whatever later versions declare.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect } from "effect";
@@ -72,7 +72,7 @@ layer(HostedLive, { excludeTestServices: true })("App account workflow history",
         expect(yield* read(actors.owner, path, owned)).toBe(200);
 
         // The member's run captures a group-shared account for a user requirement. A later
-        // deployment makes the requirement the app's, and a manager links that same account for
+        // version makes the requirement the app's, and a manager links that same account for
         // everyone. The run is still checked by the member's use of it, which leaving the group
         // ends.
         const later = yield* appLinksFixture([{ path: "index.ts", content: source("user") }]);
@@ -92,7 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("App account workflow history",
         expect(yield* read(actors.member, later.path, run)).toBe(200);
         yield* group.set([ids.owner]);
         expect(yield* read(actors.member, later.path, run)).toBe(403);
-        // The owner's own run on the new deployment captured it as the app's, and reads it.
+        // The owner's own run on the new version captured it as the app's, and reads it.
         const appRun = yield* start(actors.owner, later.path);
         expect((yield* complete(actors.owner, later.path, appRun)).output).toBe(shared);
       }),

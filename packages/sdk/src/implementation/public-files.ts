@@ -70,7 +70,7 @@ const smallFile = 1024 * 1024;
 
 /**
  * Copy a source's public files into the lineage's store, skipping files it already holds, and
- * return the build's listing and the files as the deployment retains them: text stays inline,
+ * return the build's listing and the files as the version retains them: text stays inline,
  * and binary files become stored entries that name the lineage's copy. Stored files missing from
  * the store are read through `stored`; each one's bytes must hash to the blob it names.
  */
@@ -140,7 +140,7 @@ export const retainPublicFiles = (
 
 const manifestKey = (build: BuildId) => BlobKey.make(`${build}/public.json`);
 
-/** Retain a build's listing before any deployment names the build. */
+/** Retain a build's listing before any version names the build. */
 export const writePublicManifest = (
   blobs: BlobStorage,
   build: BuildId,

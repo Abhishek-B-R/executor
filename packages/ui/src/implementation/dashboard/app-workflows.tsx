@@ -43,10 +43,10 @@ export function AppWorkflows<E>({
   readonly bindings: WorkflowBindings<E>;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  if (app.activeDeployment === null)
+  if (app.activeVersion === null)
     return (
       <section aria-label="App workflows" className="min-h-full">
-        <EmptyStatePanel title="No deployment yet">
+        <EmptyStatePanel title="No version yet">
           Deploy this app to use its workflows.
         </EmptyStatePanel>
       </section>
@@ -92,7 +92,7 @@ function WorkflowBrowser<E>({
             {(items) =>
               items.length === 0 ? (
                 <EmptyState size="compact" icon={null} title="No workflows">
-                  This deployment has no workflows.
+                  This version has no workflows.
                 </EmptyState>
               ) : (
                 items.map((item) => (

@@ -450,10 +450,10 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         );
         yield* evidence.json("failed-build.json", build);
         expect(build.code).toBe(1);
-        expect(build.stderr).toContain("Code: DeploymentBuildFailed (HTTP 422)");
+        expect(build.stderr).toContain("Code: VersionBuildFailed (HTTP 422)");
         expect(build.stderr).toContain("Synthetic declaration failure");
         const failed = (yield* Schema.decodeUnknownEffect(Failure)(build.stdout)).error;
-        expect(failed.code).toBe("DeploymentBuildFailed");
+        expect(failed.code).toBe("VersionBuildFailed");
         expect(failed.status).toBe(422);
         expect(failed.message).toContain("Synthetic declaration failure");
         const details = yield* Schema.decodeUnknownEffect(BuildDetails)(failed.details);

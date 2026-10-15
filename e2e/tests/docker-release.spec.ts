@@ -293,13 +293,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           },
           cookie,
         );
-        expect(
-          deployed.status,
-          yield* driver("deployment result", () => deployed.clone().text()),
-        ).toBe(200);
+        expect(deployed.status, yield* driver("deploy result", () => deployed.clone().text())).toBe(
+          200,
+        );
         const app = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ id: Schema.String, slug: Schema.String }),
-        )(yield* driver("deployment response", () => deployed.json()));
+        )(yield* driver("deploy response", () => deployed.json()));
         const connectionResponse = yield* request(
           connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
           {},
@@ -438,7 +437,7 @@ visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
           }
           if (mode === "explicit") {
             // Exercise the packaged Git HTTP backend, including its pack subprocesses.
-            // Deployment alone only covers Git's built-in local repository commands.
+            // Deploying alone only covers Git's built-in local repository commands.
             const fs = yield* FileSystem.FileSystem;
             const path = yield* Path.Path;
             const directory = yield* fs.makeTempDirectoryScoped({ prefix: "release-git-" });
@@ -2372,7 +2371,7 @@ it.live(
           "every dashboard script arrives compressed",
         ).toEqual([]);
 
-        // An app page keeps an event stream open for new deployments. Deploying again must reach
+        // An app page keeps an event stream open for new versions. Deploying again must reach
         // the open page through that stream, which reloads it.
         const files = (heading: string) => [
           {
@@ -2395,7 +2394,7 @@ export default defineApp({}, async () => ({ tools: router({ ping: query({ input:
           Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String }),
           `${path}/ui`,
         ).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }));
-        const [stream] = yield* driver("open the app page and its deployment stream", () =>
+        const [stream] = yield* driver("open the app page and its version stream", () =>
           Promise.all([
             page.waitForResponse(
               (response) => new URL(response.url()).pathname === "/_executor/version",
@@ -2408,7 +2407,7 @@ export default defineApp({}, async () => ({ tools: router({ ping: query({ input:
         expect(stream.headers()["content-encoding"], "event streams are not encoded").toBe(
           undefined,
         );
-        yield* driver("the first deployment renders", () =>
+        yield* driver("the first version renders", () =>
           page.getByRole("heading", { name: "First deployment" }).waitFor(),
         );
         const workspace = yield* json(Workspace, `${path}/workspace`);
@@ -2420,7 +2419,7 @@ export default defineApp({}, async () => ({ tools: router({ ping: query({ input:
         expect((yield* request(`${path}/deploy`, { commit: saved.revision.commit })).status).toBe(
           200,
         );
-        yield* driver("the open page reloads into the new deployment", () =>
+        yield* driver("the open page reloads into the new version", () =>
           page.getByRole("heading", { name: "Second deployment" }).waitFor(),
         );
       }),

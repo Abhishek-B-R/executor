@@ -1,6 +1,6 @@
 # Live inbox
 
-A configured app owns its records. Activating a deployment or changing selected
+A configured app owns its records. Activating a version or changing selected
 accounts keeps the same data. Adding another copy starts with separate data.
 
 `listMessages` reads rows with plain SQL through `ctx.sql`. `receiveMessage`
@@ -45,5 +45,5 @@ the deploy command again reloads both windows; messages persist.
 
 The `skills/inbox/` directory ships with the app through `playground/sdk/deploy-ui.ts`.
 Ask the MCP `skills` tool for `{ app: "live-inbox", name: "inbox" }`, using the
-actual installed slug. It returns the document and the deployment ID for reading
+actual installed slug. It returns the document and the version ID for reading
 its reference file. Skills never execute code or change tool grants.

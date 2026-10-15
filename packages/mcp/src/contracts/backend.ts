@@ -53,7 +53,7 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["skills"]["list"]>[0],
     options?: CatalogReadOptions,
   ) => Effect.Effect<AppSkillCatalog, E>;
-  /** Reauthorize each document/reference read, including previous deployments. */
+  /** Reauthorize each document/reference read, including previous versions. */
   readonly readSkill: (
     input: Parameters<Executor["skills"]["read"]>[0],
   ) => Effect.Effect<AppSkillDocument, E>;
@@ -69,7 +69,7 @@ export interface McpBackend<E extends Error> {
       /** Restrict the inventory to apps whose tools this caller may reach. */
       readonly toolsOnly?: boolean;
     },
-  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeDeployment">>, E>;
+  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeVersion">>, E>;
   /**
    * The caller's linked accounts for the app, by user requirement; skills use the same authority.
    * App requirements are not listed: operations name `{ app: {}, user }` and the backend fills the
@@ -102,7 +102,7 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["tools"]["call"]>[0],
     options?: ToolInvocationOptions,
   ) => Effect.Effect<ToolCallResult, E>;
-  /** Authorize the app, then list the events its active deployment declares. */
+  /** Authorize the app, then list the events its active version declares. */
   readonly eventDefinitions: (input: {
     readonly app: AppId;
   }) => Effect.Effect<readonly AppEventDefinition[], E>;

@@ -247,7 +247,7 @@ createRoot(root).render(<App />);`,
                 }),
               );
               expect(response.status()).toBe(200);
-              const deployed = yield* driver("deployment response", () => response.json());
+              const deployed = yield* driver("deploy response", () => response.json());
               const created = yield* Schema.decodeUnknownEffect(
                 Schema.Struct({ app: Schema.Struct({ id: Schema.String, slug: Schema.String }) }),
               )(deployed);

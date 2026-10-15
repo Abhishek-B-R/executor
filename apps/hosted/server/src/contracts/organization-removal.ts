@@ -153,7 +153,7 @@ export const HostedOrganizationRemoval = HttpApiGroup.make("organizationRemoval"
       ],
     }).annotate(
       OpenApi.Description,
-      "Delete an organization with every app, account, credential, deployment and MCP grant it owns. Requires the owner role. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
+      "Delete an organization with every app, account, credential, version and MCP grant it owns. Requires the owner role. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
     ),
   )
   .middleware(RequireOrganization);

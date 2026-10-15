@@ -1,4 +1,4 @@
-/** Protocol templates produce retained files for the ordinary deployment API. */
+/** Protocol templates produce retained files for the ordinary deploy API. */
 
 /** Stable diagnostic reasons; authored names and source never enter telemetry. */
 import { Schema } from "effect";

@@ -156,7 +156,7 @@ export function SkillFileEditor<E>({
   // Each visual session keeps bytes relative to the text it loaded.
   const [session, setSession] = useState({ id: 0, original: parts.body });
   const commit = useAtomSet(editing.atoms.commitFile(app.id), { mode: "promiseExit" });
-  const deployment = useAtomValue(editing.atoms.deploy(app.id));
+  const version = useAtomValue(editing.atoms.deploy(app.id));
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const [error, setError] = useState<Cause.Cause<E>>();
@@ -189,7 +189,7 @@ export function SkillFileEditor<E>({
     setSession({ id: session.id + 1, original: split.body });
   };
   const save = async () => {
-    if (!dirty || (instructions && !description.trim()) || savingRef.current || deployment.waiting)
+    if (!dirty || (instructions && !description.trim()) || savingRef.current || version.waiting)
       return;
     savingRef.current = true;
     setSaving(true);
@@ -268,9 +268,7 @@ export function SkillFileEditor<E>({
           <Button
             size="sm"
             loading={saving}
-            disabled={
-              !dirty || saving || deployment.waiting || (instructions && !description.trim())
-            }
+            disabled={!dirty || saving || version.waiting || (instructions && !description.trim())}
             onClick={save}
           >
             Save
@@ -350,7 +348,7 @@ export function SkillFileEditor<E>({
 }
 
 /** Deploy a commit made by the editor; the committed source is safe even if this fails. */
-export function SkillDeployment<E>({
+export function SkillVersion<E>({
   app,
   commit,
   deployNow,
@@ -377,8 +375,8 @@ export function SkillDeployment<E>({
     onStarted();
     run();
   });
-  // The deploy atom is shared with the Source view; only a deployment of this commit counts.
-  const deployed = AsyncResult.isSuccess(state) && state.value.deployment.sourceCommit === commit;
+  // The deploy atom is shared with the Source view; only a deploy of this commit counts.
+  const deployed = AsyncResult.isSuccess(state) && state.value.version.sourceCommit === commit;
   if (deployed) return null;
   return (
     <div role="status" className="flex flex-wrap items-center gap-3 border-b px-5 py-3 text-xs">

@@ -386,7 +386,7 @@ attached onboarding uses the stage's generated emulator fixture. Use `bun run e2
 
 `tests/hosted-shared.spec.ts` contains one Effect program with no target branches
 in its assertions or UI steps: signed-out rejection, owner/admin/member permissions,
-app deployment, account connection, tool discovery/invocation and both dashboard
+deploying an app, account connection, tool discovery/invocation and both dashboard
 views. A scoped finalizer deletes only its created app/account, including on failure.
 
 The SDK isolation scenario also runs on the disposable Cloud stage. Deployed
@@ -793,7 +793,7 @@ optimistic row and draft, rejects a later write, then retries and reloads persis
 Run it with `bun run e2e:self-host --test-name 'framework discovery deploys'`.
 
 `bun run e2e:local --test-name 'local MCP skills'` checks local framework queries
-and topic routing alongside configured copies and pinned deployments. Package tests
+and topic routing alongside configured copies and pinned versions. Package tests
 cover queued writes, argument variants, read failures, unmounts and disposal.
 
 `closing an app warns about queued optimistic deletes until writes settle`
@@ -851,7 +851,7 @@ previews, shared infrastructure, background pause/resume, and cleanup.
 Scenarios declaring `runtime: "attached"` require a deployed Cloud target.
 The compiler memory scenario uses large, pinned npm dependencies to exceed the
 real compiler Worker's memory limit. It checks the typed error, the unchanged
-active deployment, and a subsequent successful build. Local workerd does not
+active version, and a subsequent successful build. Local workerd does not
 enforce that memory limit, so its report marks this scenario N/A.
 Run it alone with `bun run e2e:deployed --test-name 'Cloud compiler memory failures' --workers 1`.
 The default deployed filter excludes it because exhausting the shared compiler
@@ -870,7 +870,7 @@ To verify the installed CLI artifact through the same local scenarios, set
 (`executor.exe` on Windows), from the platform archive `bun run release:cli` builds, and run
 `bun run e2e:local`. The harness starts that entry from its install directory,
 with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
-app deployment/call use real HTTP requests against the installed package. A JavaScript entry,
+app deploy/call use real HTTP requests against the installed package. A JavaScript entry,
 such as the source `bin.ts`, runs under Node instead.
 
 The release executable runs no preload, so the local CLI owns the runner's two process hooks:

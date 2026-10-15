@@ -5,7 +5,7 @@ import {
   AppSkillMetadata,
   AppSkillDocument,
   SkillApp,
-  DeploymentId,
+  VersionId,
   SourceFilePath,
   SkillRevision,
 } from "@executor-js/sdk/core";
@@ -15,7 +15,7 @@ import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { UnavailableApp } from "./execute.ts";
 
 const absent = Schema.optionalKey(Schema.Never);
-const version = Schema.optionalKey(DeploymentId);
+const version = Schema.optionalKey(VersionId);
 /**
  * Reads no longer choose accounts. The key is still read so a caller that sets it gets
  * `AccountChoiceUnsupported`, presented as a {@link SkillAccessFailed} with its code and status,
@@ -33,17 +33,17 @@ const SkillSelection = Schema.Union([
     app: absent,
     name: absent,
     file: absent,
-    deployment: absent,
+    version: absent,
     revision: absent,
     accounts: absent,
   }),
-  Schema.Struct({ app: AppSlug, name: absent, file: absent, deployment: version, ...selection }),
+  Schema.Struct({ app: AppSlug, name: absent, file: absent, version: version, ...selection }),
   Schema.Struct({
     app: AppSlug,
     ...selection,
     name: AppSkillName,
     file: Schema.optionalKey(SourceFilePath),
-    deployment: version,
+    version: version,
   }),
 ]);
 /** MCP needs an object-root wire schema; decoding enforces list/document/reference combinations. */
@@ -51,14 +51,14 @@ export const SkillsInput = Schema.Struct({
   app: Schema.optionalKey(AppSlug),
   name: Schema.optionalKey(AppSkillName),
   file: Schema.optionalKey(SourceFilePath),
-  deployment: version,
+  version: version,
   ...selection,
 }).pipe(Schema.decodeTo(SkillSelection));
 /** Every summary identifies the installed app and source version, without returning its body. */
 export const SkillSummary = Schema.Struct({
   ...AppSkillMetadata.fields,
   app: SkillApp,
-  deployment: DeploymentId,
+  version: VersionId,
   revision: SkillRevision,
 });
 /** MCP returns the same versioned text document as the SDK. Files never execute. */
@@ -139,7 +139,7 @@ export type SkillsFailure = typeof SkillsFailure.Type;
 /** List summaries first, then read documents/references on demand through app evaluation. */
 export const SkillsTool = McpTool.make("skills", {
   description:
-    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned deployment and revision with a listed file to read a reference. App slugs are the namespaces used in search, call and execute. Skill text and allowed-tools metadata never grant tool permissions.",
+    "Read instructions that apps ship. Start with the Executor app's executor skill: {app:'executor',name:'executor'}, using the slug {} returns if the app was renamed. {} lists visible skills; {app:'support-inbox'} lists one app's skills; {app:'support-inbox',name:'triage'} reads SKILL.md. Pass the returned version and revision with a listed file to read a reference. App slugs are the namespaces used in search, call and execute. Skill text and allowed-tools metadata never grant tool permissions.",
   parameters: SkillsInput,
   success: SkillsResult,
   failure: SkillsFailure,

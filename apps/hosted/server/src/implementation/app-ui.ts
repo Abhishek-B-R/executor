@@ -13,11 +13,11 @@ import {
   AppAccounts,
   AppNotFound,
   accountProblems,
-  DeploymentId,
-  DeploymentNotFound,
+  VersionId,
+  VersionNotFound,
   invocationEntries,
   type App,
-  type DeploymentMetadata,
+  type VersionMetadata,
 } from "@executor-js/sdk/core";
 import {
   AppSignInCallback,
@@ -32,7 +32,7 @@ import {
 } from "apps/ui/auth";
 import {
   AppUiApi,
-  UiDeploymentChanged,
+  UiVersionChanged,
   type UiOperation,
   UiFailed,
   UiForbidden,
@@ -133,20 +133,20 @@ export const hostedAppUi = <R = never>(
       target: { app: app.id, slug: host.slug, origin: host.origin, organization: organization.id },
     };
   });
-  const deployment = (app: App, requested?: DeploymentId) =>
+  const readVersion = (app: App, requested?: VersionId) =>
     Effect.gen(function* () {
-      const id = requested ?? app.activeDeployment;
+      const id = requested ?? app.activeVersion;
       if (id === null) return yield* unavailable();
       const executor = yield* Effect.flatten(HostedExecutor);
-      return yield* executor.apps.deployment({
+      return yield* executor.apps.version({
         owner: app.owner,
         app: app.id,
-        deployment: id,
-        deploymentOwner: app.owner,
+        version: id,
+        versionOwner: app.owner,
       });
     }).pipe(
       Effect.mapError((error) =>
-        Schema.is(AppNotFound)(error) || Schema.is(DeploymentNotFound)(error)
+        Schema.is(AppNotFound)(error) || Schema.is(VersionNotFound)(error)
           ? new UiForbidden()
           : unavailable(),
       ),
@@ -192,7 +192,7 @@ export const hostedAppUi = <R = never>(
       return { ...resolved, access, app };
     });
   const authorize = Effect.flatMap(target, authorizeTarget);
-  const assets = (version: DeploymentMetadata, path: string) =>
+  const assets = (version: VersionMetadata, path: string) =>
     Effect.gen(function* () {
       const runtime = yield* HostedAppRuntime;
       if (runtime.asset === undefined) return yield* unavailable();
@@ -209,7 +209,7 @@ export const hostedAppUi = <R = never>(
   /** A page visit without an app session starts an attempt and goes straight to the dashboard. */
   const beginSignIn = (resolved: Effect.Success<typeof target>) =>
     Effect.gen(function* () {
-      if (resolved.app.activeDeployment === null) return yield* unavailable();
+      if (resolved.app.activeVersion === null) return yield* unavailable();
       const url = new URL(resolved.request.url, resolved.target.origin);
       // A fragment never reaches the server. Browsers carry it across redirects whose
       // Location has none, so every hop below keeps the original fragment intact.
@@ -253,7 +253,7 @@ export const hostedAppUi = <R = never>(
         Effect.provideService(CurrentUserId, principal.userId),
         Effect.mapError(() => new UiForbidden()),
       );
-      if (app.activeDeployment === null) return yield* unavailable();
+      if (app.activeVersion === null) return yield* unavailable();
       const code = yield* sessions.grant(request, attempt, principal);
       return appSignInCallback(attempt.origin, request, Redacted.value(code));
     });
@@ -297,12 +297,12 @@ export const hostedAppUi = <R = never>(
         yield* requireAppAccess(params.app, "use");
         const executor = yield* Effect.flatten(HostedExecutor);
         const app = yield* executor.apps.get({ owner: access.owner, app: params.app });
-        if (app.activeDeployment === null) return yield* new AppNotDeployed({ app: app.id });
-        const version = yield* executor.apps.deployment({
+        if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+        const version = yield* executor.apps.version({
           owner: app.owner,
           app: app.id,
-          deployment: app.activeDeployment,
-          deploymentOwner: app.owner,
+          version: app.activeVersion,
+          versionOwner: app.owner,
         });
         // The build, organization and domain reads below fail only when their records are unavailable.
         const page = yield* assets(version, "index.html").pipe(
@@ -344,10 +344,10 @@ export const hostedAppUi = <R = never>(
    */
   const dataInput = (payload: typeof UiOperation.Type, current: typeof CurrentAppUi.Service) =>
     Effect.gen(function* () {
-      const deployment = yield* Schema.decodeUnknownEffect(DeploymentId)(payload.deployment).pipe(
+      const version = yield* Schema.decodeUnknownEffect(VersionId)(payload.version).pipe(
         Effect.mapError(unavailable),
       );
-      if (deployment !== current.app.activeDeployment) return yield* new UiDeploymentChanged();
+      if (version !== current.app.activeVersion) return yield* new UiVersionChanged();
       const accounts = yield* callerAccounts(current.app).pipe(
         Effect.provideService(CurrentOrganization, current.access),
         Effect.provideService(CurrentAuthorization, fullAuthority),
@@ -358,7 +358,7 @@ export const hostedAppUi = <R = never>(
         current,
         input: {
           app: current.app.id,
-          deployment,
+          version,
           accounts,
           name: payload.name,
           input: payload.input,
@@ -486,21 +486,25 @@ export const hostedAppUi = <R = never>(
     // App metadata lives in SQL, across isolates. Reconcile it on each heartbeat
     // with fresh authorization, retaining only this request's service instances.
     const version = authorize.pipe(
-      Effect.map(({ app }) => app.activeDeployment),
+      Effect.map(({ app }) => app.activeVersion),
       Effect.withSpan("app.ui.version.authorize"),
       Effect.provideService(HttpServerRequest.HttpServerRequest, request),
       Effect.provideService(HostedAppSessions, sessions),
       Effect.provideService(HostedExecutor, executor),
       Effect.provideService(GroupDatabase, groups),
     );
-    const stream = Stream.make(current.app.activeDeployment).pipe(
+    const stream = Stream.make(current.app.activeVersion).pipe(
       Stream.concat(
         Stream.tick("5 seconds").pipe(
           Stream.drop(1),
           Stream.mapEffect(() => version),
         ),
       ),
-      Stream.map((deployment) => `event: version\ndata: ${JSON.stringify({ deployment })}\n\n`),
+      // Pages opened before versions were named watch `deployment`.
+      Stream.map(
+        (version) =>
+          `event: version\ndata: ${JSON.stringify({ version, deployment: version })}\n\n`,
+      ),
       Stream.catchTags({
         UiUnauthorized: () => Stream.make("event: revoked\ndata: {}\n\n"),
         UiForbidden: () => Stream.make("event: revoked\ndata: {}\n\n"),
@@ -533,7 +537,7 @@ export const hostedAppUi = <R = never>(
     );
     if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
     const current = authorized.value;
-    const version = yield* deployment(current.app);
+    const version = yield* readVersion(current.app);
     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
     const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -594,10 +598,10 @@ export const hostedAppUi = <R = never>(
       accountIds: accounts?.user,
       accounts: yield* accountNotice,
       origin: current.target.origin,
-      deployment: version.id,
+      version: version.id,
       asset: (path) => assets(version, path),
     });
-    yield* recordUsage("app_viewed", { app_id: current.app.id, deployment_id: version.id }).pipe(
+    yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
       Effect.provideService(CurrentUserId, current.access.userId),
       Effect.provideService(CurrentOrganization, current.access),
       Effect.provideService(CurrentUsage, { source: "app_ui" }),
@@ -646,12 +650,12 @@ export const hostedAppUi = <R = never>(
   );
   const asset = Effect.gen(function* () {
     // The app's build chose its assets' file names.
-    yield* recordRoute("/_executor/assets/:deployment/:asset");
+    yield* recordRoute("/_executor/assets/:version/:asset");
     const current = yield* authorize;
     const params = yield* HttpRouter.schemaPathParams(
-      Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
+      Schema.Struct({ version: VersionId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(unavailable));
-    const version = yield* deployment(current.app, params.deployment);
+    const version = yield* readVersion(current.app, params.version);
     const path = Option.getOrUndefined(assetPath(params["*"]));
     if (path === undefined) return yield* appAsset(undefined, version.build, params["*"]);
     return yield* appAsset(yield* assets(version, path), version.build, path);
@@ -674,9 +678,7 @@ export const hostedAppUi = <R = never>(
   );
   const telemetry = (signal: "traces" | "logs") =>
     authorize.pipe(
-      Effect.flatMap(({ app }) =>
-        receiveBrowserTelemetry(signal, app.activeDeployment ?? undefined),
-      ),
+      Effect.flatMap(({ app }) => receiveBrowserTelemetry(signal, app.activeVersion ?? undefined)),
       htmlFailure,
     );
   return {

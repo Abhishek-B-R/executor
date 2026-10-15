@@ -1,4 +1,4 @@
-/** Colo cache of retained deployment inputs. Each object is written once before its deployment exists. */
+/** Colo cache of retained version inputs. Each object is written once before its version exists. */
 import type { BlobKey, BlobStorage } from "@executor-js/sdk/core";
 import { Effect, FiberSet, Option, Schema } from "effect";
 
@@ -6,7 +6,7 @@ class SourceCacheFailed extends Schema.TaggedError<SourceCacheFailed>()("SourceC
 const cached = <A>(read: () => Promise<A>) =>
   Effect.tryPromise({ try: read, catch: () => new SourceCacheFailed() });
 
-/** `deployments/<id>/source.json` never changes; the deployment row still gates every read. */
+/** `deployments/<id>/source.json` never changes; the version row still gates every read. */
 /**
  * Entries are immutable, but nothing purges them when an app is removed, so they expire after
  * a day rather than living as long as the object they copy.
@@ -15,7 +15,7 @@ const retentionSeconds = 24 * 60 * 60;
 const immutable = (key: BlobKey) => /^deployments\/[^/]+\/source\.json$/.test(key);
 
 /** Own cache writes in the event scope; other keys and every write go to authoritative storage. */
-export const cachedDeploymentSources = (origin: string, blobs: BlobStorage) =>
+export const cachedVersionSources = (origin: string, blobs: BlobStorage) =>
   Effect.gen(function* () {
     const writes = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
@@ -63,7 +63,7 @@ export const cachedDeploymentSources = (origin: string, blobs: BlobStorage) =>
               ),
             ).pipe(
               Effect.catchTag("SourceCacheFailed", () =>
-                Effect.logWarning("Deployment source cache write failed"),
+                Effect.logWarning("Version source cache write failed"),
               ),
             ),
           );

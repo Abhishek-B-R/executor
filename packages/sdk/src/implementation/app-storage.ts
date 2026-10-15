@@ -11,7 +11,7 @@ import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
-/** Bind data calls to the current app deployment and the named accounts. */
+/** Bind data calls to the current app version and the named accounts. */
 export const makeAppData = (
   storage: ExecutorDatabase,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
@@ -29,8 +29,8 @@ export const makeAppData = (
       const state = yield* read;
       const accounts = yield* resolve(state, resolveAccount);
       return yield* runtime[kind]({
-        build: state.deployment.build,
-        database: ownsDatabase(state.deployment.requirements),
+        build: state.version.build,
+        database: ownsDatabase(state.version.requirements),
         ...accounts,
         app: state.app.id,
         ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
@@ -56,9 +56,9 @@ export const makeAppData = (
                 let observedRevision: number | undefined;
                 return Stream.tick("15 seconds").pipe(
                   Stream.mapEffect(() => snapshot(db, input)),
-                  Stream.changesWith((a, b) => a.deployment.id === b.deployment.id),
+                  Stream.changesWith((a, b) => a.version.id === b.version.id),
                   Stream.switchMap((state) => {
-                    // The deployment's first query uses the selections just read for it.
+                    // The version's first query uses the selections just read for it.
                     // Later executions reread them, so they see account changes.
                     let fresh: InvocationSnapshot | undefined = state;
                     const current = Effect.suspend(() => {
@@ -71,7 +71,7 @@ export const makeAppData = (
                       // The initial notification is skipped only if its writes were
                       // already observed by a successful query. Setup races still reread.
                       Stream.succeed(undefined),
-                      !ownsDatabase(state.deployment.requirements)
+                      !ownsDatabase(state.version.requirements)
                         ? Stream.empty
                         : changes(input.app).pipe(
                             Stream.mapError(

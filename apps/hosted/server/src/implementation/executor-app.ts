@@ -1,7 +1,7 @@
 import { SourceFiles } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { packageFile } from "@executor-js/app-templates";
-/** Executor uses the same source generator, provider accounts and deployments as other API apps. */
+/** Executor uses the same source generator, provider accounts and versions as other API apps. */
 import type { HostedApiDocument } from "../contracts/api.ts";
 
 /** The catalog retains the ordinary OAuth connection for explicitly installed copies. */

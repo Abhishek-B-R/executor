@@ -43,17 +43,17 @@ export function AppSignInPage({
  * accounts the caller linked to it.
  */
 export function OpenAppAction({ app }: { readonly app: App }) {
-  return app.activeDeployment === null ? null : (
-    <DeployedOpenAppAction app={app} deployment={app.activeDeployment} />
+  return app.activeVersion === null ? null : (
+    <DeployedOpenAppAction app={app} version={app.activeVersion} />
   );
 }
 
 function DeployedOpenAppAction({
   app,
-  deployment,
+  version,
 }: {
   readonly app: App;
-  readonly deployment: NonNullable<App["activeDeployment"]>;
+  readonly version: NonNullable<App["activeVersion"]>;
 }) {
   const { organization, slug } = useOrganizationRoute();
   const location = appUiLocationAtom({
@@ -61,7 +61,7 @@ function DeployedOpenAppAction({
     slug,
     app: app.id,
     appSlug: app.slug,
-    deployment,
+    version,
   });
   const result = useAtomValue(location);
   const refresh = useAtomRefresh(location);

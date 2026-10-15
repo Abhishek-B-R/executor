@@ -19,7 +19,7 @@ import {
   type ToolRouter,
 } from "../contracts/tools.ts";
 import type { AppAccounts } from "../contracts/apps.ts";
-import type { DeploymentId } from "../contracts/shared.ts";
+import type { VersionId } from "../contracts/shared.ts";
 import type { Declarations } from "./declarations.ts";
 import { makeHandoff } from "./handoff.ts";
 import { decodeListing, shareListing } from "./listing-json.ts";
@@ -30,7 +30,7 @@ import type { ToolSearch } from "./tool-search.ts";
 /** Every tool of one app for one invocation state, sorted by name. */
 export interface ToolListing {
   readonly catalog: {
-    readonly deployment: DeploymentId;
+    readonly version: VersionId;
     readonly accounts: AppAccounts;
   };
   readonly items: ReadonlyArray<Tool>;
@@ -115,7 +115,7 @@ type Outcome = Evaluated | Failed | Unkept | Stopped;
 
 /**
  * Keep each evaluated listing in the shared declaration store under the declaration key, so a
- * new deployment, account set or stored credential is another listing,
+ * new version, account set or stored credential is another listing,
  * and serve anything this read did not evaluate itself only after the checks a live evaluation
  * runs before it releases credentials: a kept listing, a remembered failure, and the result of
  * an evaluation another request started.
@@ -157,7 +157,7 @@ export const makeListings = (options: {
       .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
   const readAt = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
     Effect.gen(function* () {
-      const identity = { app: state.app.id, deployment: state.deployment.id };
+      const identity = { app: state.app.id, version: state.version.id };
       const evaluated = (
         read.resolved === undefined
           ? resolve(state, options.resolveAccount)

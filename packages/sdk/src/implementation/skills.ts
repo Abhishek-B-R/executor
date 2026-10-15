@@ -1,4 +1,4 @@
-import { storedApp, storedDeployment } from "./apps.ts";
+import { storedApp, storedVersion } from "./apps.ts";
 import { snapshot as invocation } from "./tools.ts";
 import { appProviderFailure } from "./provider-error.ts";
 import { AppSkills, ProviderError } from "apps/contracts";
@@ -14,7 +14,7 @@ import { RequestInvalid, StorageError } from "../contracts/shared.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { Query } from "./database.ts";
 import type { Declarations } from "./declarations.ts";
-import { readDeploymentSource } from "./deployment-source.ts";
+import { readVersionSource } from "./version-source.ts";
 import { prepareAppSkills } from "./skill-source.ts";
 
 /**
@@ -67,9 +67,9 @@ export const makeSkills = (
   const snapshot = (input: typeof AppSkillInputs.list.Type, read: CatalogReadOptions = {}) =>
     Effect.gen(function* () {
       const app = yield* storedApp(db, input);
-      const deployment = input.deployment ?? app.activeDeployment;
-      if (deployment === null) return yield* new AppNotDeployed({ app: app.id });
-      const retained = yield* storedDeployment(db, app, deployment);
+      const version = input.version ?? app.activeVersion;
+      if (version === null) return yield* new AppNotDeployed({ app: app.id });
+      const retained = yield* storedVersion(db, app, version);
       const decode = (value: unknown) =>
         Schema.decodeUnknownEffect(AppSkills)(value).pipe(
           Effect.map(sorted),
@@ -77,7 +77,7 @@ export const makeSkills = (
             () =>
               new AppEvaluationFailed({
                 app: app.id,
-                deployment,
+                version,
                 reason: "Invalid skill catalog",
               }),
           ),
@@ -88,7 +88,7 @@ export const makeSkills = (
       const live =
         capabilities?.skills === true
           ? yield* Effect.gen(function* () {
-              const state = yield* invocation(db, { ...input, deployment });
+              const state = yield* invocation(db, { ...input, version });
               const sources = capabilities.skillSources === true;
               const known = input.revision;
               const catalog = yield* declarations.read(
@@ -96,14 +96,14 @@ export const makeSkills = (
                 state,
                 (context) =>
                   runtime
-                    .skills({ app: app.id, build: state.deployment.build, sources, ...context })
+                    .skills({ app: app.id, build: state.version.build, sources, ...context })
                     .pipe(
                       // A service's rejection names the selected account, as in tool listing.
                       Effect.mapError((error) =>
                         Schema.is(ProviderError)(error)
                           ? appProviderFailure(state, error)
                           : evaluationFailure(
-                              { app: app.id, deployment },
+                              { app: app.id, version },
                               error,
                               "Skill evaluation failed",
                             ),
@@ -130,7 +130,7 @@ export const makeSkills = (
                   () =>
                     new AppEvaluationFailed({
                       app: app.id,
-                      deployment,
+                      version,
                       reason: "Invalid skill catalog",
                     }),
                 ),
@@ -138,7 +138,7 @@ export const makeSkills = (
               );
               return skills;
             })
-          : yield* readDeploymentSource(blobs, retained.id).pipe(
+          : yield* readVersionSource(blobs, retained.id).pipe(
               Effect.flatMap(prepareAppSkills),
               Effect.flatMap(decode),
             );
@@ -152,7 +152,7 @@ export const makeSkills = (
         });
       return {
         app: { id: app.id, name: app.name, slug: app.slug },
-        deployment: retained.id,
+        version: retained.id,
         revision,
         skills,
       };

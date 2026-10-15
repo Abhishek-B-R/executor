@@ -111,8 +111,8 @@ export const makeDeclarations = (options: {
             command,
             state.app.owner,
             state.app.id,
-            state.deployment.id,
-            state.deployment.build,
+            state.version.id,
+            state.version.build,
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
             selections,

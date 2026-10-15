@@ -15,10 +15,10 @@ import {
 } from "../support/workflow-app.ts";
 import { scenarios } from "../test-plan.ts";
 
-const Deployment = Schema.Struct({
+const Version = Schema.Struct({
   app: Schema.Struct({
     id: Schema.String,
-    activeDeployment: Schema.String,
+    activeVersion: Schema.String,
     requirements: Schema.Struct({
       accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
     }),
@@ -76,7 +76,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
           files: workflowFiles("v1"),
         });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const { app } = yield* body(Deployment, deployed);
+        const { app } = yield* body(Version, deployed);
         resources.apps.push(app.id);
         const path = `/v1/apps/${app.id}`;
         // Calls name no accounts: each uses the account linked to the app, which connecting from
@@ -195,7 +195,7 @@ layer(TestLive, { excludeTestServices: true })("Local workflows", (it) => {
         expect(updated.status).toBe(200);
         yield* call("release", { label: "pinned" });
         const complete = yield* wait(run.id, "complete");
-        expect(complete.deployment).toBe(app.activeDeployment);
+        expect(complete.version).toBe(app.activeVersion);
         expect(complete.output).toMatchObject({
           version: "v1",
           first: { source: "synthetic-original", attempts: 2 },

@@ -53,7 +53,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     AppAccessDenied: () => "You do not have permission to change this app.",
     AppSlugTaken: () => "Another app name produces this address. Choose a different name.",
     AppNameTaken: () => "An app already uses this name. Choose another name.",
-    AppDeploymentChanged: () =>
+    AppVersionChanged: () =>
       "This app changed while you were editing. Reload its source and try again.",
     AppDataNotFound: () => "This data operation is no longer available. Reload the app.",
     AppDataFailed: () => "The app could not complete this data operation.",
@@ -70,10 +70,9 @@ const errorMessage = Match.type<HostedError>().pipe(
     SkillRevisionChanged: () =>
       "Skills changed. Reload the skill to read its current instructions and references.",
     AppSkillNotFound: () => "This skill file is no longer available. Reload the app's skills.",
-    DeploymentNotFound: () =>
-      "This deployment is no longer available. Reload the app and try again.",
+    VersionNotFound: () => "This version is no longer available. Reload the app and try again.",
     SkillDefinitionInvalid: ({ file }) => `Fix the skill definition in ${file} and deploy again.`,
-    DeploymentBuildFailed: () =>
+    VersionBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,

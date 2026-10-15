@@ -48,11 +48,11 @@ export type AccountCheckStatus = typeof AccountCheckStatus.Type;
 /** One app that uses the account, and its latest check. */
 export const AccountAppHealth = Schema.Struct({
   app: AppId,
-  /** The app's active deployment defines a check for this account's provider. */
+  /** The app's active version defines a check for this account's provider. */
   checkable: Schema.Boolean,
   /**
    * The app's latest check. It is not `current` once the account's credentials or the app's
-   * active deployment changed after it ran; recheck before relying on it.
+   * active version changed after it ran; recheck before relying on it.
    */
   check: Schema.NullOr(
     Schema.Struct({

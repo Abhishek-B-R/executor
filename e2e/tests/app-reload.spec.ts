@@ -14,7 +14,7 @@ import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { withApps } from "../support/apps-release.ts";
 
-const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 const files = (live: boolean) => [
   {
     path: "index.ts",
@@ -88,7 +88,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         const target = yield* Target;
         if (target.metadata.target === "cloud") {
           const evidence = yield* Evidence;
-          const deployment = yield* body(
+          const version = yield* body(
             Schema.Struct({ build: Schema.String }),
             yield* api.request(actors.owner, "GET", `${path}/source`),
           );
@@ -96,7 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
             name: "hostCache",
             input: {
               key: new URL(
-                `/_executor/runtime-build-cache/${encodeURIComponent(deployment.build)}`,
+                `/_executor/runtime-build-cache/${encodeURIComponent(version.build)}`,
                 target.metadata.origin,
               ).href,
             },
@@ -131,7 +131,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         );
         // Register before the next document's host watcher. Hold the public signal
         // before navigation freezes its renderer, then forward it after inspection.
-        yield* browser.use("Hold the next page's deployment reload notification", (page) =>
+        yield* browser.use("Hold the next page's version reload notification", (page) =>
           page.addInitScript(() => {
             const hold = (event: Event) => {
               event.stopImmediatePropagation();
@@ -155,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         expect(updated.status).toBe(200);
         const { app: live } = yield* body(Schema.Struct({ app: Deployed }), updated);
         expect((yield* readVersion()).body).toBe("Live version");
-        yield* browser.use("The static page automatically loads the new deployment", (page) =>
+        yield* browser.use("The static page automatically loads the new version", (page) =>
           page
             .getByRole("heading", { name: "Live version", exact: true })
             .waitFor({ timeout: 20_000 }),
@@ -164,7 +164,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
         expect(
           yield* browser.use("Reload keeps the bookmark", (page) => Promise.resolve(page.url())),
         ).toBe(bookmark);
-        yield* browser.checkpoint("New deployment loaded automatically");
+        yield* browser.checkpoint("New version loaded automatically");
         yield* browser.use("Keep an unsaved draft in the outgoing page", (page) =>
           page.getByLabel("Draft").fill("Draft before rollback"),
         );
@@ -172,7 +172,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
           Effect.gen(function* () {
             yield* Effect.addFinalizer(() =>
               browser
-                .use("Release the deployment reload notification", (page) =>
+                .use("Release the version reload notification", (page) =>
                   page.evaluate(() => {
                     window.dispatchEvent(new Event("e2e:release-reload"));
                   }),
@@ -180,8 +180,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted app reload", (it) => {
                 .pipe(Effect.orDie),
             );
             const activated = yield* api.request(actors.owner, "POST", `${path}/activate`, {
-              deployment: original.activeDeployment,
-              expectedDeployment: live.activeDeployment,
+              version: original.activeVersion,
+              expectedVersion: live.activeVersion,
             });
             expect(activated.status).toBe(200);
             expect((yield* readVersion()).body).toBe("Static version");

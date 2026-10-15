@@ -1,4 +1,5 @@
 /** Hosts supply durable orchestration independently of app code execution and product authorization. */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema, type Effect } from "effect";
 import {
   WorkflowRunId,
@@ -9,7 +10,7 @@ import {
   type WorkflowRun,
   type WorkflowRunFailure,
 } from "apps/contracts";
-import { AppId, BuildId, DeploymentId } from "./shared.ts";
+import { AppId, BuildId, VersionId } from "./shared.ts";
 
 /** Backend inspection is parsed before it affects a retained run. */
 export const WorkflowBackendState = Schema.Union([
@@ -35,14 +36,15 @@ export interface WorkflowRuntime {
   readonly terminate: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
 }
 /** Source metadata is private to the host; no credential values enter engine parameters. */
-export const WorkflowSeed = Schema.Struct({
+const WorkflowSeedFields = Schema.Struct({
   runId: WorkflowRunId,
   app: AppId,
   build: BuildId,
-  deployment: DeploymentId,
+  version: VersionId,
   name: Schema.NonEmptyString,
   input: WorkflowValue,
 });
+export const WorkflowSeed = WorkflowSeedFields.pipe(withLegacyKeys({ version: "deployment" }));
 export type WorkflowSeed = typeof WorkflowSeed.Type;
 /** Background execution uses host-only capabilities, outside the public HTTP/Promise facade. */
 export const WorkflowHost = Symbol("executor.WorkflowHost");

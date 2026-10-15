@@ -7,7 +7,7 @@ import { hydrated } from "@executor-js/ui/contracts/http";
 import { acknowledge, acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
-import type { AccountId, AccountScope, AppId, DeploymentId } from "@executor-js/sdk";
+import type { AccountId, AccountScope, AppId, VersionId } from "@executor-js/sdk";
 import { DashboardClient, overviewAtom } from "./api.ts";
 import { refreshAppDiscovery } from "./app-discovery.ts";
 
@@ -77,8 +77,8 @@ export const refreshAppLinks = (
 
 class LinkKey extends Data.Class<{
   readonly app: AppId;
-  /** The deployment whose discovery the page shows, read again after the change. */
-  readonly deployment: DeploymentId | null;
+  /** The version whose discovery the page shows, read again after the change. */
+  readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly account: AccountId;

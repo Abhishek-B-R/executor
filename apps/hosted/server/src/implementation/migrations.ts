@@ -96,7 +96,7 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   "4_data_steps": createDataStepJournal("private_hosted"),
   // The template moved to routers and served framework lookups (#829, #841).
   "5_upgrade_executor_apps": queueExecutorAppUpgrades,
-  // Step 5 skipped apps whose only change since deployment was the framework pin commit.
+  // Step 5 skipped apps whose only change since deploying was the framework pin commit.
   "6_upgrade_pinned_executor_apps": queueExecutorAppUpgrades,
   // SDK 4.0.8 deleted every connection without a target, and these rows with them. The running
   // server records a target for every connection it creates.

@@ -62,7 +62,7 @@ Queries and mutations in the app's `tools` router are available to the agent by
 their router path, such as `list` or `issues.list`. Use `tools.search` to get
 their exact callable expressions; do not write another tool wrapper. Add
 `description` and optionally `title` to improve discovery. Each configured app
-has its own database, kept across deployments.
+has its own database, kept across versions.
 
 ## `ctx.sql`
 
@@ -146,7 +146,7 @@ hold several statements. Write them by hand; there is no generator.
 When you deploy, the host applies the migrations the database has not seen, in
 number order, all in one transaction. If one fails, the deploy fails with
 SQLite's error and the file name, nothing is applied, and the previous
-deployment stays active. Rolling back to an older deployment does not undo
+version stays active. Rolling back to an older version does not undo
 migrations.
 
 Applied migrations cannot change. The host records each one's name and a hash

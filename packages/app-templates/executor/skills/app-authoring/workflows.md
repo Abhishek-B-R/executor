@@ -102,7 +102,7 @@ Schedules start paused. Use the app's Schedules tab or the Executor management
 app's schedule definitions/configure operations to enable them. The management
 API also lists saved schedules and runs, pauses, removes and runs one now. Only
 people who can edit an app enable, pause, run or remove its app schedules. Each
-run uses the current deployment and, at that moment, the member's linked
+run uses the current version and, at that moment, the member's linked
 accounts for a user schedule or the accounts linked for everyone for an app
 schedule. A schedule whose plain requirement has no account skips its
 occurrences and shows "Account required" until one is linked. Only one run is

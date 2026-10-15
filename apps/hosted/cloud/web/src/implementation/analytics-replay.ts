@@ -13,6 +13,8 @@ export const replayPageAllowed = (url: URL) =>
         "schedules",
         "workflows",
         "settings",
+        "versions",
+        // The former name of `versions`, in links saved before the rename.
         "deployments",
       ].includes(value),
   ) &&

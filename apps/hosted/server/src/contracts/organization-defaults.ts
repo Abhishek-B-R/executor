@@ -8,10 +8,10 @@ import {
   AccountSelectionInvalid,
   AppNotFound,
   AppNotDeployed,
-  AppDeploymentChanged,
-  DeploymentBuildFailed,
+  AppVersionChanged,
+  VersionBuildFailed,
   BuildMemoryExceeded,
-  DeploymentNotFound,
+  VersionNotFound,
   AppNameTaken,
   AppSlugTaken,
   SkillDefinitionInvalid,
@@ -30,7 +30,7 @@ export class OrganizationDefaultsPending extends Schema.TaggedError<Organization
   {},
 ) {}
 
-/** Setup preserves safe generation and deployment failures alongside storage failures. */
+/** Setup preserves safe generation and deploy failures alongside storage failures. */
 export const OrganizationDefaultsError = Schema.Union([
   OrganizationDefaultsPending,
   StorageError,
@@ -38,15 +38,15 @@ export const OrganizationDefaultsError = Schema.Union([
   SourcePathConflict,
   SourcePathNotUnicode,
   TemplateError.annotate({ httpApiStatus: 422 }),
-  DeploymentBuildFailed,
+  VersionBuildFailed,
   BuildMemoryExceeded,
-  DeploymentNotFound,
+  VersionNotFound,
   AppNameTaken,
   AppSlugTaken,
   SkillDefinitionInvalid,
   AppNotFound,
   AppNotDeployed,
-  AppDeploymentChanged,
+  AppVersionChanged,
   AccountNotFound,
   AccountFieldsInvalid,
   AuthMethodInvalid,

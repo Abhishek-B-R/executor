@@ -9,7 +9,7 @@ import type { Account } from "../contracts/account.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { StorageError, type AccountConnectionId, type ProviderId } from "../contracts/shared.ts";
 import type { StoredConnectionTarget } from "../contracts/storage.ts";
-import { lockApp, storedApp, storedDeployment } from "./apps.ts";
+import { lockApp, storedApp, storedVersion } from "./apps.ts";
 import { query, type Query } from "./database.ts";
 
 /**
@@ -23,11 +23,9 @@ export const captureConnectionTarget = (
 ) =>
   Effect.gen(function* () {
     const app = yield* storedApp(db, target);
-    const deployment = yield* storedDeployment(db, app).pipe(
-      Effect.mapError(() => new StorageError()),
-    );
-    const requirement = Object.hasOwn(deployment.requirements.accounts, target.requirement)
-      ? deployment.requirements.accounts[target.requirement]
+    const version = yield* storedVersion(db, app).pipe(Effect.mapError(() => new StorageError()));
+    const requirement = Object.hasOwn(version.requirements.accounts, target.requirement)
+      ? version.requirements.accounts[target.requirement]
       : undefined;
     const invalid = (reason: AccountSelectionInvalid["reason"]) =>
       new AccountSelectionInvalid({ app: app.id, slot: target.requirement, reason });
@@ -58,16 +56,15 @@ export const targetProvider = (db: Query, target: StoredConnectionTarget, provid
       Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)),
     );
     if (app === undefined) return undefined;
-    const deployment = yield* storedDeployment(db, app).pipe(
+    const version = yield* storedVersion(db, app).pipe(
       Effect.catchTags({
-        DeploymentNotFound: () => Effect.succeed(undefined),
+        VersionNotFound: () => Effect.succeed(undefined),
         AppNotDeployed: () => Effect.succeed(undefined),
       }),
     );
     const required =
-      deployment !== undefined &&
-      Object.hasOwn(deployment.requirements.accounts, target.requirement)
-        ? deployment.requirements.accounts[target.requirement]
+      version !== undefined && Object.hasOwn(version.requirements.accounts, target.requirement)
+        ? version.requirements.accounts[target.requirement]
         : undefined;
     return required?.provider === provider && required.scope === target.scope
       ? { id: provider, definition: required.definition }
@@ -112,14 +109,14 @@ export const applyConnectionTarget = (
     const app = yield* lockApp(db, { app: target.app, owner: target.owner }).pipe(
       Effect.catchTag("AppNotFound", () => Effect.fail(changed())),
     );
-    const deployment = yield* storedDeployment(db, app).pipe(
+    const version = yield* storedVersion(db, app).pipe(
       Effect.catchTags({
-        DeploymentNotFound: () => Effect.fail(changed()),
+        VersionNotFound: () => Effect.fail(changed()),
         AppNotDeployed: () => Effect.fail(changed()),
       }),
     );
-    const required = Object.hasOwn(deployment.requirements.accounts, target.requirement)
-      ? deployment.requirements.accounts[target.requirement]
+    const required = Object.hasOwn(version.requirements.accounts, target.requirement)
+      ? version.requirements.accounts[target.requirement]
       : undefined;
     if (
       required === undefined ||

@@ -3,8 +3,8 @@ import { appSlug } from "./app-slug.ts";
 /** Persisted records. Decode database results with these schemas before use. */
 import { Effect, Schema, Struct } from "effect";
 import { Account } from "./account.ts";
-import { AccountScope, App, AppRequirements } from "./apps.ts";
-import { Deployment } from "./deployment.ts";
+import { AccountScope, AppFields, AppRequirements } from "./apps.ts";
+import { Version } from "./version.ts";
 import {
   ApprovalRequestId,
   WebhookId,
@@ -38,27 +38,30 @@ export type StoredAccount = typeof StoredAccount.Type;
  * Requirements belong to the immutable code version. These are declared
  * account slots, not the account-dependent tool catalog.
  */
-export const StoredDeployment = Schema.Struct({
-  ...Deployment.mapFields(Struct.omit(["files"])).fields,
+export const StoredVersion = Schema.Struct({
+  ...Version.mapFields(Struct.omit(["files"])).fields,
   fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
   requirements: AppRequirements,
 });
-/** Parsed deployment storage record with its declared account requirements. */
-export type StoredDeployment = typeof StoredDeployment.Type;
+/** Parsed version storage record with its declared account requirements. */
+export type StoredVersion = typeof StoredVersion.Type;
 
 /**
- * An app stores its source identity and active deployment; callers choose its accounts.
- * Public App.requirements is read from that deployment rather than duplicated.
+ * An app stores its source identity and active version; callers choose its accounts.
+ * Public App.requirements is read from that version rather than duplicated.
  */
 export const StoredApp = Schema.Struct({
-  ...App.mapFields(Struct.omit(["requirements"])).fields,
+  ...AppFields.mapFields(Struct.omit(["requirements"])).fields,
   deploySequence: Schema.Int,
   activatedSequence: Schema.Int,
-}).check(
-  Schema.makeFilter((app) => app.slug === appSlug(app.name), {
-    message: "The app address must match its current name",
-  }),
-);
+})
+  // Storage keeps the column's former name, `active_deployment`.
+  .pipe(Schema.encodeKeys({ activeVersion: "activeDeployment" }))
+  .check(
+    Schema.makeFilter((app) => app.slug === appSlug(app.name), {
+      message: "The app address must match its current name",
+    }),
+  );
 /** Parsed configured app storage record, without derived requirements. */
 export type StoredApp = typeof StoredApp.Type;
 

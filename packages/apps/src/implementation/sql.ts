@@ -358,7 +358,7 @@ export class MigrationHistoryChanged extends Schema.TaggedError<MigrationHistory
   { reason: Schema.String },
 ) {
   override get message() {
-    return `${this.reason} Applied migrations cannot change: restore the original file and add a new migration instead. Nothing was applied; the previous deployment is still active.`;
+    return `${this.reason} Applied migrations cannot change: restore the original file and add a new migration instead. Nothing was applied; the previous version is still active.`;
   }
 }
 
@@ -368,7 +368,7 @@ export class MigrationFailed extends Schema.TaggedError<MigrationFailed>()("Migr
   reason: Schema.String,
 }) {
   override get message() {
-    return `${this.path} failed: ${this.reason}. No migrations were applied; the previous deployment is still active.`;
+    return `${this.path} failed: ${this.reason}. No migrations were applied; the previous version is still active.`;
   }
 }
 
@@ -485,7 +485,7 @@ const History = Schema.Array(
 
 /**
  * Apply the build's pending migrations and report which ran. Every pending migration runs in one
- * transaction, so a failing one leaves the database exactly as the active deployment knows it. The
+ * transaction, so a failing one leaves the database exactly as the active version knows it. The
  * migrations already applied must still be the build's first ones, byte for byte.
  */
 export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>

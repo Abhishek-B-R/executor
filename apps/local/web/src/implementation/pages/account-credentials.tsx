@@ -28,7 +28,7 @@ export function ReplaceCredentials({
   return (
     <AppAccountForm
       app={app.id}
-      deployment={app.activeDeployment}
+      version={app.activeVersion}
       scope={scope}
       requirement={slot}
       provider={{ id: requirement.provider, definition: requirement.definition }}

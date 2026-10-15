@@ -27,7 +27,7 @@ layer(TestLive, { excludeTestServices: true })("Local app browsing", (it) => {
         );
         expect(deployed.status).toBe(200);
         const { app } = yield* body(
-          Schema.Struct({ app: Schema.Struct({ ...App.fields, activeDeployment: Schema.String }) }),
+          Schema.Struct({ app: Schema.Struct({ ...App.fields, activeVersion: Schema.String }) }),
           deployed,
         );
         const path = `/v1/apps/${app.id}`;
@@ -59,7 +59,7 @@ layer(TestLive, { excludeTestServices: true })("Local app browsing", (it) => {
           url: `/apps/${app.id}`,
           listUrl: "/apps",
           name: app.name,
-          deployment: app.activeDeployment,
+          version: app.activeVersion,
           readPaths: [`/dashboard/api/apps/${app.id}`],
           skills: "editor",
         });

@@ -193,11 +193,11 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
         yield* query(() =>
           tx.deleteMany("storedOAuthClientCredentials", { where: (b) => b("owner", "=", owner) }),
         );
-        // Apps reference their active deployment, so retained code is removed last.
-        const deployments = yield* query(() =>
+        // Apps reference their active version, so retained code is removed last.
+        const versions = yield* query(() =>
           tx.findMany("deployments", { select: ["id"], where: (b) => b("owner", "=", owner) }),
         );
-        if (deployments.length > 0)
+        if (versions.length > 0)
           yield* query(() =>
             tx.deleteMany("deployments", { where: (b) => b("owner", "=", owner) }),
           );
@@ -205,7 +205,7 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
           owner,
           apps: appIds.length,
           accounts: accountIds.length,
-          deployments: deployments.length,
+          versions: versions.length,
           connections: connections.length,
         };
       }),

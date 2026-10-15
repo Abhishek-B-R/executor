@@ -1,4 +1,4 @@
-/** Point a retained document's resources at its deployment while links keep the page's own URL. */
+/** Point a retained document's resources at its version while links keep the page's own URL. */
 import {
   isTokenAtKeyword,
   isTokenFunction,
@@ -124,11 +124,11 @@ const rewriteCss = (css: string, resolve: (url: string) => string) => {
 };
 
 /**
- * Retained files sit at the deployment's asset root. Resolving path-relative resource URLs there,
+ * Retained files sit at the version's asset root. Resolving path-relative resource URLs there,
  * instead of with `<base>`, leaves the document base as the page URL for links, history and forms.
  */
-export const deploymentDocument = (html: string, deployment: string) => {
-  const root = `/_executor/assets/${encodeURIComponent(deployment)}/`;
+export const versionDocument = (html: string, version: string) => {
+  const root = `/_executor/assets/${encodeURIComponent(version)}/`;
   const resolve = (url: string) => {
     if (!retained(url) || !URL.canParse(url, "https://deployment.invalid/")) return url;
     const resolved = new URL(url, "https://deployment.invalid/");

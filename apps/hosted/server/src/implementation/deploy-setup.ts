@@ -1,4 +1,4 @@
-/** Activating a deployment wakes webhook source reconciliation at the shared hosted Executor boundary. */
+/** Activating a version wakes webhook source reconciliation at the shared hosted Executor boundary. */
 import type { Executor } from "@executor-js/sdk/core";
 import { Effect, Option } from "effect";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -19,8 +19,8 @@ const wake = Effect.serviceOption(ScheduleWakeup).pipe(
 );
 
 /**
- * A deployment activated over an existing app leaves every webhook source of the app pending until
- * reconciliation re-registers its subscriptions on the new deployment, so each deploy and
+ * A version activated over an existing app leaves every webhook source of the app pending until
+ * reconciliation re-registers its subscriptions on the new version, so each deploy and
  * activation through this executor wakes it as linking an account does; polling stays the recovery
  * path. A new app has no sources yet, and a deploy that a newer one overtook activates nothing.
  * Member setup deploys the default Executor app through its own executor and wakes it itself.
@@ -33,8 +33,8 @@ export const withDeploySetupWake = (executor: Executor): Executor => ({
       executor.apps
         .deploy(input)
         .pipe(
-          Effect.tap(({ app, deployment }) =>
-            input.app !== undefined && app.activeDeployment === deployment.id ? wake : Effect.void,
+          Effect.tap(({ app, version }) =>
+            input.app !== undefined && app.activeVersion === version.id ? wake : Effect.void,
           ),
         ),
     activate: (input) => executor.apps.activate(input).pipe(Effect.tap(() => wake)),

@@ -114,10 +114,10 @@ ${appStructure.note}
 
 ${appStructure.caption}
 
-## Deployment
+## Deploying
 
 Deploy your app as one project. Executor builds and hosts it, connects the accounts
-it needs, and retains its source and deployment history. Change the code and deploy
+it needs, and retains its source and version history. Change the code and deploy
 again as your needs change.
 
 ## What you get

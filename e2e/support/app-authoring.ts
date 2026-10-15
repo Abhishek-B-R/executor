@@ -1,4 +1,4 @@
-/** Drive the real source and deployment API as an agent would. */
+/** Drive the real source and deploy API as an agent would. */
 import { Effect, Schema } from "effect";
 import { Api, body, type Session } from "./api.ts";
 

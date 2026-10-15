@@ -144,7 +144,7 @@ export const trailingIndexVersions = (schemas: ReadonlyArray<AnySchema>): Readon
  *
  * - `plain`: its account for each plain requirement, as JSON text sorted by requirement, with
  *   null for none or a deleted account. Plain requirements are those of the app's active
- *   deployment, or, for an app without one, the profile's single selections.
+ *   version, or, for an app without one, the profile's single selections.
  * - `many`: every existing account it selected for a many() requirement, as `requirement/id`.
  * - `linked`: the existing accounts it selected, plain and many(), in selection order.
  * - `complete`: every plain requirement has an existing account. Links are kept per requirement,
@@ -293,7 +293,7 @@ const rankedSchedules = `WITH ranked AS (
  * - Workflow runs and webhook subscriptions record their profile's subject as the actor. Their
  *   saved accounts are unchanged; a subscription's actor and accounts are also the ones its
  *   registration ran as, which removing it uses. Workflow runs stay with the app: they run on its
- *   deployments.
+ *   versions.
  * - Each account an active profile whose account set stays with the app selected becomes a
  *   webhook source for its app, from the app's oldest such profile, with that profile's webhook
  *   configuration. Profiles of deleted apps and selections of deleted accounts add none. Sources

@@ -17,11 +17,11 @@ export function AppResources({
   if (view === "workflows") {
     const bindings = workflowBindings({
       app: app.id,
-      deployment: app.activeDeployment ?? undefined,
+      version: app.activeVersion ?? undefined,
     });
     return (
       <AppWorkflows
-        key={String(app.activeDeployment)}
+        key={String(app.activeVersion)}
         app={app}
         bindings={bindings}
         start={(definition, onStarted) => (

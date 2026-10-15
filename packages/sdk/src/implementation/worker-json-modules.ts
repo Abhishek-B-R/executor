@@ -5,7 +5,7 @@
  */
 import type { Plugin } from "esbuild";
 import type { SourceTextFile } from "../contracts/source.ts";
-import type { SourceLocation } from "../contracts/deployment.ts";
+import type { SourceLocation } from "../contracts/version.ts";
 import { boundBuildMessage, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import { serverFiles, serverFilesModule } from "./worker-bridge.ts";
 

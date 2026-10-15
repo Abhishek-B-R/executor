@@ -4,7 +4,7 @@
  *
  * Releases up to beta.9 refreshed cached values in the background with the invocation's `fetch`,
  * which aborts when the invocation ends, so dynamic catalogs such as the Executor app's skills only
- * refreshed when the cache entry expired. Beta.10 fixed it, but a deployment keeps the framework
+ * refreshed when the cache entry expired. Beta.10 fixed it, but a version keeps the framework
  * it was built with, and Executor never upgrades an app on its own.
  */
 import { Schema } from "effect";
@@ -30,7 +30,7 @@ export const executorAppRedeployTargetRelease = "0.0.1-beta.84";
  *   beta.10 and `main` holds that source, or that source with the new pin. The running files are
  *   deployed with only `dependencies.apps` changed, and `main` gets the same files.
  * - `redeploy-behind` / `redeployed-behind`: the same, but `main` holds exactly the source of an
- *   earlier deployment that the running one replaced, as a direct file deploy leaves it. `main`
+ *   earlier version that the running one replaced, as a direct file deploy leaves it. `main`
  *   gets the running source with the new pin; its previous files stay in its history.
  * - `redeploy-pinned` / `redeployed-pinned`: the same, but `main` holds the running source under a
  *   framework pin that `1_app_framework_pin` or `2_app_framework_pin_catch_up` committed before
@@ -38,7 +38,7 @@ export const executorAppRedeployTargetRelease = "0.0.1-beta.84";
  *   differs: `dependencies.apps` is the release those steps write, and `name` may be missing from
  *   `main`. `main` gets the running source with the new pin.
  * - `redeploy-behind-pinned` / `redeployed-behind-pinned`: the same, but `main` holds the source of
- *   an earlier deployment that the running one replaced, under the same framework pin. Those steps
+ *   an earlier version that the running one replaced, under the same framework pin. Those steps
  *   commit the then-running source with the pin when `main` was behind it, and member setup later
  *   deployed a newer template without writing Git. `package.json` may differ only as for
  *   `redeploy-pinned`. `main` gets the running source with the new pin; the pin commit stays in its

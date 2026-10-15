@@ -6,7 +6,7 @@ import { AppCodeId, type AppId, type OwnerId, type StorageError } from "./shared
 import type { AppNotFound } from "./apps.ts";
 
 /**
- * Canonical relative POSIX path inside a deployment: no absolute paths,
+ * Canonical relative POSIX path inside a version: no absolute paths,
  * backslashes, NUL bytes, or empty/`.`/`..` segments. Plain refined
  * strings — callers need not brand every path.
  */
@@ -83,7 +83,7 @@ export const isTextFile = (file: SourceFile): file is SourceTextFile =>
   !("object" in file) && !("encoding" in file);
 
 /**
- * A deployment's complete source: at least one file, unique paths, and a
+ * A version's complete source: at least one file, unique paths, and a
  * root `index.ts` entrypoint. `package.json` is optional — the host
  * supplies `apps`, and extra dependencies may come from an
  * optional `package.json`. MCP/OpenAPI/GraphQL importers
@@ -358,7 +358,7 @@ export const removedPaths = (
   return { count: removed.length, paths };
 };
 
-/** Hosts must retain successful writes while any deployment or release references them. */
+/** Hosts must retain successful writes while any version or release references them. */
 export interface AppSourceStorage {
   /** Pin one commit's files under a protected branch. Stored files are blobs of `basis`. */
   readonly retain: (
@@ -400,7 +400,7 @@ export const sourceLimits = { files: 4096, bytes: 16 * 1024 * 1024 } as const;
  *
  * - `fileBytes`: Cloudflare Artifacts, which stores hosted app source, refuses a file over 32 MB.
  * - `bytes`: an Artifacts repository holds at most 1 GB, so no commit's files can exceed it.
- * - `files`: each deployment lists its public files in one object read when they are served, and
+ * - `files`: each version lists its public files in one object read when they are served, and
  *   each file is a few storage operations at deploy; 10,000 keeps both small.
  */
 export const publicFileLimits = {
@@ -435,7 +435,7 @@ export const GitCommit = Schema.Struct({
 export type GitCommit = typeof GitCommit.Type;
 /**
  * Bounded source: code and inline public bytes within `sourceLimits`, public files within
- * `publicFileLimits`. Generated dependency paths are legal in retained deployment snapshots.
+ * `publicFileLimits`. Generated dependency paths are legal in retained version snapshots.
  */
 export const sourceFiles = <F extends ReadonlyArray<SourceFile>>(files: F) => {
   let codeFiles = 0;

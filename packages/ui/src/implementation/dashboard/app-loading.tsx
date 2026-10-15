@@ -59,8 +59,8 @@ export function AppOverviewLoading({ app }: { readonly app?: App | undefined }) 
               app &&
               Object.keys(app.requirements.accounts).length === 0 ? (
                 <p className="py-5 text-sm text-muted-foreground">
-                  {app.activeDeployment === null
-                    ? "Account requirements appear after deployment."
+                  {app.activeVersion === null
+                    ? "Account requirements appear after deploying."
                     : "No accounts required."}
                 </p>
               ) : (
@@ -219,14 +219,10 @@ export function AppWorkspaceLoading({ view = "source" }: { readonly view?: "sour
   );
 }
 
-/** The detail read keeps deployment statistics above the retained file browser. */
-export function DeploymentSourceLoading() {
+/** The detail read keeps version statistics above the retained file browser. */
+export function VersionSourceLoading() {
   return (
-    <div
-      role="status"
-      aria-label="Loading deployment source"
-      className="flex min-h-0 flex-1 flex-col"
-    >
+    <div role="status" aria-label="Loading version source" className="flex min-h-0 flex-1 flex-col">
       <div
         aria-hidden
         className="flex shrink-0 flex-wrap gap-x-8 gap-y-3 border-b px-5 py-3 text-xs max-[740px]:px-4"
@@ -245,14 +241,10 @@ export function DeploymentSourceLoading() {
   );
 }
 
-/** Deployment-list reads reserve both the version selector and retained source panes. */
-export function AppDeploymentsLoading() {
+/** Version-list reads reserve both the version selector and retained source panes. */
+export function AppVersionsLoading() {
   return (
-    <section
-      role="status"
-      aria-label="Loading deployments"
-      className="flex min-h-0 flex-1 flex-col"
-    >
+    <section role="status" aria-label="Loading versions" className="flex min-h-0 flex-1 flex-col">
       <div className="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[auto_minmax(0,1fr)]">
         <div
           aria-hidden
@@ -267,7 +259,7 @@ export function AppDeploymentsLoading() {
           <div className="flex min-h-14 shrink-0 items-center justify-between border-b px-5 py-3 max-[740px]:px-4">
             <Skeleton className="h-5 w-32" />
           </div>
-          <DeploymentSourceLoading />
+          <VersionSourceLoading />
         </div>
       </div>
     </section>
@@ -286,17 +278,17 @@ export function AppDetailLoading({
   readonly selectedTool?: string | undefined;
   readonly accountAction?: ReactNode;
 }): ReactElement {
-  if (app?.activeDeployment === null) {
+  if (app?.activeVersion === null) {
     if (view === "tools" || view === "accounts")
       return (
         <p className="p-5 text-sm text-muted-foreground">
           Deploy this app before using its tools or selecting accounts.
         </p>
       );
-    if (view === "deployments")
+    if (view === "versions")
       return (
         <p className="p-7 text-sm text-muted-foreground">
-          No deployments yet. Deploy from Source when you’re ready.
+          No versions yet. Deploy from Source when you’re ready.
         </p>
       );
   }
@@ -322,8 +314,8 @@ export function AppDetailLoading({
     case "source":
     case "history":
       return <AppWorkspaceLoading view={view} />;
-    case "deployments":
-      return <AppDeploymentsLoading />;
+    case "versions":
+      return <AppVersionsLoading />;
     case "settings":
       return <AppSettingsLoading app={app} />;
   }

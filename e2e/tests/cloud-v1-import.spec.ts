@@ -142,7 +142,7 @@ const Apps = Schema.Array(
   Schema.Struct({
     id: Schema.String,
     name: Schema.String,
-    activeDeployment: Schema.NullOr(Schema.String),
+    activeVersion: Schema.NullOr(Schema.String),
   }),
 );
 
@@ -160,7 +160,7 @@ const checkedEmail = "checked-member@example.test";
 /** The notes v2 shows for a toolkit that grants nothing and for every artifact. */
 const grantsNoConnection = "It grants no connection in this workspace.";
 const repairNote =
-  "It is imported as app source without a deployment: v2 apps cannot call other apps' tools yet, so its code needs rewriting before it runs.";
+  "It is imported as app source without a version: v2 apps cannot call other apps' tools yet, so its code needs rewriting before it runs.";
 /** A credential v1 kept in an MCP server's fixed headers; it must never reach generated source. */
 const fixedSecret = "synthetic-fixed-secret-0123456789";
 /**
@@ -3260,7 +3260,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(rules).toContain('"create_item": "always"');
         expect(rules).not.toContain('"delete_item"');
 
-        // Artifacts become apps with source and no deployment, and say what needs repair.
+        // Artifacts become apps with source and no version, and say what needs repair.
         const dashboard = results.get("Dashboard");
         expect(dashboard).toEqual({
           status: "imported",
@@ -3280,7 +3280,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         ).pipe(Effect.flatMap((response) => decode(Apps, response)));
         expect(apps.find((app) => app.id === dashboard?.v2Id)).toMatchObject({
           name: "Dashboard",
-          activeDeployment: null,
+          activeVersion: null,
         });
         // Its package files are not read here: managed local Cloud has no Git storage for app
         // source, and the v1 import runs only there.

@@ -1,6 +1,6 @@
 import { AccountConnectionId, AccountId } from "@executor-js/sdk";
 import { GrantId } from "@executor-js/mcp-auth/grants";
-import { AppView, AssistantId } from "@executor-js/ui/contracts/dashboard";
+import { AppView, AppViewFromUrl, AssistantId } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import type { AgentBaseline } from "./mcp-connections.ts";
@@ -86,7 +86,7 @@ export function parseAppSearch(search: Record<string, unknown>): ReturnType<
 } {
   return {
     ...parseConnectionSearch(search),
-    view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
+    view: Option.getOrUndefined(Schema.decodeUnknownOption(AppViewFromUrl)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),
   };
 }

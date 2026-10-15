@@ -102,7 +102,9 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           ["App tools", `/apps/${app.id}?view=tools`, "identity"],
           ["App skills", `/apps/${app.id}?view=skills`, "greeting"],
           ["App source", `/apps/${app.id}?view=source`, "index.ts"],
-          ["App deployments", `/apps/${app.id}?view=deployments`, "index.ts"],
+          ["App versions", `/apps/${app.id}?view=versions`, "index.ts"],
+          // Links saved before versions were renamed still open them.
+          ["App versions (former link)", `/apps/${app.id}?view=deployments`, "index.ts"],
           ["Accounts", "/accounts", "Rendered account"],
           ["Linked account", `/accounts?account=${account.id}`, "Rendered account"],
         ] as const;

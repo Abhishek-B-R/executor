@@ -9,7 +9,7 @@ import {
   sourceText,
   SourceFiles,
   type App,
-  type DeploymentId,
+  type VersionId,
   type Executor,
   type StorageError,
 } from "@executor-js/sdk/core";
@@ -28,13 +28,13 @@ import {
 export interface ExecutorAppRedeployHost {
   readonly executor: Executor;
   /**
-   * Called after an app was redeployed, for a host that records an app's deployment elsewhere.
-   * Hosted records each organization's default Executor app deployment, which member setup trusts.
+   * Called after an app was redeployed, for a host that records an app's version elsewhere.
+   * Hosted records each organization's default Executor app version, which member setup trusts.
    */
   readonly executorAppRedeployed?: (
     app: App,
-    replaced: DeploymentId,
-    deployment: DeploymentId,
+    replaced: VersionId,
+    version: VersionId,
   ) => Effect.Effect<void, StorageError, SqlClient.SqlClient>;
 }
 
@@ -132,9 +132,9 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
   Effect.gen(function* () {
     const target = { owner: listed.owner, app: listed.id };
     const app = yield* host.executor.apps.get(target);
-    if (app.activeDeployment === null) return "undeployed" as const;
+    if (app.activeVersion === null) return "undeployed" as const;
     const running = yield* host.executor.apps.source(target);
-    if (running.id !== app.activeDeployment) return "conflict" as const;
+    if (running.id !== app.activeVersion) return "conflict" as const;
     const pin = pinnedRelease(running.files);
     if (pin === undefined) return "other-pin" as const;
     const order = compareReleases(pin, executorAppRedeployFixedRelease);
@@ -142,7 +142,7 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
     const next = repinned(running.files, pin, executorAppRedeployTargetRelease);
 
     // Main must hold the running source, the redeployed source, the running source under only the
-    // framework pin committed before a template upgrade deployed it, or an earlier deployment's
+    // framework pin committed before a template upgrade deployed it, or an earlier version's
     // source, exactly as direct file deploys leave it or under only the framework pin that
     // `1_app_framework_pin`'s behind path committed before a later deploy replaced it. Anything
     // else is someone's work.
@@ -154,11 +154,11 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
       settled || pinned
         ? undefined
         : yield* Effect.gen(function* () {
-            const replaced = (yield* host.executor.apps.deployments(target)).filter(
-              (deployment) => deployment.createdAt.getTime() < running.createdAt.getTime(),
+            const replaced = (yield* host.executor.apps.versions(target)).filter(
+              (version) => version.createdAt.getTime() < running.createdAt.getTime(),
             );
-            const sources = yield* Effect.forEach(replaced, (deployment) =>
-              host.executor.apps.source({ ...target, deployment: deployment.id }),
+            const sources = yield* Effect.forEach(replaced, (version) =>
+              host.executor.apps.source({ ...target, version: version.id }),
             );
             if (sources.some((source) => sourceFilesEqual(workspace.files, source.files)))
               return "exact" as const;
@@ -179,7 +179,7 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
     // Deploy first: source that no longer builds changes nothing, main included.
     const deployed = yield* host.executor.apps.deploy({ ...target, files: next }).pipe(
       Effect.map((result) => result.app),
-      Effect.catchTag("DeploymentBuildFailed", (error) =>
+      Effect.catchTag("VersionBuildFailed", (error) =>
         Effect.logWarning(
           "Executor app does not build on the target release",
           listed.id,
@@ -189,7 +189,7 @@ const redeployApp = (host: ExecutorAppRedeployHost, listed: App, mode: DataStepM
     );
     if (deployed === undefined) return "build-failed" as const;
     if (host.executorAppRedeployed !== undefined)
-      yield* host.executorAppRedeployed(deployed, running.id, deployed.activeDeployment);
+      yield* host.executorAppRedeployed(deployed, running.id, deployed.activeVersion);
     // Main gets what now runs, on the revision that was read; an edit made meanwhile is kept.
     if (!sourceFilesEqual(workspace.files, next))
       yield* host.executor.apps

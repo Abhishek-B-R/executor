@@ -48,8 +48,8 @@ export default defineApp({}, async () => ({
             headers,
           );
           expect(deployed.status).toBe(200);
-          const { app, deployment } = yield* body(
-            Schema.Struct({ app: Resource, deployment: Resource }),
+          const { app, version } = yield* body(
+            Schema.Struct({ app: Resource, version: Resource }),
             deployed,
           );
           yield* Effect.addFinalizer(() =>
@@ -127,7 +127,7 @@ export default defineApp({}, async () => ({
             tools: [`/dashboard/api/live/apps/${app.id}/tools`],
             workspace: [`/api/apps/${app.id}/workspace/display`],
             history: [`/api/apps/${app.id}/history`],
-            source: [`/dashboard/api/apps/${app.id}/deployments/${deployment.id}/display`],
+            source: [`/dashboard/api/apps/${app.id}/versions/${version.id}/display`],
           });
         }),
       ),

@@ -35,7 +35,7 @@ import {
   checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
-  selectedActiveDeployment,
+  selectedActiveVersion,
   usableApp,
 } from "./access.ts";
 
@@ -48,11 +48,8 @@ export const listTools = (
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
-    const page = yield* executor.tools.list(
-      { ...input, deployment, accounts, limit: 2000 },
-      options,
-    );
+    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const page = yield* executor.tools.list({ ...input, version, accounts, limit: 2000 }, options);
     return {
       ...page,
       items: page.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
@@ -70,11 +67,8 @@ export const searchableTools = (
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
-    const searchable = yield* executor.tools.searchable(
-      { ...input, deployment, accounts },
-      options,
-    );
+    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const searchable = yield* executor.tools.searchable({ ...input, version, accounts }, options);
     // Failed routers list no tools, so the policy decides them without the catalog.
     return {
       ...searchable,
@@ -118,8 +112,8 @@ export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
-    const index = yield* executor.tools.index({ ...input, deployment, accounts });
+    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const index = yield* executor.tools.index({ ...input, version, accounts });
     return {
       ...index,
       items: index.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),
@@ -134,19 +128,19 @@ export const getTool = (input: Parameters<Executor["tools"]["get"]>[0]) =>
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
+    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
     // When names decide, check before evaluating, so a hidden tool's source failure is not
     // reported either. A read-only rule needs the catalog's flag, so it is checked after.
     if (
       !requiresToolMetadata(policy.tools, input.app) &&
       !discoversTool(policy, { app: input.app, tool: { name: input.tool } })
     )
-      return yield* new ToolNotFound({ app: input.app, deployment, tool: input.tool });
-    const tool = yield* executor.tools.get({ ...input, deployment, accounts });
+      return yield* new ToolNotFound({ app: input.app, version, tool: input.tool });
+    const tool = yield* executor.tools.get({ ...input, version, accounts });
     if (!discoversTool(policy, { app: input.app, tool }))
       return yield* new ToolNotFound({
         app: tool.app,
-        deployment: tool.deployment,
+        version: tool.version,
         tool: tool.name,
       });
     return tool;
@@ -159,13 +153,13 @@ const startTool = (
   Effect.flatMap(currentOwner, (owner) =>
     Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
-      const { deployment, accounts, kind } = yield* checkedToolCall(
+      const { version, accounts, kind } = yield* checkedToolCall(
         executor,
         owner,
         input,
         (selected, described) => authorizeTool({ ...input, ...selected }, described),
       );
-      return yield* executor.tools.call({ ...input, deployment, accounts, kind }, options);
+      return yield* executor.tools.call({ ...input, version, accounts, kind }, options);
     }),
   );
 /** API credentials cannot present an approval, so a call that needs one fails without running. */

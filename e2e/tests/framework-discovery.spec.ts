@@ -30,7 +30,7 @@ const Lookup = Schema.Struct({
   entry: Schema.optional(Schema.Struct({ symbol: Schema.String })),
   matches: Schema.Array(Schema.Struct({ symbol: Schema.String })),
 });
-const Document = Schema.Struct({ content: Schema.String, deployment: Schema.String });
+const Document = Schema.Struct({ content: Schema.String, version: Schema.String });
 const Rejected = Schema.Struct({
   execution: Schema.Struct({
     ok: Schema.Literal(false),
@@ -259,7 +259,7 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
                 app: "executor",
                 name: "app-authoring",
                 file: hook.entry.docs,
-                deployment: router.deployment,
+                version: router.version,
               },
             },
             undefined,

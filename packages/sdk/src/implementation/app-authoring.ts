@@ -1,4 +1,4 @@
-/** Undeployed apps and source edits belong to the same app identities as running deployments. */
+/** Undeployed apps and source edits belong to the same app identities as running versions. */
 import { Clock, Crypto, Effect, Option } from "effect";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
@@ -55,7 +55,7 @@ export const makeAppAuthoring = (
         owner: input.owner,
         name: input.name,
         slug: appSlug(input.name),
-        activeDeployment: null,
+        activeVersion: null,
         copiedFrom,
         createdAt: new Date(yield* Clock.currentTimeMillis),
       };

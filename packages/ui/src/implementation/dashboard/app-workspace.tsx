@@ -2,14 +2,14 @@ import { LocalTime } from "../components/local-time.tsx";
 import { EmptyState } from "./empty-state.tsx";
 import { AppWorkspaceLoading, SourceHistoryLoading } from "./app-loading.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
-/** Inspect agent-authored source and manage app deployments. */
+/** Inspect agent-authored source and manage app versions. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import type { ReactNode } from "react";
 import type { App } from "@executor-js/sdk";
 import type { AppSourceDisplay } from "@executor-js/app-management/contracts";
-import type { DeploymentDisplay } from "@executor-js/app-management/contracts/source-display";
+import type { VersionDisplay } from "@executor-js/app-management/contracts/source-display";
 import type { AppAcknowledgement, AppManagementProps } from "../../contracts/app-management.ts";
 import type { Query } from "../../contracts/dashboard.ts";
 import { QueryView, useDashboard } from "./context.tsx";
@@ -39,8 +39,8 @@ export function AppWorkspace<E>({
   readonly app: App;
   readonly onApp: AppAcknowledgement;
   readonly view: "source" | "history";
-  /** The active deployment, read so the toolbar can compare it with working source. */
-  readonly live?: Query<DeploymentDisplay, E> | undefined;
+  /** The active version, read so the toolbar can compare it with working source. */
+  readonly live?: Query<VersionDisplay, E> | undefined;
 }) {
   return (
     <QueryView
@@ -76,7 +76,7 @@ function WorkspaceSource<E>({
   readonly source: typeof AppSourceDisplay.Type;
   readonly onApp: AppAcknowledgement;
   readonly view: "source" | "history";
-  readonly live?: Query<DeploymentDisplay, E> | undefined;
+  readonly live?: Query<VersionDisplay, E> | undefined;
 }) {
   const deployed = useAtomValue(atoms.deploy(app.id));
   const deploy = useAtomSet(atoms.deploy(app.id), { mode: "promise" });
@@ -93,7 +93,7 @@ function WorkspaceSource<E>({
         <AppSectionHeader className="min-h-0 flex-wrap border-b-0 text-muted-foreground">
           <SourceHistoryLink app={app} atoms={atoms} Failure={Failure} />
           <div className="flex flex-wrap items-center gap-2">
-            {app.activeDeployment === null ? (
+            {app.activeVersion === null ? (
               <DeployStatus>Not deployed</DeployStatus>
             ) : (
               live !== undefined && (
@@ -103,7 +103,7 @@ function WorkspaceSource<E>({
             <CloneRepository source={source} />
             <DeployLatest
               source={source}
-              live={app.activeDeployment === null ? undefined : live}
+              live={app.activeVersion === null ? undefined : live}
               disabled={!source.canEdit || pending}
               onDeploy={() => {
                 void deploy({
@@ -141,9 +141,9 @@ function WorkspaceSource<E>({
   );
 }
 /** Undefined until the live version is known; null when it was not deployed from a commit. */
-function useLiveCommit<E>(live: Query<DeploymentDisplay, E>) {
+function useLiveCommit<E>(live: Query<VersionDisplay, E>) {
   return Option.getOrUndefined(
-    Option.map(AsyncResult.value(useAtomValue(live)), (deployment) => deployment.sourceCommit),
+    Option.map(AsyncResult.value(useAtomValue(live)), (version) => version.sourceCommit),
   );
 }
 function DeployStatus({ children }: { readonly children: ReactNode }) {
@@ -161,7 +161,7 @@ function LiveStatus<E>({
 }: Pick<AppManagementProps<E>, "atoms"> & {
   readonly app: App;
   readonly source: typeof AppSourceDisplay.Type;
-  readonly live: Query<DeploymentDisplay, E>;
+  readonly live: Query<VersionDisplay, E>;
 }) {
   const commit = useLiveCommit(live);
   const history = AsyncResult.value(useAtomValue(atoms.history(app.id)));
@@ -187,7 +187,7 @@ function DeployLatest<E>({
   onDeploy,
 }: {
   readonly source: typeof AppSourceDisplay.Type;
-  readonly live: Query<DeploymentDisplay, E> | undefined;
+  readonly live: Query<VersionDisplay, E> | undefined;
   readonly disabled: boolean;
   readonly onDeploy: () => void;
 }) {
@@ -206,7 +206,7 @@ function DeployLiveLatest<E>({
   onDeploy,
 }: {
   readonly source: typeof AppSourceDisplay.Type;
-  readonly live: Query<DeploymentDisplay, E>;
+  readonly live: Query<VersionDisplay, E>;
   readonly disabled: boolean;
   readonly onDeploy: () => void;
 }) {

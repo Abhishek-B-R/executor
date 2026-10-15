@@ -29,4 +29,4 @@ that release is built with. Every app declares `apps`; see
 [publishing apps](../../notes/apps-publishing.md#framework-selection).
 
 Discovery runs with the selected account during evaluation. Nothing here caches
-accounts or catalogs. Existing deployments keep their immutable source and builds.
+accounts or catalogs. Existing versions keep their immutable source and builds.

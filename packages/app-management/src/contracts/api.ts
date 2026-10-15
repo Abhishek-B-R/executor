@@ -1,3 +1,4 @@
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import {
   SourceDisplayEntries,
   SourceDisplayFile,
@@ -11,11 +12,11 @@ import {
   AppSlugTaken,
   AppNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
-  AppDeploymentChanged,
+  VersionNotFound,
+  AppVersionChanged,
   AccountNotFound,
   AccountSelectionInvalid,
-  DeploymentBuildFailed,
+  VersionBuildFailed,
   BuildMemoryExceeded,
   CommittedSource,
   sourceErrors,
@@ -49,13 +50,13 @@ export const appOperationErrors = [
   AppAccessDenied,
   AppNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
+  VersionNotFound,
   AppNameTaken,
   AppSlugTaken,
-  AppDeploymentChanged,
+  AppVersionChanged,
   AccountNotFound,
   AccountSelectionInvalid,
-  DeploymentBuildFailed,
+  VersionBuildFailed,
   BuildMemoryExceeded,
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
@@ -98,7 +99,7 @@ import {
   AppId,
   AppName,
   DeployedApp,
-  DeploymentMetadata,
+  VersionMetadata,
   GitCommit,
   OwnerId,
   SourceCommit,
@@ -222,11 +223,13 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
             Schema.Struct({ files: SourceFiles, commit: Schema.optional(Schema.Never) }),
             Schema.Struct({ commit: SourceCommit, files: Schema.optional(Schema.Never) }),
           ]),
-          success: Schema.Struct({ app: DeployedApp, deployment: DeploymentMetadata }),
+          success: Schema.Struct({ app: DeployedApp, version: VersionMetadata }).pipe(
+            withLegacyKeys({ version: "deployment" }),
+          ),
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Deploy complete files or an immutable Git commit without changing the working branch. App identity, data, and compatible account selections are retained. Returns the app and the new deployment's metadata; the files are not echoed.",
+          "Deploy complete files or an immutable Git commit without changing the working branch. App identity, data, and compatible account selections are retained. Returns the app and the new version's metadata; the files are not echoed.",
         ),
         HttpApiEndpoint.post("copy", "/apps/copies", {
           params: tenant,

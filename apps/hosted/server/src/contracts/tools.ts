@@ -1,3 +1,4 @@
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { RequiredAction } from "./authorization.ts";
 /** Account-dependent discovery and execution within a configured app. */
 import {
@@ -13,8 +14,8 @@ import {
   AppNotDeployed,
   CredentialsError,
   Cursor,
-  DeploymentNotFound,
-  DeploymentId,
+  VersionNotFound,
+  VersionId,
   InputInvalid,
   Json,
   OAuthReconnectRequired,
@@ -57,7 +58,7 @@ const discoveryErrors = [
   CredentialsError,
   AppNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
+  VersionNotFound,
   AppEvaluationFailed,
   ToolListingTimedOut,
   AppProviderFailed,
@@ -70,13 +71,17 @@ const discoveryErrors = [
   OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps/:app/tools";
+// `deployment` is the former name of `version`; callers written before the rename still send it.
+const versionQuery = Schema.Struct({ version: Schema.optional(VersionId) }).pipe(
+  withLegacyKeys({ version: "deployment" }),
+);
 const callPayload = Schema.Struct({
   tool: ToolName,
   /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
   kind: Schema.optional(ToolKind),
   input: Json,
-  deployment: Schema.optional(DeploymentId),
-});
+  version: Schema.optional(VersionId),
+}).pipe(withLegacyKeys({ version: "deployment" }));
 const callErrors = [
   ...discoveryErrors,
   ToolNotFound,
@@ -104,10 +109,10 @@ export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", prefix, {
       params,
-      query: {
+      query: Schema.Struct({
         cursor: Schema.optional(Cursor),
-        deployment: Schema.optional(DeploymentId),
-      },
+        version: Schema.optional(VersionId),
+      }).pipe(withLegacyKeys({ version: "deployment" })),
       success: ToolPage,
       error: discoveryErrors,
     }).annotate(RequiredAction, "discover"),
@@ -115,9 +120,7 @@ export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("index", `${prefix}/index`, {
       params,
-      query: {
-        deployment: Schema.optional(DeploymentId),
-      },
+      query: versionQuery,
       success: ToolIndex,
       error: discoveryErrors,
     }).annotate(RequiredAction, "discover"),
@@ -125,9 +128,7 @@ export const HostedTools = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("get", `${prefix}/:tool`, {
       params: { ...params, tool: ToolName },
-      query: {
-        deployment: Schema.optional(DeploymentId),
-      },
+      query: versionQuery,
       success: Tool,
       error: [...discoveryErrors, ToolNotFound],
     }).annotate(RequiredAction, "discover"),

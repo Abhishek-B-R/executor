@@ -499,7 +499,7 @@ export const toolkitConnections = (snapshot: Pick<V1Snapshot, "connections">, to
  * tools from the browser, and a v2 app's page can call only its own app's tools.
  */
 export const artifactRepairNote =
-  "It is imported as app source without a deployment: v2 apps cannot call other apps' tools yet, so its code needs rewriting before it runs.";
+  "It is imported as app source without a version: v2 apps cannot call other apps' tools yet, so its code needs rewriting before it runs.";
 
 /**
  * The v1 rows an artifact's code calls through: each role's integration and bound connection, or

@@ -101,11 +101,11 @@ export default defineApp({}, {
 
 const CallFailed = Schema.Struct({ _tag: Schema.Literal("ToolCallFailed"), reason: Schema.String });
 const BuildFailed = Schema.Struct({
-  _tag: Schema.Literal("DeploymentBuildFailed"),
+  _tag: Schema.Literal("VersionBuildFailed"),
   reason: Schema.String,
   stage: Schema.optionalKey(Schema.String),
 });
-const Active = Schema.Struct({ activeDeployment: Schema.String });
+const Active = Schema.Struct({ activeVersion: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
   it.effect(scenarios.appDataLimits.title, (context) =>
@@ -170,7 +170,7 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
           });
 
         // A failing deploy names the file and SQLite's reason, applies none of its migrations,
-        // and leaves the previous deployment active.
+        // and leaves the previous version active.
         const active = () =>
           api
             .request(actors.owner, "GET", `${prefix}/${app.id}`)
@@ -273,7 +273,7 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         const plain = yield* deployNew("No database", withoutDatabase);
         expect(yield* failure("count", plain.id)).toContain("This app has no database");
 
-        // Reactivating a deployment from before the app had migrations does not let a later
+        // Reactivating a version from before the app had migrations does not let a later
         // deploy drop them.
         const plainPath = `${prefix}/${plain.id}`;
         const activeOf = () =>
@@ -287,8 +287,8 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         expect(migrated.status, JSON.stringify(migrated.body)).toBe(200);
         const second = yield* activeOf();
         const reactivated = yield* api.request(actors.owner, "POST", `${plainPath}/activate`, {
-          deployment: first.activeDeployment,
-          expectedDeployment: second.activeDeployment,
+          version: first.activeVersion,
+          expectedVersion: second.activeVersion,
         });
         expect(reactivated.status, JSON.stringify(reactivated.body)).toBe(200);
         const dropped = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {

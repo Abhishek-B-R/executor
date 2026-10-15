@@ -38,7 +38,7 @@ export default defineApp({}, {tools: router({
           files: files("original"),
         });
         expect(deployed.status).toBe(200);
-        const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+        const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
         const original = yield* body(Deployed, deployed);
         const path = `${prefix}/${original.id}`;
         yield* Effect.addFinalizer(() =>
@@ -81,7 +81,7 @@ export default defineApp({}, {tools: router({
         expect(exhausted.body).toEqual({
           _tag: "BuildMemoryExceeded",
           message:
-            "This app's build needed more memory than Executor currently allows. No new deployment was activated.",
+            "This app's build needed more memory than Executor currently allows. No new version was activated.",
           recovery: {
             action:
               "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
@@ -89,7 +89,7 @@ export default defineApp({}, {tools: router({
           },
         });
         const retained = yield* body(Deployed, yield* api.request(actors.owner, "GET", path));
-        expect(retained.activeDeployment).toBe(original.activeDeployment);
+        expect(retained.activeVersion).toBe(original.activeVersion);
         const live = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "inspect",
           kind: "query",
@@ -108,7 +108,7 @@ export default defineApp({}, {tools: router({
         yield* browser.use("Show the compiler memory failure and recovery", (page) =>
           page
             .getByText(
-              "This app's build needed more memory than Executor currently allows. No new deployment was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
+              "This app's build needed more memory than Executor currently allows. No new version was activated. This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",
               { exact: true },
             )
             .waitFor(),
@@ -119,11 +119,11 @@ export default defineApp({}, {tools: router({
           files: [{ path: "index.ts", content: "export default = ;" }, appsManifest],
         });
         expect(invalid.status).toBe(422);
-        expect(invalid.body).toMatchObject({ _tag: "DeploymentBuildFailed" });
+        expect(invalid.body).toMatchObject({ _tag: "VersionBuildFailed" });
         const recovered = yield* saveAndDeploy(actors.owner, path, { files: files("recovered") });
         expect(recovered.status).toBe(200);
         const { app: updated } = yield* body(Schema.Struct({ app: Deployed }), recovered);
-        expect(updated.activeDeployment).not.toBe(original.activeDeployment);
+        expect(updated.activeVersion).not.toBe(original.activeVersion);
         const working = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
           tool: "inspect",
           kind: "query",
@@ -242,10 +242,10 @@ export default defineApp({}, {tools: router({
           });
           expect(stalled.status, JSON.stringify(stalled.body)).toBe(422);
           expect(stalled.body).toMatchObject({
-            _tag: "DeploymentBuildFailed",
+            _tag: "VersionBuildFailed",
             stage: "compile",
             message:
-              "App build failed at the compile stage: The compiler did not answer within 50 seconds. No new deployment was activated; deploy again.",
+              "App build failed at the compile stage: The compiler did not answer within 50 seconds. No new version was activated; deploy again.",
           });
           expect(elapsed).toBeGreaterThanOrEqual(50_000);
           expect(elapsed).toBeLessThan(58_000);
@@ -418,7 +418,7 @@ export default defineApp({}, async () => ({ tools: router({}) }));`,
         });
         expect(undeclared.status, JSON.stringify(undeclared.body)).toBe(422);
         expect(undeclared.body).toMatchObject({
-          _tag: "DeploymentBuildFailed",
+          _tag: "VersionBuildFailed",
           reason: `Add "apps": "${appsVersion}" to package.json dependencies. Every app declares the exact apps version it uses; ${appsVersion} is this host's.`,
         });
         yield* evidence.json("dependency-proof.json", {

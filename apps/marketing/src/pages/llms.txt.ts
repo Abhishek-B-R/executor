@@ -25,7 +25,7 @@ Apps can include:
 
 Build with Claude. Use the same apps from Codex, Cursor, or another connected agent, with the same accounts and rules.
 
-Executor hosts your apps, connects your accounts, and keeps the source and deployment history. Start small and keep improving them.
+Executor hosts your apps, connects your accounts, and keeps the source and version history. Start small and keep improving them.
 
 ## Docs
 

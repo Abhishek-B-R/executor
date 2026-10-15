@@ -1,5 +1,5 @@
 /**
- * Local evaluated declarations follow credentials and deployments at once, are served stale for
+ * Local evaluated declarations follow credentials and versions at once, are served stale for
  * one read while a background evaluation replaces them, and are still served that way past a minute.
  */
 import { expect, layer } from "@effect/vitest";
@@ -23,7 +23,7 @@ export default defineApp({user: { accounts:{service} }}, async ctx => ({
   tools: router({ ping }),
   workflows:{["${version}_"+ctx.user.accounts.service.fields.token+"_"+Date.now()]:noop},
 }));`;
-const Deployment = Schema.Struct({
+const Version = Schema.Struct({
   app: Schema.Struct({
     id: Schema.String,
     requirements: Schema.Struct({
@@ -69,7 +69,7 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
             files: [{ path: "index.ts", content: source("first") }, appsManifest],
           });
           expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-          const { app } = yield* body(Deployment, deployed);
+          const { app } = yield* body(Version, deployed);
           resources.apps.push(app.id);
           const path = `/v1/apps/${app.id}`;
           // Connect an account for the app, or replace the given account's key.
@@ -98,7 +98,7 @@ layer(TestLive, { excludeTestServices: true })("Local app declarations", (it) =>
           expect(first).toMatch(/^first_alpha_\d+$/);
           expect(yield* read).toBe(first);
 
-          // A reconnected credential and a new deployment are new evaluation inputs.
+          // A reconnected credential and a new version are new evaluation inputs.
           expect((yield* connect("beta", account)).id).toBe(account);
           const reconnected = yield* read;
           expect(reconnected).toMatch(/^first_beta_\d+$/);

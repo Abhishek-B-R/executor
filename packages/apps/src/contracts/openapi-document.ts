@@ -1,4 +1,4 @@
-/** OpenAPI boundary parsing. Unsupported transport/auth features fail before deployment. */
+/** OpenAPI boundary parsing. Unsupported transport/auth features fail before deploying. */
 import { Schema } from "effect";
 import { JsonObject } from "./schema.ts";
 

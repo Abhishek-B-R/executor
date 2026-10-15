@@ -24,7 +24,7 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(
-          Schema.Struct({ ...App.fields, activeDeployment: Schema.String }),
+          Schema.Struct({ ...App.fields, activeVersion: Schema.String }),
           deployed,
         );
         const path = `${prefix}/${app.id}`;
@@ -66,7 +66,7 @@ layer(HostedLive, { excludeTestServices: true })("App browsing", (it) => {
           url: `/org/${actors.organization.slug}/apps/${app.id}`,
           listUrl: `/org/${actors.organization.slug}/apps`,
           name: app.name,
-          deployment: app.activeDeployment,
+          version: app.activeVersion,
           readPaths: [actors.organization.id, actors.organization.slug].map(
             (organization) => `/api/organizations/${organization}/apps/${app.id}`,
           ),

@@ -75,10 +75,10 @@ export default defineApp({}, async () => ({
         // Callers holding a previous contract send shapes the server now rejects.
         for (const [label, method, path, payload, status, expected] of [
           [
-            "deploy payload from before deployments were separated from Git writes",
+            "deploy payload from before deploying was separated from Git writes",
             "POST",
             `${prefix}/apps/${app.id}/deploy`,
-            { expectedSource: "a".repeat(40), expectedDeployment: null },
+            { expectedSource: "a".repeat(40), expectedVersion: null },
             400,
             { kind: "Payload", issue: "$.files: MissingKey" },
           ],

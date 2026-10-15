@@ -83,11 +83,11 @@ export const appAuthentication = (
     // receive this proof. Redeeming a code still needs this browser's attempt cookie.
     const cookieOptions = { httpOnly: true, sameSite: "lax" as const, path: "/_executor/auth" };
     const dashboardOrigin = config.browserOrigin ?? `http://127.0.0.1:${config.port}`;
-    /** The app must exist and be deployed; the page itself reports a deployment without a UI. */
+    /** The app must exist and be deployed; the page itself reports a version without a UI. */
     const usable = (target: AppSessionTarget) =>
       executor.apps.get({ app: target.app, owner: localOwner }).pipe(
         Effect.flatMap((app) =>
-          app.activeDeployment === null ? Effect.fail(unavailable()) : Effect.void,
+          app.activeVersion === null ? Effect.fail(unavailable()) : Effect.void,
         ),
         Effect.catchTags({
           AppNotFound: () => Effect.fail(new UiForbidden()),

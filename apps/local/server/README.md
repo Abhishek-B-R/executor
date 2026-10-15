@@ -178,7 +178,7 @@ Bearer authentication for SDK/MCP remains unchanged. Requests must use the exact
 `http://127.0.0.1:<port>` origin and Host; no remote access or CORS is enabled.
 The public HTML and bundled assets contain no key or account data.
 
-Inspect apps, their linked accounts, live tools, retained deployments and
+Inspect apps, their linked accounts, live tools, retained versions and
 source files. The Accounts page shows provider metadata and the apps that use
 each account. It never returns saved credentials. This first dashboard is
 also supports catalog imports. Accounts are connected and their credentials replaced
@@ -225,9 +225,9 @@ The server sends the Executor app's `executor` skill as its MCP instructions.
 Discover the Executor app with `skills({})`, then read that skill with
 `{ app: "executor", name: "executor" }` using its current slug. It links to
 `code-mode`, which covers calling tools from `execute`, and `app-authoring`,
-which has runnable source, schema helpers, provider accounts and the deployment
+which has runnable source, schema helpers, provider accounts and the deploy
 flow. Read `app-authoring` before writing an app. These are ordinary skill files
-in the Executor app deployment.
+in the Executor app's current version.
 
 Start discovery inside `execute` with this code:
 
@@ -249,7 +249,7 @@ Each app appears once, under `tools[appSlug]`. Calls never choose accounts: each
 uses the accounts linked to the app, the newest one for each plain requirement and
 every one for a many() requirement. Linking or connecting another account for a
 plain requirement replaces the one linked before; it stays saved. Links are kept
-in `local_app_account_links`. Copies have independent source and deployments. The catalog is evaluated at the start of each execute,
+in `local_app_account_links`. Copies have independent source and versions. The catalog is evaluated at the start of each execute,
 and tool calls resolve their accounts again.
 Run a new execute to discover apps added or configured during a previous one.
 Incomplete or failing apps appear in `unavailableApps` with a safe error tag.
@@ -263,12 +263,12 @@ already completed are not rolled back when an execution fails or is cancelled.
 
 ## Implemented
 
-- Deploy source, derive provider IDs and retain immutable deployments.
+- Deploy source, derive provider IDs and retain immutable versions.
 - Add API-key accounts and read account metadata without returning credentials.
 - Create configured app copies.
 - Validate account existence, provider compatibility, cardinality and duplicates.
 - List live tools and invoke them with the accounts linked to the app.
-- Activate retained deployments in the same code lineage.
+- Activate retained versions in the same code lineage.
 - Serve MCP execute for app calls and management through the bundled Executor app.
 - Serve a read-only skills tool for deployed app documents, including the Executor app’s `executor`, `code-mode` and `app-authoring` skills.
 - Handle July 2026 and November 2025 MCP requests, with authentication on every request.
@@ -343,7 +343,7 @@ API-key requirements, JSON bodies, and base64-encoded binary uploads. Generated
 OAuth declarations retain authorization-code metadata when available.
 GraphQL and CLI catalog entries are labeled unavailable; Swagger 2, external
 references, server URL templates, multipart bodies, and custom signing need
-further importer work. Unsupported features fail explicitly before deployment.
+further importer work. Unsupported features fail explicitly before deploying.
 
 ## Storage transition
 

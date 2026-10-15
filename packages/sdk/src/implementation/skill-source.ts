@@ -1,4 +1,4 @@
-/** Retained deployments and public asset publishing use the framework's folder loader. */
+/** Retained versions and public asset publishing use the framework's folder loader. */
 import { folderSkillsEffect } from "apps/skills/effect";
 import { isTextFile, type SourceFile } from "../contracts/source.ts";
 

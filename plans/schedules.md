@@ -9,11 +9,11 @@ Stack (create each layer before its work):
 3. `schedules/hosts`: local/self-host scoped runner, native Alchemy cloud triggers, product authorization and management routes.
 4. `schedules/ui`: shared schedule controls and Approvals page, authoring docs and real-server scenarios.
 
-Approved: interval-first; UI/API enable/pause; all hosts; current deployment/accounts per new run; one active run per installed schedule; skip overlap; one overdue run; automatic approval by default; optional browser approval through existing SDK requests. Explicit denials still apply. No background elicitation, workflow checkpoints, or automatic mutation retries. Shared handler context is implemented in #152. A scheduled context that excludes interactive input at the type level remains deferred.
+Approved: interval-first; UI/API enable/pause; all hosts; current version/accounts per new run; one active run per installed schedule; skip overlap; one overdue run; automatic approval by default; optional browser approval through existing SDK requests. Explicit denials still apply. No background elicitation, workflow checkpoints, or automatic mutation retries. Shared handler context is implemented in #152. A scheduled context that excludes interactive input at the type level remains deferred.
 
 Implementation choices made visible: new schedules start paused; first run one interval after enabling. Pending approval occupies active slot. User confirmed the existing 15-minute approval expiry. Do not deploy or migrate any existing development/production database without explicit authorization. Fresh isolated test databases are the test harness's responsibility.
 
-Account/source work is another active stack. Use public SDK seams, avoid assumptions about Deployment.files, and reconcile with current main before submission. Keep the skills stack separate.
+Account/source work is another active stack. Use public SDK seams, avoid assumptions about Version.files, and reconcile with current main before submission. Keep the skills stack separate.
 
 ## Progress
 

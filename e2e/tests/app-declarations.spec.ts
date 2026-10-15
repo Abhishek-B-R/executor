@@ -33,7 +33,7 @@ export default defineApp({user: { accounts:{service} }}, async ctx => {
 });`;
 const Workflows = Schema.Array(Schema.Struct({ name: Schema.String }));
 const Bundle = Schema.Struct({
-  deployment: Schema.String,
+  version: Schema.String,
   skills: Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String })),
 });
 const Access = Schema.Struct({ revision: Schema.String });
@@ -184,7 +184,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
             403,
           );
 
-          // A new deployment is a new build: its declarations appear on the next read.
+          // A new version is a new build: its declarations appear on the next read.
           const redeployed = yield* saveAndDeploy(actors.owner, path, {
             files: [{ path: "index.ts", content: source("second") }, appsManifest],
           });

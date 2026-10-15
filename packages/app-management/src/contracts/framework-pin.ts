@@ -19,10 +19,10 @@ export const frameworkPinRelease = "0.0.1-beta.2";
 export const frameworkPinCatchUpRelease = "0.0.1-beta.5";
 
 /**
- * Where the working branch (`main`) stands against the running deployment decides which files
+ * Where the working branch (`main`) stands against the running version decides which files
  * carry the pin. Every position is pinned on top of `main`:
  * - `current`: main holds the running source.
- * - `behind`: main holds exactly the source of an earlier deployment that the running one
+ * - `behind`: main holds exactly the source of an earlier version that the running one
  *   replaced, as a direct file deploy leaves it. The pin commit saves the running source with the
  *   pin, so the next deploy from main keeps what runs today.
  * - `unpublished`: main has moved on from the running source, which is in its recent history.
@@ -63,4 +63,4 @@ export const frameworkPinMessage = (apps: string) =>
 
 /** A behind workspace also receives the running source, which the message records. */
 export const frameworkPinBehindMessage = (apps: string) =>
-  `Pin the apps framework to ${apps}\n\nExecutor saved the source of the running deployment, which this branch did not have yet, and declared the framework release it was built with, so host upgrades do not change it.`;
+  `Pin the apps framework to ${apps}\n\nExecutor saved the source of the running version, which this branch did not have yet, and declared the framework release it was built with, so host upgrades do not change it.`;

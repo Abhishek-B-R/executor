@@ -71,7 +71,7 @@ const files = [
 ];
 type Endpoint = keyof typeof displayPaths;
 /** The dashboard view that renders each endpoint's files. */
-const views = { source: "deployments", workspace: "source" } as const satisfies Record<
+const views = { source: "versions", workspace: "source" } as const satisfies Record<
   Endpoint,
   string
 >;
@@ -92,7 +92,7 @@ const deployFormattingApp = Effect.gen(function* () {
   yield* Effect.addFinalizer(() =>
     api.request(actors.owner, "DELETE", path).pipe(Effect.asVoid, Effect.orDie),
   );
-  // Single-file reads are pinned to the deployment or commit the listing came from.
+  // Single-file reads are pinned to the version or commit the listing came from.
   const pinned = yield* Effect.all(
     {
       source: api
@@ -105,7 +105,7 @@ const deployFormattingApp = Effect.gen(function* () {
     { concurrency: 2 },
   );
   const filePaths: Record<Endpoint, string> = {
-    source: `${path}/deployments/${pinned.source.id}/display/file`,
+    source: `${path}/versions/${pinned.source.id}/display/file`,
     workspace: `${path}/commits/${pinned.workspace.revision.commit}/display/file`,
   };
   yield* browser.login(actors.owner);

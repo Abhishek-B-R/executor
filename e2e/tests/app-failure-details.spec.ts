@@ -15,7 +15,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { readAdvice, unknownOutcomeRecovery } from "../support/write-outcome.ts";
 
 const BuildFailed = Schema.Struct({
-  _tag: Schema.Literal("DeploymentBuildFailed"),
+  _tag: Schema.Literal("VersionBuildFailed"),
   stage: Schema.String,
   location: Schema.optional(
     Schema.Struct({
@@ -314,7 +314,7 @@ export default defineApp({}, {});`,
         const mcpFailure = (yield* Schema.decodeUnknownEffect(ExecutionFailed)(
           deployed.structuredContent,
         )).execution.error;
-        expect(mcpFailure.response.code).toBe("DeploymentBuildFailed");
+        expect(mcpFailure.response.code).toBe("VersionBuildFailed");
         expect(mcpFailure.response.message).toContain("declaration");
         expect(mcpFailure.response.message).toContain(declarationMarker);
         expect(mcpFailure.message).not.toContain("Operation execution failed");

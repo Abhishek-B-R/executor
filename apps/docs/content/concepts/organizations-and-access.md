@@ -1,9 +1,9 @@
 ---
 title: Organizations and access
-description: "Hosted and self-host group people into organizations. An organization owns its accounts, apps and deployments, and each member holds one role."
+description: "Hosted and self-host group people into organizations. An organization owns its accounts, apps and versions, and each member holds one role."
 ---
 
-An **organization** is the boundary that owns accounts, apps and deployments on
+An **organization** is the boundary that owns accounts, apps and versions on
 hosted and self-host. Everything you connect or deploy belongs to one. Local
 Executor has no organizations; it is one person on one machine.
 

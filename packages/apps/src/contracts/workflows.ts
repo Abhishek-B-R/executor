@@ -1,4 +1,5 @@
 /** Portable workflow declarations, run views and durable execution capabilities. */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema, type Effect } from "effect";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { JsonObject, JsonValue } from "./schema.ts";
@@ -118,25 +119,32 @@ export type HostedWorkflow = typeof HostedWorkflow.Type;
 const runFields = {
   id: WorkflowRunId,
   app: Schema.NonEmptyString,
-  deployment: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
   workflow: WorkflowName,
   createdAt: Schema.String,
 };
-/** Results are available only on completed runs; failures carry a reason code and app error detail. */
+/**
+ * Results are available only on completed runs; failures carry a reason code and app error detail.
+ * Runs name their version under its former name too, for apps and callers written before the rename.
+ */
 export const WorkflowRun = Schema.Union([
   Schema.Struct({
     ...runFields,
     status: Schema.Literals(["queued", "running", "waiting", "paused", "waitingForPause"]),
-  }),
-  Schema.Struct({ ...runFields, status: Schema.Literal("complete"), output: WorkflowValue }),
+  }).pipe(withLegacyKeys({ version: "deployment" })),
+  Schema.Struct({ ...runFields, status: Schema.Literal("complete"), output: WorkflowValue }).pipe(
+    withLegacyKeys({ version: "deployment" }),
+  ),
   Schema.Struct({
     ...runFields,
     status: Schema.Literal("errored"),
     error: WorkflowFailure.fields.reason,
     /** The failing step and the app's own error, when the run recorded them. */
     failure: Schema.optionalKey(WorkflowRunFailure),
-  }),
-  Schema.Struct({ ...runFields, status: Schema.Literal("terminated") }),
+  }).pipe(withLegacyKeys({ version: "deployment" })),
+  Schema.Struct({ ...runFields, status: Schema.Literal("terminated") }).pipe(
+    withLegacyKeys({ version: "deployment" }),
+  ),
 ]);
 export type WorkflowRun = typeof WorkflowRun.Type;
 /** A bounded run-history page, already scoped to an authorized configured app. */

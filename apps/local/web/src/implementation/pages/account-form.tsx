@@ -1,7 +1,7 @@
 import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
 import { useState, type ReactNode } from "react";
-import type { Account, AccountScope, AppId, DeploymentId, Provider } from "@executor-js/sdk";
+import type { Account, AccountScope, AppId, VersionId, Provider } from "@executor-js/sdk";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { AccountForm as SharedAccountForm } from "@executor-js/ui/dashboard/account-form";
 import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
@@ -16,7 +16,7 @@ import { AppOAuthFields } from "./oauth-fields.tsx";
  */
 export function AppAccountForm({
   app,
-  deployment,
+  version,
   scope,
   requirement,
   provider,
@@ -28,8 +28,8 @@ export function AppAccountForm({
   onPendingChange,
 }: {
   readonly app: AppId;
-  /** The deployment whose discovery the page shows, read again once the account is linked. */
-  readonly deployment: DeploymentId | null;
+  /** The version whose discovery the page shows, read again once the account is linked. */
+  readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly provider: Provider;
@@ -46,7 +46,7 @@ export function AppAccountForm({
   const [atoms] = useState(() =>
     appConnectionAtoms({
       app,
-      deployment,
+      version,
       scope,
       requirement,
       ...(account === undefined ? {} : { account: account.id }),

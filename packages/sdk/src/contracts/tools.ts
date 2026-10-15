@@ -1,3 +1,4 @@
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import {
   ApiErrorResponse,
   FailureCode,
@@ -37,7 +38,7 @@ import {
   AppId,
   ApprovalRequestId,
   Cursor,
-  DeploymentId,
+  VersionId,
   Json,
   OwnerId,
   ProviderId,
@@ -54,7 +55,7 @@ import {
   AppNotFound,
   AppNotDeployed,
 } from "./apps.ts";
-import { DeploymentNotFound } from "./deployment.ts";
+import { VersionNotFound } from "./version.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 
 /** Retention bound for a pending SDK approval and its consumed marker. */
@@ -315,7 +316,7 @@ export const ToolElicitationFailed = UserFacingError.define({
   status: 422,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     tool: ToolName,
     reason: ElicitationFailed.fields.reason,
     mayHaveWritten: MayHaveWritten,
@@ -334,12 +335,13 @@ export const ToolElicitationFailed = UserFacingError.define({
 export type ToolElicitationFailed = typeof ToolElicitationFailed.Type;
 
 /** One callable in an app's live definition. inputSchema is a JSON Schema document. */
-export const Tool = Schema.Struct({
+export const ToolFields = Schema.Struct({
   ...HostedTool.fields,
   app: AppId,
-  deployment: DeploymentId,
+  version: VersionId,
   name: ToolName,
 });
+export const Tool = ToolFields.pipe(withLegacyKeys({ version: "deployment" }));
 
 export type Tool = typeof Tool.Type;
 
@@ -351,8 +353,8 @@ export const ToolRouter = HostedRouter;
 export type ToolRouter = typeof ToolRouter.Type;
 
 /** One page of a live catalog, evaluated with the named accounts. */
-export const ToolPage = Schema.Struct({
-  deployment: DeploymentId,
+const ToolPageFields = Schema.Struct({
+  version: VersionId,
   /** The accounts the catalog was evaluated with; calls name the same accounts. */
   accounts: AppAccounts,
   items: Schema.Array(Tool),
@@ -360,31 +362,34 @@ export const ToolPage = Schema.Struct({
   routers: Schema.Array(ToolRouter),
   next: Schema.optional(Cursor),
 });
+export const ToolPage = ToolPageFields.pipe(withLegacyKeys({ version: "deployment" }));
 
 export type ToolPage = typeof ToolPage.Type;
 
 /** One callable's name and description. Its schemas are read with tools.get. */
-export const ToolSummary = Schema.Struct({
+export const ToolSummaryFields = Schema.Struct({
   ...HostedToolSummary.fields,
   app: AppId,
-  deployment: DeploymentId,
+  version: VersionId,
   name: ToolName,
 });
+export const ToolSummary = ToolSummaryFields.pipe(withLegacyKeys({ version: "deployment" }));
 
 export type ToolSummary = typeof ToolSummary.Type;
 
 /** The whole live catalog without schemas, evaluated with the named accounts. */
-export const ToolIndex = Schema.Struct({
-  deployment: DeploymentId,
+const ToolIndexFields = Schema.Struct({
+  version: VersionId,
   accounts: AppAccounts,
   items: Schema.Array(ToolSummary),
   routers: Schema.Array(ToolRouter),
 });
+export const ToolIndex = ToolIndexFields.pipe(withLegacyKeys({ version: "deployment" }));
 
 export type ToolIndex = typeof ToolIndex.Type;
 
 /**
- * A listing kept as search rows: its declaration key, so a new deployment, account selection or
+ * A listing kept as search rows: its declaration key, so a new version, account selection or
  * credential generation is another one.
  */
 export const ToolSearchListing = Schema.String.pipe(Schema.brand("ToolSearchListing"));
@@ -393,7 +398,7 @@ export type ToolSearchListing = typeof ToolSearchListing.Type;
 /** One app target's current listing, kept as search rows. */
 export interface SearchableTools {
   readonly listing: ToolSearchListing;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   /** The accounts the listing was read with; a search target of this listing names them. */
   readonly accounts: AppAccounts;
   /** The listing's routers that could not list their tools. */
@@ -457,7 +462,7 @@ export interface ToolSearchPage {
 }
 
 const evaluationInstructions =
-  "Reproduce tool discovery for the current app, deployment, and chosen accounts. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account links, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
+  "Reproduce tool discovery for the current app, version, and chosen accounts. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account links, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
 /**
  * What to do when the answer the skill loader received points to a repository or ref it cannot
  * find. The answer reached the app's code, which can stand in for a failed request, so it is not
@@ -822,7 +827,7 @@ export const AppEvaluationFailed = UserFacingError.define({
   status: 502,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     reason: Schema.String,
     /** Present when the app's remote skill loader caused the failure. */
     skills: Schema.optional(
@@ -891,7 +896,7 @@ export const ToolListingTimedOut = UserFacingError.define({
   status: 504,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     elapsedMs: Schema.Number,
     /** The listing is still running in the background. */
     running: Schema.Boolean,
@@ -1013,7 +1018,7 @@ export const AppProviderFailed = UserFacingError.define({
   status: 502,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     reason: ProviderError.fields.reason,
     status: ProviderError.fields.status,
     /** Whether the service failed while connecting, listing the app's tools or running one. */
@@ -1155,13 +1160,13 @@ export const appFailure = ({
  * raised; other evaluation failures stay generic.
  */
 export const evaluationFailure = (
-  identity: { app: AppId; deployment: DeploymentId },
+  identity: { app: AppId; version: VersionId },
   error: unknown,
   reason = "App evaluation failed",
 ) =>
   new AppEvaluationFailed({
     app: identity.app,
-    deployment: identity.deployment,
+    version: identity.version,
     reason,
     ...(Schema.is(SkillLoadFailed)(error)
       ? {
@@ -1185,7 +1190,7 @@ export const evaluationFailure = (
  * the selected account.
  */
 export const routerFailure = (
-  identity: { app: AppId; deployment: DeploymentId },
+  identity: { app: AppId; version: VersionId },
   error: HostRouterError,
 ) =>
   Schema.is(ProviderError)(error)
@@ -1219,7 +1224,7 @@ const toolNotFound = ({ tool }: { readonly tool: ToolName }): RefusalCopy => {
 export const ToolNotFound = ApiError.define({
   tag: "ToolNotFound",
   status: 404,
-  fields: { app: AppId, deployment: DeploymentId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
   message: refusalMessage(toolNotFound),
   recorded: () => "The app does not expose the requested tool",
 });
@@ -1255,7 +1260,7 @@ export const ToolKindMismatch = ApiError.define({
   status: 409,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     tool: ToolName,
     requested: ToolKind,
     actual: ToolKind,
@@ -1291,7 +1296,7 @@ export const InputInvalid = ApiError.define({
   status: 422,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     tool: ToolName,
     problems: Schema.Array(Schema.String),
     mayHaveWritten: MayHaveWritten,
@@ -1338,7 +1343,7 @@ export const ToolCallFailed = UserFacingError.define({
   status: 502,
   fields: {
     app: AppId,
-    deployment: DeploymentId,
+    version: VersionId,
     tool: ToolName,
     /**
      * Only the app's own bounded error message, or its MCP server's bounded JSON-RPC error, with
@@ -1444,7 +1449,7 @@ export type ToolCallFailed = typeof ToolCallFailed.Type;
  * a request reached the tool, such as a refused session, is reported like evaluation failures.
  */
 export const operationMcpFailure = (
-  identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
+  identity: { app: AppId; version: VersionId; tool: ToolName },
   error: McpError,
 ) =>
   error.phase === "call"
@@ -1462,7 +1467,7 @@ export const operationMcpFailure = (
 export const ToolBlocked = UserFacingError.define({
   tag: "ToolBlocked",
   status: 403,
-  fields: { app: AppId, deployment: DeploymentId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
   presentation: callPresentation(({ tool }) => ({
     title: "Blocked by the app’s approval policy",
     description: `The approval policy in the app’s code denied this call to “${tool}”.`,
@@ -1489,7 +1494,7 @@ const toolApprovalRequired = ({ tool }: { readonly tool: ToolName }): RefusalCop
 export const ToolApprovalRequired = ApiError.define({
   tag: "ToolApprovalRequired",
   status: 409,
-  fields: { app: AppId, deployment: DeploymentId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
   message: refusalMessage(toolApprovalRequired),
   recorded: () => "The tool needs approval, and this request cannot present an approval prompt.",
 });
@@ -1506,7 +1511,7 @@ const toolPolicyFailed = ({ tool }: { readonly tool: ToolName }): RefusalCopy =>
 export const ToolPolicyFailed = ApiError.define({
   tag: "ToolPolicyFailed",
   status: 500,
-  fields: { app: AppId, deployment: DeploymentId, tool: ToolName, mayHaveWritten: MayHaveWritten },
+  fields: { app: AppId, version: VersionId, tool: ToolName, mayHaveWritten: MayHaveWritten },
   message: refusalMessage(toolPolicyFailed),
   recorded: () => "The tool's approval policy failed before deciding.",
 });
@@ -1587,10 +1592,10 @@ const InvocationSlots = Schema.Record(
   Schema.Union([InvocationAccount, Schema.Array(InvocationAccount)]),
 );
 /** Reviewed call with decoded arguments, exact code version and account identities. */
-export const ToolInvocation = Schema.Struct({
+export const ToolInvocationFields = Schema.Struct({
   app: AppId,
   owner: OwnerId,
-  deployment: DeploymentId,
+  version: VersionId,
   tool: ToolName,
   /**
    * The caller's kind. Without one (a call that named none, or saved before calls named one),
@@ -1607,6 +1612,7 @@ export const ToolInvocation = Schema.Struct({
     user: Schema.optionalKey(InvocationSlots),
   }),
 });
+export const ToolInvocation = ToolInvocationFields.pipe(withLegacyKeys({ version: "deployment" }));
 export type ToolInvocation = typeof ToolInvocation.Type;
 /** Completed transport; toolError marks a framework-recognized semantic error. Value is unchanged. */
 export const ToolCompleted = Schema.Struct({
@@ -1637,7 +1643,7 @@ export type ToolCallResult = typeof ToolCallResult.Type;
 export const approvalRequired = ({ invocation }: Pick<typeof ToolPending.Type, "invocation">) =>
   new ToolApprovalRequired({
     app: invocation.app,
-    deployment: invocation.deployment,
+    version: invocation.version,
     tool: invocation.tool,
     ...(invocation.kind === "query" ? {} : { mayHaveWritten: true as const }),
   });
@@ -1647,7 +1653,7 @@ const toolCallErrors = [
   CredentialsError,
   AppNotFound,
   AppNotDeployed,
-  DeploymentNotFound,
+  VersionNotFound,
   AppEvaluationFailed,
   AppProviderFailed,
   AccountNotFound,
@@ -1679,7 +1685,7 @@ export const ToolResumeResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("cancelled"), requestId: ApprovalRequestId }),
   /**
    * Executor did not resume the saved call: the request expired, or Executor read the app,
-   * deployment or accounts and they differ from the reviewed call.
+   * version or accounts and they differ from the reviewed call.
    */
   Schema.Struct({
     status: Schema.Literal("failed"),
@@ -1694,7 +1700,7 @@ export const ToolResumeResult = Schema.Union([
     error: ToolResumeFailure,
     /**
      * `unconfirmed`: Executor's own storage failed, with `error`, while it read the current app,
-     * deployment or accounts to compare with the reviewed call, so it did not resume the
+     * version or accounts to compare with the reviewed call, so it did not resume the
      * call. Nothing shows that they changed. It is a field, not a reason: clients that predate it,
      * such as dashboards still open during a deploy, reject an unknown reason but ignore a field.
      */
@@ -1744,25 +1750,25 @@ export const ToolInputs = {
   list: Schema.Struct({
     app: AppId,
     accounts: Schema.optional(AppAccounts),
-    deployment: Schema.optional(DeploymentId),
+    version: Schema.optional(VersionId),
     cursor: Schema.optional(Cursor),
     limit: Schema.optional(PageLimit),
   }),
   index: Schema.Struct({
     app: AppId,
     accounts: Schema.optional(AppAccounts),
-    deployment: Schema.optional(DeploymentId),
+    version: Schema.optional(VersionId),
   }),
   get: Schema.Struct({
     app: AppId,
     accounts: Schema.optional(AppAccounts),
-    deployment: Schema.optional(DeploymentId),
+    version: Schema.optional(VersionId),
     tool: ToolName,
   }),
   call: Schema.Struct({
     app: AppId,
     accounts: Schema.optional(AppAccounts),
-    deployment: Schema.optional(DeploymentId),
+    version: Schema.optional(VersionId),
     tool: ToolName,
     /**
      * "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from
@@ -1781,20 +1787,22 @@ export const ToolInputs = {
 
 /**
  * Calls return completion or a persisted approval request. Resume trusts the SDK caller's
- * elicitation response, pins the saved deployment and rejects changed account identities. Unknown
+ * elicitation response, pins the saved version and rejects changed account identities. Unknown
  * requests fail; repeated resumes report already-consumed while the marker is retained.
  */
 export const ToolsGroup = HttpApiGroup.make("tools")
   .add(
     HttpApiEndpoint.get("list", "/v1/tools", {
-      query: { ...ToolInputs.list.fields, accounts: AppAccountsQuery },
+      query: Schema.Struct({ ...ToolInputs.list.fields, accounts: AppAccountsQuery }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: ToolPage,
       error: [
         StorageError,
         CredentialsError,
         AppNotFound,
         AppNotDeployed,
-        DeploymentNotFound,
+        VersionNotFound,
         AppEvaluationFailed,
         ToolListingTimedOut,
         AppProviderFailed,
@@ -1807,19 +1815,21 @@ export const ToolsGroup = HttpApiGroup.make("tools")
       ],
     }).annotate(
       OpenApi.Description,
-      "Inspect an app current tools. Returns the active deployment and a cursor for the next page.",
+      "Inspect an app current tools. Returns the active version and a cursor for the next page.",
     ),
   )
   .add(
     HttpApiEndpoint.get("index", "/v1/tools/index", {
-      query: { ...ToolInputs.index.fields, accounts: AppAccountsQuery },
+      query: Schema.Struct({ ...ToolInputs.index.fields, accounts: AppAccountsQuery }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: ToolIndex,
       error: [
         StorageError,
         CredentialsError,
         AppNotFound,
         AppNotDeployed,
-        DeploymentNotFound,
+        VersionNotFound,
         AppEvaluationFailed,
         ToolListingTimedOut,
         AppProviderFailed,
@@ -1837,14 +1847,16 @@ export const ToolsGroup = HttpApiGroup.make("tools")
   )
   .add(
     HttpApiEndpoint.get("get", "/v1/tools/get", {
-      query: { ...ToolInputs.get.fields, accounts: AppAccountsQuery },
+      query: Schema.Struct({ ...ToolInputs.get.fields, accounts: AppAccountsQuery }).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: Tool,
       error: [
         StorageError,
         CredentialsError,
         AppNotFound,
         AppNotDeployed,
-        DeploymentNotFound,
+        VersionNotFound,
         AppEvaluationFailed,
         ToolListingTimedOut,
         AppProviderFailed,
@@ -1863,7 +1875,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
   )
   .add(
     HttpApiEndpoint.post("call", "/v1/tools/call", {
-      payload: ToolInputs.call,
+      payload: ToolInputs.call.pipe(withLegacyKeys({ version: "deployment" })),
       success: ToolCallResult,
       error: toolCallErrors,
     }),

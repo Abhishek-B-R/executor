@@ -32,7 +32,7 @@ import { Context, Effect, Option, Schema } from "effect";
 import {
   checkedToolCall,
   currentOwner,
-  selectedActiveDeployment,
+  selectedActiveVersion,
   checkInvocationAccounts,
   SelectionReadAhead,
 } from "./access.ts";
@@ -115,10 +115,10 @@ export const hostedMcpBackend = Effect.gen(function* () {
   const explained = (error: AccountRequired) =>
     Effect.gen(function* () {
       if (error.scope !== "user" || user === undefined) return error;
-      const { requirements } = yield* (yield* sdk).apps.deployment({
+      const { requirements } = yield* (yield* sdk).apps.version({
         owner: organization.owner,
         app: error.app,
-        deployment: error.deployment,
+        version: error.version,
       });
       const linked = linkedRequirements(
         requirements.accounts,
@@ -191,9 +191,9 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.gen(function* () {
         const owner = yield* currentOwner;
         const executor = yield* sdk;
-        const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
+        const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
         // A tool whose permission cannot be confirmed cannot receive input.
-        yield* authorizeTool({ ...input, deployment, accounts }).pipe(
+        yield* authorizeTool({ ...input, version, accounts }).pipe(
           Effect.mapError(() => new ElicitationFailed({ reason: "forbidden" })),
         );
       }).pipe(
@@ -203,7 +203,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
           AppNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AccountRequired: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AppNotDeployed: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
-          DeploymentNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+          VersionNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           StorageError: () => Effect.fail(new ElicitationFailed({ reason: "transport" })),
         }),
       ),
@@ -222,14 +222,14 @@ export const hostedMcpBackend = Effect.gen(function* () {
         yield* requireAppAccess(input.app, "use");
         const app = (yield* discoveryApps).find((app) => app.id === input.app);
         if (app === undefined) return yield* new AppNotFound({ app: input.app });
-        // A read pinned to a retained deployment resolves that deployment's requirements.
+        // A read pinned to a retained version resolves that version's requirements.
         const requirements =
-          input.deployment === undefined || input.deployment === app.activeDeployment
+          input.version === undefined || input.version === app.activeVersion
             ? app.requirements
-            : (yield* (yield* sdk).apps.deployment({
+            : (yield* (yield* sdk).apps.version({
                 owner: organization.owner,
                 app: app.id,
-                deployment: input.deployment,
+                version: input.version,
               })).requirements;
         return linkedRequirements(
           requirements.accounts,
@@ -253,14 +253,14 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const ahead = yield* SelectionReadAhead;
         const read =
           ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
-        const { deployment, accounts, kind } = yield* checkedToolCall(
+        const { version, accounts, kind } = yield* checkedToolCall(
           executor,
           owner,
           input,
           (selected, described) => authorizeTool({ ...input, ...selected }, described),
           read,
         );
-        const call = executor.tools.call({ ...input, deployment, accounts, kind }, options);
+        const call = executor.tools.call({ ...input, version, accounts, kind }, options);
         // The check has finished: the call may read its state and recheck its accounts at once.
         return yield* (yield* ConcurrentStatements) !== undefined
           ? call.pipe(

@@ -1,5 +1,5 @@
 import { retireMethod } from "@executor-js/app-data/worker-bundle";
-import type { SourceFile } from "../contracts/deployment.ts";
+import type { SourceFile } from "../contracts/version.ts";
 import { asciiJson } from "./ascii-json.ts";
 
 /**

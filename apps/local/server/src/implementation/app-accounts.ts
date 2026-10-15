@@ -19,7 +19,7 @@ import {
   type AppAccounts,
   type AppAccountUse,
   type AppRequirements,
-  type DeploymentId,
+  type VersionId,
   type Executor,
   WebhookSourceConfig,
   type ResourceLifecycle,
@@ -158,7 +158,7 @@ export const accountLinks = (sql: SqlClient.SqlClient, executor: Executor, accou
         where account = ${account} order by created_at, app`,
   ).pipe(Effect.flatMap(decode(AnyLink)), Effect.catchTags(sqlFailures));
 
-/** The requirement in this scope of the app's active deployment, or `RequirementMismatch`. */
+/** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
 const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
   const required = Object.hasOwn(app.requirements.accounts, requirement)
     ? app.requirements.accounts[requirement]
@@ -220,27 +220,27 @@ export const appAccountRequirement = (
   });
 
 /**
- * One deployment of an app and the requirements its code declares: the active one for new
+ * One version of an app and the requirements its code declares: the active one for new
  * operations, or a retained one an operation pins, such as reading an earlier skill.
  */
 interface AppVersion {
   readonly app: App;
-  readonly deployment: DeploymentId | null;
+  readonly version: VersionId | null;
   readonly requirements: AppRequirements;
 }
 const activeVersion = (app: App): AppVersion => ({
   app,
-  deployment: app.activeDeployment,
+  version: app.activeVersion,
   requirements: app.requirements,
 });
-/** The app at a retained deployment of its code lineage when pinned, else its active one. */
-export const appVersion = (executor: Executor, app: App, deployment: DeploymentId | undefined) =>
-  deployment === undefined || deployment === app.activeDeployment
+/** The app at a retained version of its code lineage when pinned, else its active one. */
+export const appVersion = (executor: Executor, app: App, version: VersionId | undefined) =>
+  version === undefined || version === app.activeVersion
     ? Effect.succeed(activeVersion(app))
-    : executor.apps.deployment({ app: app.id, deployment }).pipe(
+    : executor.apps.version({ app: app.id, version }).pipe(
         Effect.map((retained): AppVersion => ({
           app,
-          deployment: retained.id,
+          version: retained.id,
           requirements: retained.requirements,
         })),
       );
@@ -273,16 +273,16 @@ export const versionAccounts = (
   version: AppVersion,
 ) =>
   Effect.flatMap(versionRequirementAccounts(sql, executor, version), (accounts) =>
-    resolveLinkedAccounts({ app: version.app.id, deployment: version.deployment, ...accounts }),
+    resolveLinkedAccounts({ app: version.app.id, version: version.version, ...accounts }),
   );
 
-/** The accounts an operation runs with, for every requirement of the app's active deployment. */
+/** The accounts an operation runs with, for every requirement of the app's active version. */
 export const callerAccounts = (sql: SqlClient.SqlClient, executor: Executor, app: App) =>
   versionAccounts(sql, executor, activeVersion(app));
 
 /**
  * Serve an SDK operation with the app's linked accounts, for the requirements of the
- * deployment its input pins. Callers never choose accounts: an input that names them fails with
+ * version its input pins. Callers never choose accounts: an input that names them fails with
  * `AccountChoiceUnsupported`.
  */
 export const linkedOperation =
@@ -290,7 +290,7 @@ export const linkedOperation =
   <
     I extends {
       readonly app: AppId;
-      readonly deployment?: DeploymentId | undefined;
+      readonly version?: VersionId | undefined;
       readonly accounts?: AppAccounts | undefined;
     },
     Rest extends ReadonlyArray<unknown>,
@@ -305,7 +305,7 @@ export const linkedOperation =
       if (input.accounts !== undefined)
         return yield* new AccountChoiceUnsupported({ app: input.app });
       const app = yield* executor.apps.get({ app: input.app });
-      const version = yield* appVersion(executor, app, input.deployment);
+      const version = yield* appVersion(executor, app, input.version);
       const accounts = yield* versionAccounts(sql, executor, version);
       return yield* operation({ ...input, accounts }, ...rest);
     });
@@ -411,7 +411,7 @@ const removeLink = (sql: SqlClient.SqlClient, executor: Executor, input: LinkKey
   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
 /**
- * Link one of the app owner's accounts to a requirement of the app's active deployment in the
+ * Link one of the app owner's accounts to a requirement of the app's active version in the
  * link's scope, in the caller's transaction, under the app's lock. The requirement must be declared
  * in that scope and use the account's provider (`RequirementMismatch`). A plain requirement keeps
  * one link per scope: linking another account replaces it, as {@link removeLink} removes it; the
@@ -495,7 +495,7 @@ export const linkAccount = (
   Effect.gen(function* () {
     yield* executor[StorageHost].transaction(
       Effect.gen(function* () {
-        // The lock is taken before the app is read, so its active deployment holds while linking.
+        // The lock is taken before the app is read, so its active version holds while linking.
         yield* lockApp(sql, input.app).pipe(Effect.catchTag("SqlError", () => new StorageError()));
         const app = yield* executor.apps.get({ app: input.app });
         const account = yield* executor.accounts.get({ owner: app.owner, account: input.account });
@@ -562,7 +562,7 @@ export const appLinkApps = (sql: SqlClient.SqlClient, executor: Executor, accoun
  * the local subject's user links. Accounts that are gone, or no longer the copy owner's, are
  * skipped. Links are saved as step `2_app_account_links` saves the app's own, without reading the
  * copy's requirements: a copy saved undeployed declares none until it is deployed, and its links
- * must wait for that, not be dropped. Runs resolve links only for the requirements a deployment
+ * must wait for that, not be dropped. Runs resolve links only for the requirements a version
  * declares in their scope.
  */
 export const localAppCopies = (

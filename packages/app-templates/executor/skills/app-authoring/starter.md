@@ -28,7 +28,7 @@ The example's `files` already has the `{ path, content }` shape accepted by
 management tools. After reading the source, fetch the same reference and apply
 your edits to those files inside `execute`. Pass the resulting file array
 directly to the discovered create operation. Read [deploy.md](deploy.md) for
-the create, commit and deployment flow. Return the resulting IDs and URL, rather
+the create, commit and deploy flow. Return the resulting IDs and URL, rather
 than printing unchanged source and writing it back into another tool call.
 
 For later changes, fetch the app's current working source and transform only

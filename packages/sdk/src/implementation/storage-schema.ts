@@ -8,7 +8,7 @@ import {
   WebhookId,
   AppId,
   AppCodeId,
-  DeploymentId,
+  VersionId,
   BuildId,
   OwnerId,
   ProviderId,
@@ -44,7 +44,7 @@ export const version4Tables = {
     enabled: column("enabled", Schema.Boolean),
     status: column("status", Schema.String, { type: "varchar(32)" }),
     failure: column("failure", Schema.NullOr(Schema.String)),
-    reconciledDeployment: column("reconciled_deployment", Schema.NullOr(DeploymentId), {
+    reconciledDeployment: column("reconciled_deployment", Schema.NullOr(VersionId), {
       type: "varchar(255)",
     }),
     reconciledRevision: column("reconciled_revision", Schema.NullOr(Schema.Int)),
@@ -62,7 +62,7 @@ export const version4Tables = {
     profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
     owner: column("owner", OwnerId, { type: "varchar(255)" }),
     key: column("start_key", Schema.String, { type: "varchar(128)" }),
-    deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
+    deployment: column("deployment", VersionId, { type: "varchar(255)" }),
     name: column("name", Schema.String),
     accounts: column("accounts", Schema.Json),
     status: column("status", Schema.String),
@@ -125,7 +125,7 @@ export const version4Tables = {
     createdAt: column("created_at", Schema.Date),
   }),
   deployments: table("executor_deployments", {
-    id: idColumn("id", DeploymentId, { type: "varchar(255)" }),
+    id: idColumn("id", VersionId, { type: "varchar(255)" }),
     code: column("code", AppCodeId, { type: "varchar(255)" }),
     owner: column("owner", OwnerId, { type: "varchar(255)" }),
     build: column("build", BuildId, { type: "varchar(255)" }),
@@ -142,7 +142,7 @@ export const version4Tables = {
     repository: column("repository", Schema.NullOr(AppCodeId), { type: "varchar(255)" }),
     owner: column("owner", OwnerId, { type: "varchar(255)" }),
     name: column("name", Schema.String, { type: "varchar(255)" }),
-    activeDeployment: column("active_deployment", Schema.NullOr(DeploymentId), {
+    activeDeployment: column("active_deployment", Schema.NullOr(VersionId), {
       type: "varchar(255)",
     }),
     copiedFrom: column("copied_from", Schema.NullOr(Schema.Json)),
@@ -216,7 +216,7 @@ export const version4Tables = {
     profileRevision: column("installation_revision", Schema.NullOr(Schema.Int)).default(null),
     owner: column("owner", OwnerId, { type: "varchar(255)" }),
     key: column("subscription_key", Schema.String, { type: "varchar(128)" }),
-    deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
+    deployment: column("deployment", VersionId, { type: "varchar(255)" }),
     name: column("name", Schema.String),
     sourceAccount: column("source_account", AccountId, { type: "varchar(255)" }),
     callbackUrl: column("callback_url", Schema.String),
@@ -251,14 +251,14 @@ export const version402Tables = { ...version4Tables, accounts };
 
 /**
  * Version 4.0.3 records each app's latest check of an account, one row per account and app. A
- * result is current only for the credential generation and deployment it names. Display info is
+ * result is current only for the credential generation and version it names. Display info is
  * kept from the last passing check, with its own time, when a later check fails.
  */
 const accountChecks = table("executor_account_checks", {
   id: idColumn("id", Schema.String, { type: "varchar(255)" }),
   account: column("account", AccountId, { type: "varchar(255)" }),
   app: column("app", AppId, { type: "varchar(255)" }),
-  deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
+  deployment: column("deployment", VersionId, { type: "varchar(255)" }),
   credentialGeneration: column("credential_generation", Schema.Int),
   status: column("status", Schema.String, { type: "varchar(32)" }),
   checkedAt: column("checked_at", Schema.Date),
@@ -437,7 +437,7 @@ const toolSearchListings = table("executor_tool_search_listings", {
   listing: idColumn("listing", Schema.String, { type: "varchar(64)" }),
   owner: column("owner", OwnerId, { type: "varchar(255)" }),
   app: column("app", AppId, { type: "varchar(255)" }),
-  deployment: column("deployment", DeploymentId, { type: "varchar(255)" }),
+  deployment: column("deployment", VersionId, { type: "varchar(255)" }),
   profile: column("profile", Schema.NullOr(ProfileId), { type: "varchar(255)" }).default(null),
   /** When the evaluation that produced the listing started, in epoch milliseconds. */
   at: column("at", Schema.BigInt),
@@ -729,7 +729,7 @@ const webhookSources = table("executor_webhook_sources", {
   revision: column("revision", Schema.Int),
   status: column("status", Schema.String, { type: "varchar(32)" }),
   failure: column("failure", Schema.NullOr(Schema.String), { type: "varchar(32)" }),
-  reconciledDeployment: column("reconciled_deployment", Schema.NullOr(DeploymentId), {
+  reconciledDeployment: column("reconciled_deployment", Schema.NullOr(VersionId), {
     type: "varchar(255)",
   }),
   lease: column("lease", Schema.NullOr(Schema.String), { type: "varchar(255)" }),

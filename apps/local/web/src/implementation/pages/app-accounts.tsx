@@ -90,7 +90,7 @@ export function AppAccounts({
     replacing.requirement.definition.auth[replacing.account.method]?.type === "oauth2";
   const target = (scope: AccountScope) => ({
     app: app.id,
-    deployment: app.activeDeployment,
+    version: app.activeVersion,
     scope,
   });
   const scopeAccounts = (
@@ -158,7 +158,7 @@ export function AppAccounts({
           {connection && (
             <AppAccountForm
               app={app.id}
-              deployment={app.activeDeployment}
+              version={app.activeVersion}
               scope={connection.scope}
               requirement={connection.slot}
               provider={{

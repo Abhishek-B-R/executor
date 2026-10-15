@@ -80,7 +80,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const notFound = HttpServerResponse.empty({ status: 404 });
     const protectedRoutes = Layer.mergeAll(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
-      HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
+      HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),

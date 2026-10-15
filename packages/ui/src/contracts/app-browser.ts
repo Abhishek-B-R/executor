@@ -8,7 +8,7 @@ import type {
 } from "@executor-js/sdk";
 import type { Query } from "./dashboard.ts";
 
-/** Follow-up skill reads always use the catalog's retained deployment. */
+/** Follow-up skill reads always use the catalog's retained version. */
 export interface SkillBindings<E> {
   readonly skills: Query<AppSkillCatalog, E>;
   readonly bundle: Query<AppSkillBundle, E>;

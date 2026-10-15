@@ -182,7 +182,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
           (yield* Schema.decodeUnknownEffect(Execution)(hiddenCall.structuredContent)).execution.ok,
         ).toBe(false);
         yield* evidence.step(
-          "Deployment changes retain selections and later narrowing affects active clients",
+          "Version changes retain selections and later narrowing affects active clients",
           Effect.gen(function* () {
             expect(
               (yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {

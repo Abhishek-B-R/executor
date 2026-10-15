@@ -75,7 +75,7 @@ const Modules = Schema.Record(Schema.String, Schema.Unknown);
 interface Surface {
   readonly deploy: (name: string, files: Files) => Effect.Effect<App, unknown, Api>;
   readonly redeploy: (app: App, files: Files) => Effect.Effect<void, unknown, Api>;
-  /** The running deployment's build. */
+  /** The running version's build. */
   readonly build: (app: App) => Effect.Effect<string, unknown, Api>;
   readonly call: (app: App, tool: string) => Effect.Effect<unknown, unknown, Api>;
   readonly cleanup: (app: App) => Effect.Effect<unknown, unknown, Api>;

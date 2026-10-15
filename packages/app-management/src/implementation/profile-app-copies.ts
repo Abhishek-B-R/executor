@@ -11,7 +11,7 @@
  * drops a schedule from `enable` in the transaction that resumes it, or once its resume is refused,
  * so a later pass neither postpones a resumed schedule's next run nor undoes a member's pause of
  * it. A plan is marked copied only once its links are saved and each schedule was resumed or
- * refused; any other failure leaves it pending for a later pass. A copy whose deployment no longer builds is saved
+ * refused; any other failure leaves it pending for a later pass. A copy whose version no longer builds is saved
  * undeployed, its schedules still paused, so a build failure never holds later steps; its links
  * are saved all the same, for when it is deployed. When the app was removed before its copy, the
  * schedules that waited for the copy are removed with their history, as removing the app would
@@ -96,7 +96,7 @@ const buildFailed = (error: unknown) =>
   typeof error === "object" &&
   error !== null &&
   "_tag" in error &&
-  error._tag === "DeploymentBuildFailed";
+  error._tag === "VersionBuildFailed";
 
 /** The plan's copy under the first free name. */
 const copyApp = (host: ProfileAppCopiesHost, from: App, plan: Plan, save: boolean) =>
@@ -146,7 +146,7 @@ const handle = (host: ProfileAppCopiesHost, plan: Plan, mode: DataStepMode) =>
     if (mode === "report") return Option.isSome(existing) ? "copy-exists" : "copy";
     // A copy an earlier pass saved undeployed is still undeployed when that pass left work to retry.
     let outcome =
-      Option.isSome(existing) && existing.value.activeDeployment === null
+      Option.isSome(existing) && existing.value.activeVersion === null
         ? "copied-undeployed"
         : "copied";
     if (Option.isSome(original)) {
@@ -209,7 +209,7 @@ const handle = (host: ProfileAppCopiesHost, plan: Plan, mode: DataStepMode) =>
 const PlanLink = Schema.Struct({ requirement: Schema.NonEmptyString, account: AccountId });
 /**
  * The plan's accounts in its order, each with the requirements its enabled profiles selected it
- * for: a plain requirement of the app's active deployment only its first existing account, as
+ * for: a plain requirement of the app's active version only its first existing account, as
  * SDK 4.0.13 read the account set, and a many() one every account.
  */
 const planLinks = (plan: Plan) =>

@@ -290,7 +290,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
         });
         const skillDocument = Schema.Struct({
           content: Schema.String,
-          deployment: Schema.String,
+          version: Schema.String,
         });
         const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
           Promise.resolve(client.getInstructions()),
@@ -356,7 +356,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             `/api/organizations/${actors.organization.id}/apps/${guide.app.id}/source`,
           ),
         );
-        expect(executorSource.id).toBe(guideDocument.deployment);
+        expect(executorSource.id).toBe(guideDocument.version);
         expect(executorSource.files.some((file) => file.path.startsWith("skills/"))).toBe(false);
         expect(executorSource.files.find((file) => file.path === "index.ts")?.content).toContain(
           "wellKnownSkills",
@@ -473,7 +473,7 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
               arguments: {
                 app: app.slug,
                 name: "echo",
-                deployment: doc.deployment,
+                version: doc.version,
                 file: "references/examples.md",
               },
             },
@@ -540,8 +540,8 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
         );
         expect(
           (yield* Schema.decodeUnknownEffect(skillDocument)(stillAllowed.structuredContent))
-            .deployment,
-        ).toBe(doc.deployment);
+            .version,
+        ).toBe(doc.version);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

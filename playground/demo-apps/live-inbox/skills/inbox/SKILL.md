@@ -16,7 +16,7 @@ these instructions while keeping separate messages and account selections.
    message. The mutation inserts a new record; repeating it inserts another one.
 
 Read [examples](references/examples.md) for the call shapes. Read that reference
-with the deployment ID returned alongside this document.
+with the version ID returned alongside this document.
 
 These instructions do not grant permission to call either operation. Follow
 Executor's current grants and approval requests.

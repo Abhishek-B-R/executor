@@ -9,7 +9,7 @@ import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
-import type { AccountId, AccountScope, App, AppId, DeploymentId } from "@executor-js/sdk";
+import type { AccountId, AccountScope, App, AppId, VersionId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
@@ -30,8 +30,8 @@ class RequirementKey extends Data.Class<{
 class LinkKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  /** The deployment whose discovery the page shows, read again after the change. */
-  readonly deployment: DeploymentId | null;
+  /** The version whose discovery the page shows, read again after the change. */
+  readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly account: AccountId;

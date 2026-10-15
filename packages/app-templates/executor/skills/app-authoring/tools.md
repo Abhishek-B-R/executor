@@ -204,13 +204,13 @@ skills combine without extra code. A name in both fails the read.
 `folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
 folder. Its immediate subdirectories must be skill directories. Loose files
 beside them, such as `README.md`, are ignored. A missing folder returns `[]`.
-`ctx.files` contains this deployment's text files outside `ui/` on every
+`ctx.files` contains this version's text files outside `ui/` on every
 runtime; it never reads host files. All sources use one parser. Only selected folders are
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
-Read with `{app, name: "triage"}`. Reuse the returned `deployment` and
-`revision` when reading a reference with `file`. Deployment pins code; revision detects remote
+Read with `{app, name: "triage"}`. Reuse the returned `version` and
+`revision` when reading a reference with `file`. The version pins code; revision detects remote
 content changes. A changed revision requires a fresh read. The dashboard bundle
 keeps its documents and references together in one response.
 

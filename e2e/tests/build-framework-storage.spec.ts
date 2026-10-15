@@ -57,7 +57,7 @@ const StoredFramework = Schema.Struct({
   sha256: Schema.String,
   modules: Schema.Record(Schema.String, Schema.String),
 });
-const Deployment = Schema.Struct({ build: Schema.String });
+const Version = Schema.Struct({ build: Schema.String });
 
 const hosted = Effect.gen(function* () {
   const api = yield* Api,
@@ -78,7 +78,7 @@ const hosted = Effect.gen(function* () {
         api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
       );
       const { build } = yield* body(
-        Deployment,
+        Version,
         yield* api.request(actors.owner, "GET", `${path}/source`),
       );
       return { app, path, build };

@@ -1,22 +1,22 @@
-/** Immutable deployments, source files and expected build errors. */
+/** Immutable versions, source files and expected build errors. */
 import { Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
-import { AppCodeId, AppId, BuildId, DeploymentId, OwnerId } from "./shared.ts";
+import { AppCodeId, AppId, BuildId, VersionId, OwnerId } from "./shared.ts";
 import { SourceCommit, SourceFiles } from "./source.ts";
 
 export { SourceFiles, SourceFile, SourceFilePath } from "./source.ts";
 
 /**
- * One immutable source version belonging to a single app code lineage. The deploying app supplies the deployment owner. `build` points at
- * retained compiled output, so activating any retained deployment —
+ * One immutable source version belonging to a single app code lineage. The deploying app supplies the version owner. `build` points at
+ * retained compiled output, so activating any retained version —
  * including rollback — only moves the app's pointer: nothing is rebuilt
  * and no app data or external operations are reversed. The manifest is
  * NOT a build output: uploaded code is evaluated live on each use.
  */
-export const DeploymentMetadata = Schema.Struct({
-  id: DeploymentId,
+export const VersionMetadata = Schema.Struct({
+  id: VersionId,
   code: AppCodeId,
   owner: OwnerId,
   sourceCommit: Schema.NullOr(SourceCommit),
@@ -24,56 +24,56 @@ export const DeploymentMetadata = Schema.Struct({
   createdAt: Schema.Date,
 });
 /** A retained build reference without loading its source files. */
-export type DeploymentMetadata = typeof DeploymentMetadata.Type;
+export type VersionMetadata = typeof VersionMetadata.Type;
 
 /** Source inspection explicitly hydrates files; serving and execution use metadata. */
-export const Deployment = Schema.Struct({
-  ...DeploymentMetadata.fields,
+export const Version = Schema.Struct({
+  ...VersionMetadata.fields,
   files: SourceFiles,
 });
 
-export type Deployment = typeof Deployment.Type;
+export type Version = typeof Version.Type;
 
-/** Metadata for a retained deployment, without source contents. */
-export const DeploymentSummary = Schema.Struct({
-  id: DeploymentId,
+/** Metadata for a retained version, without source contents. */
+export const VersionSummary = Schema.Struct({
+  id: VersionId,
   code: AppCodeId,
   owner: OwnerId,
   createdAt: Schema.Date,
   fileCount: Schema.Int.check(Schema.isGreaterThan(0)),
 });
 
-export type DeploymentSummary = typeof DeploymentSummary.Type;
+export type VersionSummary = typeof VersionSummary.Type;
 
-/** No deployment with this id belongs to the configured app's code lineage. */
-export const DeploymentNotFound = UserFacingError.define({
-  tag: "DeploymentNotFound",
+/** No version with this id belongs to the configured app's code lineage. */
+export const VersionNotFound = UserFacingError.define({
+  tag: "VersionNotFound",
   status: 404,
-  fields: { app: AppId, deployment: DeploymentId },
-  title: "Deployment no longer available",
-  description: "Executor could not find the requested deployment for this app.",
+  fields: { app: AppId, version: VersionId },
+  title: "Version no longer available",
+  description: "Executor could not find the requested version for this app.",
   recovery: {
-    action: "Reload the app to use its current deployment. If this continues, check Deployments.",
+    action: "Reload the app to use its current version. If this continues, check Versions.",
     instructions:
-      "Read the app’s current active deployment and retained deployments. Check for a stale deployment reference or an unavailable retained build. Reopen the current deployment through the supported app flow and verify tool discovery. Do not select a different app or roll back without the user’s choice.",
+      "Read the app’s current active version and retained versions. Check for a stale version reference or an unavailable retained build. Reopen the current version through the supported app flow and verify tool discovery. Do not select a different app or roll back without the user’s choice.",
   },
 });
-/** Parsed missing deployment. */
-export type DeploymentNotFound = typeof DeploymentNotFound.Type;
+/** Parsed missing version. */
+export type VersionNotFound = typeof VersionNotFound.Type;
 
 /** The app changed since the caller read it; retry against the current pointer. */
-export const AppDeploymentChanged = ApiError.define({
-  tag: "AppDeploymentChanged",
+export const AppVersionChanged = ApiError.define({
+  tag: "AppVersionChanged",
   status: 409,
   fields: {
     app: AppId,
-    expected: Schema.NullOr(DeploymentId),
-    current: Schema.NullOr(DeploymentId),
+    expected: Schema.NullOr(VersionId),
+    current: Schema.NullOr(VersionId),
   },
   message:
-    "The app's active deployment changed. Read the latest source and reconcile changes before retrying.",
+    "The app's active version changed. Read the latest source and reconcile changes before retrying.",
 });
-export type AppDeploymentChanged = typeof AppDeploymentChanged.Type;
+export type AppVersionChanged = typeof AppVersionChanged.Type;
 
 /**
  * A source location. Nested, because runtimes such as Bun set their own `line` and `column`
@@ -101,8 +101,8 @@ export const BuildStage = Schema.Literals([
 ]);
 
 /** The build did not complete; nothing was retained, created or changed. */
-export class DeploymentBuildFailed extends Schema.TaggedError<DeploymentBuildFailed>()(
-  "DeploymentBuildFailed",
+export class VersionBuildFailed extends Schema.TaggedError<VersionBuildFailed>()(
+  "VersionBuildFailed",
   {
     owner: OwnerId,
     name: Schema.NonEmptyString,
@@ -117,7 +117,7 @@ export class DeploymentBuildFailed extends Schema.TaggedError<DeploymentBuildFai
   {
     httpApiStatus: 422,
     description:
-      "The build failed: no deployment was retained, no new app was created, and an existing app's active deployment is unchanged. Identified by (owner, name) because a first deploy has no app id yet. `message` describes the failing stage, source location and underlying error, such as compiler output or the error the app raised while declaring its requirements. Builds bind no accounts, so it holds no credentials.",
+      "The build failed: no version was retained, no new app was created, and an existing app's active version is unchanged. Identified by (owner, name) because a first deploy has no app id yet. `message` describes the failing stage, source location and underlying error, such as compiler output or the error the app raised while declaring its requirements. Builds bind no accounts, so it holds no credentials.",
   },
 ) {
   /** The name is the deployer's and the message quotes their source; telemetry records the stage. */
@@ -128,13 +128,13 @@ export class DeploymentBuildFailed extends Schema.TaggedError<DeploymentBuildFai
   }
 }
 
-/** The compiler exhausted its memory before a new deployment could be activated. */
+/** The compiler exhausted its memory before a new version could be activated. */
 export const BuildMemoryExceeded = UserFacingError.define({
   tag: "BuildMemoryExceeded",
   status: 422,
   title: "App build hit the current memory limit",
   description:
-    "This app's build needed more memory than Executor currently allows. No new deployment was activated.",
+    "This app's build needed more memory than Executor currently allows. No new version was activated.",
   recovery: {
     action:
       "This is a current platform limit, and we plan to raise it. Until then, fewer or smaller dependencies can help the build fit.",

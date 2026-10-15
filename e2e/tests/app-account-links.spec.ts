@@ -73,7 +73,7 @@ const sharedApp = (
     });
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = yield* body(
-        Schema.Struct({ ...App.fields, activeDeployment: Schema.String }),
+        Schema.Struct({ ...App.fields, activeVersion: Schema.String }),
         deployed,
       ),
       path = `${prefix}/apps/${app.id}`,
@@ -675,7 +675,7 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
     ),
   );
 
-  it.effect(scenarios.accountDeployment.title, (context) =>
+  it.effect(scenarios.accountVersion.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
@@ -683,7 +683,7 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
         const line = "Running asWork inbox (Inbox), Personal inbox (Inbox)";
         yield* browser.login(actors.member);
         yield* installBrowserClock;
-        yield* browser.use("Open the tool before deployment", (page) =>
+        yield* browser.use("Open the tool before deploying", (page) =>
           page.goto(`${url}?view=tools&tool=who`),
         );
         yield* browser.use("The first tab has the original catalog", (page) =>
@@ -710,12 +710,12 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
           ),
         });
         expect(changed.status, JSON.stringify(changed.body)).toBe(200);
-        // Both open tabs follow the deployment at their next idle reconciliation.
+        // Both open tabs follow the version at their next idle reconciliation.
         yield* advanceToReconciliation;
-        yield* browser.use("The first tab follows the new deployment", (page) =>
+        yield* browser.use("The first tab follows the new version", (page) =>
           page.getByRole("button", { name: "version", exact: true }).first().waitFor(),
         );
-        yield* browser.use("The second tab follows the same deployment", () =>
+        yield* browser.use("The second tab follows the same version", () =>
           other.getByRole("button", { name: "version", exact: true }).first().waitFor(),
         );
         expect(
@@ -779,7 +779,7 @@ export default defineApp({user: { accounts:{extra:service.many()} }},async ctx=>
                   response.json().then((body: unknown) => ({ status: response.status, body })),
                 ),
               {
-                deployment: app.activeDeployment,
+                version: app.activeVersion,
                 name: "who",
                 input: {},
                 ...(accounts === undefined ? {} : { accounts }),

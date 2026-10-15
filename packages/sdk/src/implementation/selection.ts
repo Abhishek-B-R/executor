@@ -1,4 +1,4 @@
-/** Validate account selections against a deployment's requirements. */
+/** Validate account selections against a version's requirements. */
 import { Effect, Result, Schema } from "effect";
 import {
   AccountRequired,
@@ -10,7 +10,7 @@ import {
 } from "../contracts/apps.ts";
 import { type AccountId, type AppId, StorageError } from "../contracts/shared.ts";
 import { AccountNotFound } from "../contracts/account.ts";
-import { StoredAccount, type StoredDeployment } from "../contracts/storage.ts";
+import { StoredAccount, type StoredVersion } from "../contracts/storage.ts";
 import { query, type Query } from "./database.ts";
 
 /** The distinct accounts a selection names, in selection order. */
@@ -106,7 +106,7 @@ export const invocationScope = (chosen: AppAccounts | undefined): AccountScope =
   chosen !== undefined && chosen.user === undefined ? "app" : "user";
 
 /**
- * Validate the accounts an operation names against a deployment's requirements. Each scope names
+ * Validate the accounts an operation names against a version's requirements. Each scope names
  * only its own requirements. Every requirement of the invocation's scope is named: app requirements
  * always, and user requirements unless the invocation has no `user`, which runs without a caller.
  * A plain requirement names exactly one account and many() any number. Returns the scope, the
@@ -116,12 +116,12 @@ export const invocationScope = (chosen: AppAccounts | undefined): AccountScope =
 export const chooseAccounts = (
   db: Query,
   app: AppId,
-  deployment: Pick<StoredDeployment, "id" | "requirements">,
+  version: Pick<StoredVersion, "id" | "requirements">,
   chosen: AppAccounts | undefined,
   read?: SelectionAccountsRead,
 ) =>
   Effect.gen(function* () {
-    const requirements = deployment.requirements.accounts;
+    const requirements = version.requirements.accounts;
     const scope = invocationScope(chosen);
     const named: ReadonlyArray<readonly [AccountScope, string, ReadonlyArray<AccountId>]> = [
       ...Object.entries(chosen?.app ?? {}).map(([slot, ids]) => ["app", slot, ids] as const),
@@ -140,7 +140,7 @@ export const chooseAccounts = (
         if (id !== undefined) selected[slot] = id;
       }
     }
-    const validated = yield* validateSelection(db, app, deployment.requirements, selected, read);
+    const validated = yield* validateSelection(db, app, version.requirements, selected, read);
     const scoped = Object.entries(requirements).filter(
       ([, required]) => scope === "user" || required.scope === "app",
     );
@@ -148,7 +148,7 @@ export const chooseAccounts = (
       const selection = validated.get(slot);
       return selection === undefined
         ? Effect.fail(
-            new AccountRequired({ app, deployment: deployment.id, slot, scope: required.scope }),
+            new AccountRequired({ app, version: version.id, slot, scope: required.scope }),
           )
         : Effect.succeed(selection);
     });

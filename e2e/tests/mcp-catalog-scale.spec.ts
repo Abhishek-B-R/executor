@@ -1012,18 +1012,18 @@ return { items: [...small.items, ...large.items] };`;
           ),
         );
 
-        // A new deployment.
+        // A new version.
         const redeployed = yield* saveAndDeploy(actors.owner, path, {
           files: [{ path: "index.ts", content: probeAppSource("second") }, appsManifest],
         });
         expect(redeployed.status).toBe(200);
         seen.push(
-          yield* evaluated(owner, "New deployment", { version: "second", token: "rotated" }, seen),
+          yield* evaluated(owner, "New version", { version: "second", token: "rotated" }, seen),
         );
-        // The member's kept listing belongs to the replaced deployment too.
+        // The member's kept listing belongs to the replaced version too.
         const memberLatest = yield* evaluated(
           member,
-          "New deployment for the member",
+          "New version for the member",
           { version: "second", token: "delta" },
           seen,
         );

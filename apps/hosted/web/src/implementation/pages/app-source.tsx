@@ -1,11 +1,11 @@
 import { EmptyStatePanel } from "@executor-js/ui/dashboard/empty-state";
-import { AppDeploymentsLoading } from "@executor-js/ui/dashboard/app-loading";
+import { AppVersionsLoading } from "@executor-js/ui/dashboard/app-loading";
 import { AppWorkspace } from "@executor-js/ui/dashboard/app-workspace";
 import { appManagement } from "../../contracts/app-management.ts";
 import { acknowledgeApp, toolsAtom } from "../../contracts/apps.ts";
 import { RegistryContext, useAtomMount, useAtomSet, useAtomValue } from "@effect/atom-react";
-import type { App, DeploymentId } from "@executor-js/sdk";
-import { AppDeployments as SharedAppDeployments } from "@executor-js/ui/dashboard/app-deployments";
+import type { App, VersionId } from "@executor-js/sdk";
+import { AppVersions as SharedAppVersions } from "@executor-js/ui/dashboard/app-versions";
 import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
 import { Button } from "@executor-js/ui/components/button";
 import {
@@ -21,7 +21,7 @@ import { useContext, useState } from "react";
 import {
   activateAppAtom,
   appAtom,
-  deploymentsAtom,
+  versionsAtom,
   sourceAtom,
   sourceFileAtom,
 } from "../../contracts/apps.ts";
@@ -30,38 +30,36 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
 /** Hosts own reads and activation authority; source browsing shares the local presentation. */
-export function AppDeployments({ app }: { readonly app: App }) {
+export function AppVersions({ app }: { readonly app: App }) {
   const { organization } = useOrganizationRoute();
-  const [selected, setSelected] = useState<DeploymentId>();
-  const deployment = selected ?? app.activeDeployment;
-  if (deployment === null)
+  const [selected, setSelected] = useState<VersionId>();
+  const version = selected ?? app.activeVersion;
+  if (version === null)
     return (
-      <EmptyStatePanel title="No deployments yet">
+      <EmptyStatePanel title="No versions yet">
         Deploy from Source when you’re ready.
       </EmptyStatePanel>
     );
   return (
     <>
-      <ReadSourceEarly app={app} deployment={deployment} />
+      <ReadSourceEarly app={app} version={version} />
       <QueryView
-        query={deploymentsAtom({ organization, app: app.id })}
+        query={versionsAtom({ organization, app: app.id })}
         Failure={HostedFailure}
-        pending={<AppDeploymentsLoading />}
+        pending={<AppVersionsLoading />}
       >
-        {(deployments) => (
-          <SharedAppDeployments
+        {(versions) => (
+          <SharedAppVersions
             app={app}
-            deployments={deployments}
-            deployment={deployment}
-            onDeploymentChange={setSelected}
-            query={sourceAtom({ organization, app: app.id, deployment })}
-            file={(deployment, path) =>
-              sourceFileAtom({ organization, app: app.id, deployment, path })
-            }
+            versions={versions}
+            version={version}
+            onVersionChange={setSelected}
+            query={sourceAtom({ organization, app: app.id, version })}
+            file={(version, path) => sourceFileAtom({ organization, app: app.id, version, path })}
             Failure={HostedFailure}
             actions={
-              deployment !== app.activeDeployment && (
-                <ActivateDeployment key={deployment} app={app} deployment={deployment} />
+              version !== app.activeVersion && (
+                <ActivateVersion key={version} app={app} version={version} />
               )
             }
           />
@@ -72,39 +70,27 @@ export function AppDeployments({ app }: { readonly app: App }) {
 }
 
 /** The shown version is known from the app, so its source loads alongside the version list. */
-function ReadSourceEarly({
-  app,
-  deployment,
-}: {
-  readonly app: App;
-  readonly deployment: DeploymentId;
-}) {
+function ReadSourceEarly({ app, version }: { readonly app: App; readonly version: VersionId }) {
   const { organization } = useOrganizationRoute();
-  const source = sourceAtom({ organization, app: app.id, deployment });
-  usePreload(deploymentsAtom({ organization, app: app.id }), source);
+  const source = sourceAtom({ organization, app: app.id, version });
+  usePreload(versionsAtom({ organization, app: app.id }), source);
   useAtomMount(source);
   return null;
 }
 
-function ActivateDeployment({
-  app,
-  deployment,
-}: {
-  readonly app: App;
-  readonly deployment: DeploymentId;
-}) {
+function ActivateVersion({ app, version }: { readonly app: App; readonly version: VersionId }) {
   const { organization } = useOrganizationRoute();
   const registry = useContext(RegistryContext);
-  const source = useAtomValue(sourceAtom({ organization, app: app.id, deployment }));
+  const source = useAtomValue(sourceAtom({ organization, app: app.id, version }));
   const activate = useAtomSet(activateAppAtom({ organization, app: app.id }), {
     mode: "promiseExit",
   });
-  const [expected, setExpected] = useState<DeploymentId | null>();
+  const [expected, setExpected] = useState<VersionId | null>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<HostedError>>();
   const refresh = () => {
     registry.refresh(appAtom({ organization, app: app.id }));
-    registry.refresh(deploymentsAtom({ organization, app: app.id }));
+    registry.refresh(versionsAtom({ organization, app: app.id }));
   };
   return (
     <>
@@ -113,7 +99,7 @@ function ActivateDeployment({
         variant="outline"
         disabled={!AsyncResult.isSuccess(source)}
         onClick={() => {
-          setExpected(app.activeDeployment);
+          setExpected(app.activeVersion);
           setError(undefined);
         }}
       >
@@ -154,7 +140,7 @@ function ActivateDeployment({
                 if (expected === undefined || pending) return;
                 setPending(true);
                 setError(undefined);
-                const result = await activate({ deployment, expectedDeployment: expected });
+                const result = await activate({ version, expectedVersion: expected });
                 setPending(false);
                 if (Exit.isFailure(result)) {
                   setError(result.cause);
@@ -172,7 +158,7 @@ function ActivateDeployment({
   );
 }
 
-/** Source inspection, publication, and deployment history belong to this app's detail page. */
+/** Source inspection, publication, and version history belong to this app's detail page. */
 export function AppSource({
   app,
   view,
@@ -189,14 +175,14 @@ export function AppSource({
       atoms={atoms}
       onApp={(get, saved) => {
         acknowledgeApp(get, organization, saved);
-        get.refresh(deploymentsAtom({ organization, app: saved.id }));
+        get.refresh(versionsAtom({ organization, app: saved.id }));
         get.refresh(toolsAtom({ organization, app: saved.id }));
       }}
       view={view}
       live={
-        app.activeDeployment === null
+        app.activeVersion === null
           ? undefined
-          : sourceAtom({ organization, app: app.id, deployment: app.activeDeployment })
+          : sourceAtom({ organization, app: app.id, version: app.activeVersion })
       }
     />
   );

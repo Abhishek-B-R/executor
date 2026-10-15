@@ -22,12 +22,12 @@ import {
 } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
 import { AccountId } from "./shared.ts";
-import { DeploymentNotFound } from "./deployment.ts";
+import { VersionNotFound } from "./version.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 import { CredentialsError } from "./shared.ts";
 import { AppProviderFailed, AppEvaluationFailed, ToolInvocation } from "./tools.ts";
 
-/** Stable configured schedule address, independent of deployment revisions. */
+/** Stable configured schedule address, independent of app versions. */
 export const ScheduleId = Schema.NonEmptyString.pipe(Schema.brand("ScheduleId"));
 export type ScheduleId = typeof ScheduleId.Type;
 /** One scheduled occurrence or explicit run-now attempt. */
@@ -131,7 +131,7 @@ export const ScheduleNotFound = ApiError.define({
   tag: "ScheduleNotFound",
   status: 404,
   message:
-    "The app's current deployment does not declare this schedule, or the schedule run is not waiting for approval.",
+    "The app's current version does not declare this schedule, or the schedule run is not waiting for approval.",
 });
 export type ScheduleNotFound = typeof ScheduleNotFound.Type;
 /** A competing run or reviewer has already advanced this schedule. */
@@ -215,7 +215,7 @@ export const ScheduleErrors = [
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AccountNotFound,
-  DeploymentNotFound,
+  VersionNotFound,
   OAuthReconnectRequired,
   OAuthRenewalFailed,
   CredentialsError,

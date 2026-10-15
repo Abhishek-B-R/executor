@@ -45,7 +45,7 @@ operations. Create with a stable `key`, handler `name`, `config`, and an explici
 `sourceAccount` for a collection requirement. Check the returned `status` and
 `failure`. Retry failed or interrupted registration/cleanup with `reconcile`.
 Remove a subscription before deleting its app or connected accounts.
-Subscriptions pin their original deployment/account IDs; recreate to upgrade.
+Subscriptions pin their original version and account IDs; recreate to upgrade.
 Providers retry deliveries; Executor does not deduplicate or replay them.
 `state` can be null during provider validation or cleanup after a lost
 registration response. Local providers need a publicly reachable callback origin.

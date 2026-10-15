@@ -150,13 +150,13 @@ export const makeEvents = (input: {
       const row = yield* query(() => db.findFirst("apps", { where: (b) => b("id", "=", app) }));
       if (row === null || row.activeDeployment === null)
         return { owner: row?.owner, events: {} as DeclaredEvents };
-      const deployment = yield* query(() =>
+      const version = yield* query(() =>
         db.findFirst("deployments", { where: (b) => b("id", "=", row.activeDeployment) }),
       );
       // Requirements of builds before events have no `events`; they declare none.
       const parsed = Schema.decodeUnknownOption(
         Schema.Struct({ events: Schema.optional(DeclaredEvents) }),
-      )(deployment?.requirements);
+      )(version?.requirements);
       const events: DeclaredEvents = Option.match(parsed, {
         onNone: () => ({}),
         onSome: (value) => value.events ?? {},

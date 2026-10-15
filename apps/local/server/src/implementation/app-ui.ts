@@ -1,7 +1,7 @@
 /** Product host for private app pages. Identity comes from the hostname and app cookie, never request input. */
 import {
-  Deployment,
-  DeploymentId,
+  Version,
+  VersionId,
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
@@ -16,7 +16,7 @@ import {
 } from "@executor-js/sdk/core";
 import {
   AppUiApi,
-  UiDeploymentChanged,
+  UiVersionChanged,
   UiFailed,
   UiForbidden,
   UiUnauthorized,
@@ -38,7 +38,7 @@ import type { SqlClient } from "effect/sql";
 import { callerAccounts } from "./app-accounts.ts";
 
 const failed = (reason: UiFailed["reason"] = "unavailable") => new UiFailed({ reason });
-const UiBuild = Schema.Struct({ id: DeploymentId, build: Deployment.fields.build });
+const UiBuild = Schema.Struct({ id: VersionId, build: Version.fields.build });
 /** Every account an operation's accounts use, in both scopes. */
 const accountIds = (accounts: AppAccounts) => [
   ...new Set(invocationEntries(accounts).flatMap(([, ids]) => ids)),
@@ -61,13 +61,13 @@ export const appUi = (
   const native = runtime;
   const current = (id: AppId) =>
     executor.apps.get({ app: id, owner: localOwner }).pipe(Effect.mapError(() => failed()));
-  const deployment = (app: Effect.Success<ReturnType<typeof current>>, id = app.activeDeployment) =>
+  const readVersion = (app: Effect.Success<ReturnType<typeof current>>, id = app.activeVersion) =>
     Effect.gen(function* () {
       if (id === null) return yield* failed();
-      const metadata = yield* executor.apps.deployment({
+      const metadata = yield* executor.apps.version({
         app: app.id,
         owner: localOwner,
-        deployment: id,
+        version: id,
       });
       return UiBuild.make({ id: metadata.id, build: metadata.build });
     }).pipe(Effect.mapError(() => failed()));
@@ -90,16 +90,16 @@ export const appUi = (
   const operation = (payload: typeof UiOperation.Type) =>
     Effect.gen(function* () {
       const app = yield* authorize;
-      const pinned = yield* Schema.decodeUnknownEffect(DeploymentId)(payload.deployment).pipe(
+      const pinned = yield* Schema.decodeUnknownEffect(VersionId)(payload.version).pipe(
         Effect.mapError(() => failed()),
       );
-      if (app.activeDeployment !== pinned) return yield* new UiDeploymentChanged();
+      if (app.activeVersion !== pinned) return yield* new UiVersionChanged();
       const accounts = yield* callerAccounts(sql, executor, app).pipe(
         Effect.mapError(operationFailure),
       );
       return {
         app: app.id,
-        deployment: pinned,
+        version: pinned,
         accounts,
         name: payload.name,
         input: payload.input,
@@ -154,7 +154,7 @@ export const appUi = (
         }),
       ),
   );
-  const readAsset = (build: Deployment["build"], path: string) =>
+  const readAsset = (build: Version["build"], path: string) =>
     native.asset === undefined
       ? Effect.succeed(undefined)
       : native.asset({ build, path }).pipe(
@@ -189,9 +189,13 @@ export const appUi = (
     yield* authorize;
     const request = yield* HttpServerRequest.HttpServerRequest;
     const versions = reactivity.subscribe(authorize).pipe(
-      Stream.map(({ value }) => value.activeDeployment),
+      Stream.map(({ value }) => value.activeVersion),
       Stream.changes,
-      Stream.map((deployment) => `event: version\ndata: ${JSON.stringify({ deployment })}\n\n`),
+      // Pages opened before versions were named watch `deployment`.
+      Stream.map(
+        (version) =>
+          `event: version\ndata: ${JSON.stringify({ version, deployment: version })}\n\n`,
+      ),
       Stream.merge(Stream.tick("15 seconds").pipe(Stream.map(() => ": heartbeat\n\n"))),
       Stream.mapEffect((event) => authorize.pipe(Effect.as(event))),
       Stream.catch(() => Stream.make("event: revoked\ndata: {}\n\n")),
@@ -205,12 +209,12 @@ export const appUi = (
   }).pipe(htmlResponse);
   const asset = Effect.gen(function* () {
     // The app's build chose its assets' file names.
-    yield* recordRoute("/_executor/assets/:deployment/:asset");
+    yield* recordRoute("/_executor/assets/:version/:asset");
     const app = yield* authorize;
     const params = yield* HttpRouter.schemaPathParams(
-      Schema.Struct({ deployment: DeploymentId, "*": Schema.NonEmptyString }),
+      Schema.Struct({ version: VersionId, "*": Schema.NonEmptyString }),
     ).pipe(Effect.mapError(() => failed()));
-    const version = yield* deployment(app, params.deployment);
+    const version = yield* readVersion(app, params.version);
     const path = Option.getOrUndefined(assetPath(params["*"]));
     if (path === undefined) return yield* appAsset(undefined, version.build, params["*"]);
     return yield* appAsset(yield* readAsset(version.build, path), version.build, path);
@@ -221,7 +225,7 @@ export const appUi = (
     yield* recordRoute("/:page");
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
-    const version = yield* deployment(app);
+    const version = yield* readVersion(app);
     const fix = new URL(`/apps/${app.id}`, dashboard);
     fix.searchParams.set("view", "accounts");
     // The page runs with the app's linked accounts and the linked ones; a plain requirement with
@@ -264,7 +268,7 @@ export const appUi = (
       accountIds: resolution.kind === "resolved" ? resolution.accounts.user : undefined,
       accounts: yield* accountNotice,
       origin: target.origin,
-      deployment: version.id,
+      version: version.id,
       asset: (path) => readAsset(version.build, path),
     });
   }).pipe(
@@ -312,10 +316,7 @@ export const appUi = (
   const telemetry = (signal: "traces" | "logs") =>
     authorize.pipe(
       Effect.flatMap((app) =>
-        receiveBrowserTelemetry(
-          signal,
-          app.activeDeployment === null ? undefined : app.activeDeployment,
-        ),
+        receiveBrowserTelemetry(signal, app.activeVersion === null ? undefined : app.activeVersion),
       ),
       htmlResponse,
     );

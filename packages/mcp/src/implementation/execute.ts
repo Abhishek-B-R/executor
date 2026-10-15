@@ -16,7 +16,7 @@ import {
   type AppId,
   type Cursor,
   ToolName,
-  type DeploymentId,
+  type VersionId,
   type SearchableTools,
   type Tool as AppTool,
   type ToolRouter,
@@ -220,24 +220,24 @@ function listTools<E extends Error>(
   paged: Effect.Effect<void>,
 ) {
   return Effect.gen(function* () {
-    const list = (deployment?: DeploymentId, cursor?: Cursor) =>
+    const list = (version?: VersionId, cursor?: Cursor) =>
       backend
         .listTools(
-          { app, accounts, deployment, cursor, limit: 2_000 },
+          { app, accounts, version, cursor, limit: 2_000 },
           // The catalog's watcher owns the pre-program wait bound. A dynamic namespace is governed
           // by CodeMode's execution deadline and must be allowed to join a listing already running.
           { refreshStale: false },
         )
         .pipe(Effect.tap(() => paged));
     let page = yield* list();
-    // Later pages are pinned to the first page's deployment.
-    const deployment = page.deployment;
+    // Later pages are pinned to the first page's version.
+    const version = page.version;
     const tools: AppTool[] = [...page.items];
     while (page.next !== undefined) {
-      page = yield* list(deployment, page.next);
+      page = yield* list(version, page.next);
       tools.push(...page.items);
     }
-    return { tools, routers: page.routers, deployment };
+    return { tools, routers: page.routers, version };
   });
 }
 
@@ -280,11 +280,11 @@ type Target = Place & {
   /** The app's routers by router path. The root router has path "". */
   readonly routers: ReadonlyMap<string, ToolRouter>;
   /**
-   * The deployment its tools were listed from. Calls name no deployment: the host runs each on the
-   * app's active deployment when the call starts, so a deploy earlier in the same program, or since
+   * The version its tools were listed from. Calls name no version: the host runs each on the
+   * app's active version when the call starts, so a deploy earlier in the same program, or since
    * the app was loaded, is the one called.
    */
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   /** The caller's linked accounts, which each call resolves its accounts from. */
   readonly linked: McpAppAccounts;
 };
@@ -894,8 +894,8 @@ function catalog(
     // Tool path prefixes that expose no tools in this execution, and those that do. A call is
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
     const namespaces: Namespaces = new Map();
-    /** The deployment each loaded namespace's tools came from. */
-    const loadedFrom = new Map<string, DeploymentId>();
+    /** The version each loaded namespace's tools came from. */
+    const loadedFrom = new Map<string, VersionId>();
     const unavailableOf = (app: AppId) => {
       const seen = new Set<string>();
       return [
@@ -949,7 +949,7 @@ function catalog(
               }
               const accounts = yield* resolveLinkedAccounts({
                 app: entry.target.id,
-                deployment: entry.target.deployment,
+                version: entry.target.version,
                 // The host fills app requirements from the app links.
                 appLinks: {},
                 userLinks: entry.target.linked,
@@ -1040,7 +1040,7 @@ function catalog(
     };
     const routerFailures = (
       app: ListedApp,
-      deployment: DeploymentId,
+      version: VersionId,
       routers: ReadonlyArray<ToolRouter>,
     ) =>
       routers.flatMap((router) =>
@@ -1053,7 +1053,7 @@ function catalog(
                   app: app.id,
                   name: `${app.name} ${router.title ?? router.path}`,
                   router: router.path,
-                  reason: diagnostic(routerFailure({ app: app.id, deployment }, router.error)),
+                  reason: diagnostic(routerFailure({ app: app.id, version }, router.error)),
                 },
               },
             ],
@@ -1090,21 +1090,17 @@ function catalog(
         const { linked, value: catalog } = discovered;
         const namespace = app.slug;
         namespaces.set(namespace, "available");
-        loadedFrom.set(namespace, catalog.deployment);
+        loadedFrom.set(namespace, catalog.version);
         // A router that could not list its tools is reported like an app, at its own namespace,
         // so a call into it explains why instead of reporting an unknown tool.
-        for (const { namespace, entry } of routerFailures(
-          app,
-          catalog.deployment,
-          catalog.routers,
-        )) {
+        for (const { namespace, entry } of routerFailures(app, catalog.version, catalog.routers)) {
           failed.push(entry);
           namespaces.set(namespace, entry);
         }
         const described: Target = {
           ...placeOf(app, linked),
           routers: new Map(catalog.routers.map((router) => [router.path, router])),
-          deployment: catalog.deployment,
+          version: catalog.version,
           linked,
         };
         listed.set(
@@ -1133,7 +1129,7 @@ function catalog(
           if (!namespaces.has(app.slug)) namespaces.set(app.slug, accountRequired(app));
         } else {
           const { linked, value: searchable } = discovered;
-          for (const { entry } of routerFailures(app, searchable.deployment, searchable.routers))
+          for (const { entry } of routerFailures(app, searchable.version, searchable.routers))
             failed.push(entry);
           found.push({
             ...placeOf(app, linked),
@@ -1419,7 +1415,7 @@ const unknownPath = (error: CodeMode.Diagnostic) =>
  */
 const unknownTool = (
   error: CodeMode.Diagnostic,
-  loadedFrom: ReadonlyMap<string, DeploymentId>,
+  loadedFrom: ReadonlyMap<string, VersionId>,
   slugs: ReadonlySet<string>,
 ) => {
   const path = unknownPath(error);
@@ -1427,9 +1423,9 @@ const unknownTool = (
   const segments = path.split(".");
   const slug = segments[0] ?? "";
   for (let length = segments.length; length > 0; length--) {
-    const deployment = loadedFrom.get(segments.slice(0, length).join("."));
-    if (deployment !== undefined)
-      return `This execute loaded '${slug}' from deployment ${deployment} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
+    const version = loadedFrom.get(segments.slice(0, length).join("."));
+    if (version !== undefined)
+      return `This execute loaded '${slug}' from version ${version} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
   }
   if (!slugs.has(slug))
     return `No app '${slug}' existed when this execute started. If it was created or deployed during this execute, call it in a new execute. Otherwise use search to find available tools.`;

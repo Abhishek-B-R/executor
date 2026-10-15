@@ -14,7 +14,7 @@ import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 const App = Schema.Struct({
   id: Schema.String,
   slug: Schema.String,
-  activeDeployment: Schema.String,
+  activeVersion: Schema.String,
 });
 const Published = Schema.Struct({ app: App });
 const Index = Schema.Struct({
@@ -22,14 +22,14 @@ const Index = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
-      deployment: Schema.String,
+      version: Schema.String,
       revision: Schema.String,
     }),
   ),
 });
 const Document = Schema.Struct({
   content: Schema.String,
-  deployment: Schema.String,
+  version: Schema.String,
   files: Schema.Array(Schema.String),
 });
 const files = (version: string) => [
@@ -74,7 +74,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         );
         expect(copyResponse.status).toBe(200);
         const copy = yield* body(App, copyResponse);
-        expect(copy.activeDeployment).not.toBe(app.activeDeployment);
+        expect(copy.activeVersion).not.toBe(app.activeVersion);
         yield* Effect.addFinalizer(() =>
           session.send("DELETE", `/v1/apps/${copy.id}`, undefined, headers).pipe(Effect.orDie),
         );
@@ -116,14 +116,14 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
         const listed = yield* client.use("Discover the skills input schema", (client) =>
           client.listTools(),
         );
-        expect(guide.deployment).toMatch(
-          yield* wholeStringInputPattern(listed.tools, "skills", "deployment"),
+        expect(guide.version).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "version"),
         );
         expect(guide.revision).toMatch(
           yield* wholeStringInputPattern(listed.tools, "skills", "revision"),
         );
         const selected = yield* client.use(
-          "Read the guide with its returned deployment and revision",
+          "Read the guide with its returned version and revision",
           (client, signal) =>
             client.callTool(
               {
@@ -131,7 +131,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
                 arguments: {
                   app: guide.app.slug,
                   name: guide.name,
-                  deployment: guide.deployment,
+                  version: guide.version,
                   revision: guide.revision,
                 },
               },
@@ -140,8 +140,8 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             ),
         );
         expect(
-          (yield* Schema.decodeUnknownEffect(Document)(selected.structuredContent)).deployment,
-        ).toBe(guide.deployment);
+          (yield* Schema.decodeUnknownEffect(Document)(selected.structuredContent)).version,
+        ).toBe(guide.version);
         const read = yield* client.use(
           "Read the app-owned app-authoring document",
           (client, signal) =>
@@ -174,7 +174,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
               arguments: {
                 app: guide.app.slug,
                 name: "app-authoring",
-                deployment: guideDocument.deployment,
+                version: guideDocument.version,
                 file: "ui.md",
               },
             },
@@ -315,7 +315,7 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
           }),
           yield* session.send("GET", `/v1/apps/${guide.app.id}/source`, undefined, headers),
         );
-        expect(source.id).toBe(guideDocument.deployment);
+        expect(source.id).toBe(guideDocument.version);
         expect(source.files.some((file) => file.path.startsWith("skills/"))).toBe(false);
         expect(source.files.find((file) => file.path === "index.ts")?.content).toContain(
           "wellKnownSkills",
@@ -345,7 +345,7 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
           (yield* Schema.decodeUnknownEffect(Document)(current.structuredContent)).content,
         ).toContain("Version two.");
         const pinned = yield* client.use(
-          "Follow a reference using the original deployment",
+          "Follow a reference using the original version",
           (client, signal) =>
             client.callTool(
               {
@@ -354,7 +354,7 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
                   app: app.slug,
                   name: "app-authoring",
                   file: "references/example.md",
-                  deployment: original.deployment,
+                  version: original.version,
                 },
               },
               undefined,
@@ -376,13 +376,13 @@ return { sameAccount: target.account === read.id && read.id === updated.id, labe
         const copiedDocument = yield* Schema.decodeUnknownEffect(Document)(
           copyRead.structuredContent,
         );
-        expect(copiedDocument.deployment).toBe(copy.activeDeployment);
+        expect(copiedDocument.version).toBe(copy.activeVersion);
         expect(copiedDocument.content).toContain("Version one.");
         // Every document needs an app. There is no unscoped authoring-guide fallback.
         for (const input of [
           { file: "SKILL.md" },
           { name: "app-authoring" },
-          { name: "app-authoring", deployment: original.deployment },
+          { name: "app-authoring", version: original.version },
           { app: app.slug, file: "SKILL.md" },
           { app: app.slug, name: "app-authoring", file: "../index.ts" },
         ]) {

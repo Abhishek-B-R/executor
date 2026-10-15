@@ -8,7 +8,7 @@ import {
   AppSignInId,
 } from "@executor-js/hosted-server/app-ui/contracts";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-import type { AppId, AppSlug, DeploymentId } from "@executor-js/sdk";
+import type { AppId, AppSlug, VersionId } from "@executor-js/sdk";
 import { Cause, Data, Effect, Match, Option, Schedule, Schema, Stream } from "effect";
 import { Atom, AtomHttpApi } from "effect/reactivity";
 import type { HttpApiEndpoint } from "effect/http-api";
@@ -38,10 +38,10 @@ class AppUiKey extends Data.Class<{
   readonly slug: string;
   readonly app: AppId;
   readonly appSlug: AppSlug;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
 }> {}
 const location = Atom.family((key: AppUiKey) =>
-  // The open-app control polls deployment status; it loads after hydration.
+  // The open-app control polls version status; it loads after hydration.
   browserOnly(
     AppUiClient.runtime.atom(
       Stream.fromEffectSchedule(
@@ -68,7 +68,7 @@ export const appSignInFailureMessage = (failure: AppSignInFailure) =>
     Match.when("forbidden", () => "You do not have access to this app."),
     Match.when(
       "unavailable",
-      () => "The app page is unavailable. Check its deployment and the server’s app URL settings.",
+      () => "The app page is unavailable. Check its version and the server’s app URL settings.",
     ),
     Match.exhaustive,
   );
@@ -100,10 +100,10 @@ const message = Match.type<AppUiError>().pipe(
     OrganizationForbidden: () => "You do not have access to this app.",
     AppNotFound: () => "This app no longer exists.",
     AppNotDeployed: () => "Deploy this app before opening its page.",
-    DeploymentNotFound: () => "This app’s deployment is no longer available. Reload the app.",
+    VersionNotFound: () => "This app’s version is no longer available. Reload the app.",
     StorageError: () => "Executor could not read this app. Try again.",
     AppUiUnavailable: () =>
-      "The app page is unavailable. Check its deployment and the server’s app URL settings.",
+      "The app page is unavailable. Check its version and the server’s app URL settings.",
     Unauthorized: () => "Your session ended. Sign in again.",
     Forbidden: () => "Open Executor from its configured address.",
     AuthenticationUnavailable: () => "Sign-in is temporarily unavailable.",

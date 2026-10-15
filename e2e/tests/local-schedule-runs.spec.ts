@@ -70,7 +70,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         expect(deployed.status).toBe(200);
         const { app } = yield* body(
           Schema.Struct({
-            app: Schema.Struct({ id: Schema.String, activeDeployment: Schema.String }),
+            app: Schema.Struct({ id: Schema.String, activeVersion: Schema.String }),
           }),
           deployed,
         );
@@ -234,12 +234,12 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
             .split("\n")
             .filter((line) => !names.some((name) => line.startsWith(`    ${name}: `)))
             .join("\n");
-        const activate = (deployment: string, expectedDeployment: string) =>
+        const activate = (version: string, expectedVersion: string) =>
           Effect.gen(function* () {
             const response = yield* session.send(
               "POST",
               `/v1/apps/${app.id}/activate`,
-              { deployment, expectedDeployment },
+              { version, expectedVersion },
               headers,
             );
             expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -260,7 +260,7 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         );
         expect(updated.status).toBe(200);
         const current = yield* body(
-          Schema.Struct({ app: Schema.Struct({ activeDeployment: Schema.String }) }),
+          Schema.Struct({ app: Schema.Struct({ activeVersion: Schema.String }) }),
           updated,
         );
         expect(yield* saved).toEqual(["blocked", "input"]);
@@ -279,12 +279,12 @@ layer(TestLive, { excludeTestServices: true })("Scheduled runs", (it) => {
         ).toEqual({ status: "unavailable" });
 
         // A removal that lands during a run lets the mutation finish, then drops its record.
-        yield* activate(app.activeDeployment, current.app.activeDeployment);
+        yield* activate(app.activeVersion, current.app.activeVersion);
         expect(yield* saved).toEqual(["blocked", "input"]);
         yield* configure("slow", true);
         yield* dispatch("slow");
         yield* waitFor("slow", "running");
-        yield* activate(current.app.activeDeployment, app.activeDeployment);
+        yield* activate(current.app.activeVersion, app.activeVersion);
         expect(yield* saved).toEqual(["blocked", "input"]);
         expect((yield* runs).filter((run) => run.name === "slow").map((run) => run.status)).toEqual(
           ["running"],

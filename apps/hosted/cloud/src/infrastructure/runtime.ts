@@ -56,7 +56,7 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
     Effect.fail(
       new RuntimeBuildFailed({
         stage: "compile",
-        message: `The compiler did not answer within ${compilerDeadline}. No new deployment was activated; deploy again.`,
+        message: `The compiler did not answer within ${compilerDeadline}. No new version was activated; deploy again.`,
       }),
     ),
   ),

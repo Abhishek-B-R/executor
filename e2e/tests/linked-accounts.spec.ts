@@ -16,7 +16,7 @@ const Subscriptions = Schema.Array(
   Schema.Struct({
     id: Schema.String,
     actor: Schema.String,
-    deployment: Schema.String,
+    version: Schema.String,
     sourceAccount: Schema.String,
     status: Schema.String,
     callbackUrl: Schema.String,
@@ -29,13 +29,13 @@ const Sources = Schema.Array(
     label: Schema.String,
     status: Schema.String,
     failure: Schema.NullOr(Schema.String),
-    reconciledDeployment: Schema.NullOr(Schema.String),
+    reconciledVersion: Schema.NullOr(Schema.String),
   }),
 );
 const Deployed = Schema.Struct({
   app: Schema.Struct({
     id: Schema.String,
-    activeDeployment: Schema.String,
+    activeVersion: Schema.String,
     slug: Schema.String,
   }),
 });
@@ -117,13 +117,13 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           },
         };
         const owner = "local";
-        const deployment = yield* api.request(agent, "POST", "/v1/apps/deploy", {
+        const version = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           name: "Linked fixture",
           files,
         });
-        expect(deployment.status, JSON.stringify(deployment.body)).toBe(200);
-        const { app } = yield* body(Deployed, deployment);
+        expect(version.status, JSON.stringify(version.body)).toBe(200);
+        const { app } = yield* body(Deployed, version);
         const path = `/v1/apps/${app.id}`;
         const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
@@ -343,9 +343,7 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         const active = (yield* subscriptions).filter((hook) => hook.status === "active");
         expect(active.map((hook) => hook.sourceAccount).sort()).toEqual([mailA, mailB].sort());
         expect(
-          active.every(
-            (hook) => hook.actor === "local" && hook.deployment === app.activeDeployment,
-          ),
+          active.every((hook) => hook.actor === "local" && hook.version === app.activeVersion),
         ).toBe(true);
         const hook = active.find((item) => item.sourceAccount === mailA);
         if (hook === undefined) return yield* Effect.die(new Error("Missing subscription"));
@@ -446,7 +444,7 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           (rows) => rows.some((row) => row.status === "succeeded"),
         );
 
-        // A new deployment keeps the storage; webhook sources register on it.
+        // A new version keeps the storage; webhook sources register on it.
         const newer = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           app: app.id,
@@ -458,7 +456,7 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
         expect(newer.status, JSON.stringify(newer.body)).toBe(200);
         const activated = yield* body(Deployed, newer);
         expect(activated.app.id).toBe(app.id);
-        expect(activated.app.activeDeployment).not.toBe(app.activeDeployment);
+        expect(activated.app.activeVersion).not.toBe(app.activeVersion);
         const afterDeploy = yield* call("inspect");
         expect(afterDeploy.status, JSON.stringify(afterDeploy.body)).toBe(200);
         expect((yield* body(Completed, afterDeploy)).value).toMatchObject({
@@ -466,12 +464,12 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
           sink: sinkA,
           totalRows: 3,
         });
-        yield* poll("The source registers on the new deployment", sources, (rows) =>
+        yield* poll("The source registers on the new version", sources, (rows) =>
           rows.some(
             (row) =>
               row.account === mailA &&
               row.status === "ready" &&
-              row.reconciledDeployment === activated.app.activeDeployment,
+              row.reconciledVersion === activated.app.activeVersion,
           ),
         );
         const replaced = yield* subscriptions;
@@ -480,7 +478,7 @@ layer(TestLive, { excludeTestServices: true })("Linked accounts", (it) => {
             (item) =>
               item.status === "active" &&
               item.sourceAccount === mailA &&
-              item.deployment === activated.app.activeDeployment,
+              item.version === activated.app.activeVersion,
           ),
         ).toBe(true);
         expect(replaced.find((item) => item.id === hook.id)?.status).toBe("stopped");
@@ -675,11 +673,11 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
           },
           appsManifest,
         ];
-        const Deployment = Schema.Struct({
+        const Version = Schema.Struct({
           app: Schema.Struct({
             id: Schema.String,
             slug: Schema.String,
-            activeDeployment: Schema.String,
+            activeVersion: Schema.String,
           }),
         });
         const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
@@ -688,7 +686,7 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
           files: version("service"),
         });
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const { app } = yield* body(Deployment, deployed);
+        const { app } = yield* body(Version, deployed);
         const created: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -710,7 +708,7 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
             return connected.id;
           });
         const account = yield* connect("service", "historical");
-        const SkillRead = Schema.Struct({ deployment: Schema.String, content: Schema.String });
+        const SkillRead = Schema.Struct({ version: Schema.String, content: Schema.String });
         const read = (query: string) =>
           api.request(
             agent,
@@ -719,10 +717,10 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
           );
         const first = yield* body(SkillRead, yield* read(""));
         expect(first).toMatchObject({
-          deployment: app.activeDeployment,
+          version: app.activeVersion,
           content: expect.stringContaining(account),
         });
-        // A newer deployment renames the requirement the skill's text depends on.
+        // A newer version renames the requirement the skill's text depends on.
         const redeployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
           owner,
           app: app.id,
@@ -736,23 +734,23 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
         expect(unlinked.body).toMatchObject({ _tag: "AccountRequired", slot: "mail" });
         const renamed = yield* connect("mail", "renamed");
         const current = yield* body(SkillRead, yield* read(""));
-        expect(current.deployment).not.toBe(first.deployment);
+        expect(current.version).not.toBe(first.version);
         expect(current.content).toContain(renamed);
         expect(current.content).not.toContain(account);
-        // The earlier deployment's skill reads with that deployment's own requirement, whose link
+        // The earlier version's skill reads with that version's own requirement, whose link
         // to the first account remains.
-        const pinned = yield* read(`?deployment=${first.deployment}`);
+        const pinned = yield* read(`?version=${first.version}`);
         expect(pinned.status, JSON.stringify(pinned.body)).toBe(200);
         expect(yield* body(SkillRead, pinned)).toMatchObject({
-          deployment: first.deployment,
+          version: first.version,
           content: expect.stringContaining(account),
         });
         const client = yield* mcp.connect(target.apiKey, "historical-skill");
-        const viaMcp = yield* client.use("Read the earlier deployment's skill", (client, signal) =>
+        const viaMcp = yield* client.use("Read the earlier version's skill", (client, signal) =>
           client.callTool(
             {
               name: "skills",
-              arguments: { app: app.slug, name: "selected-account", deployment: first.deployment },
+              arguments: { app: app.slug, name: "selected-account", version: first.version },
             },
             undefined,
             { signal },
@@ -760,7 +758,7 @@ export default defineApp({ user: { accounts: { ${requirement}: service } } }, as
         );
         expect(viaMcp.isError, JSON.stringify(viaMcp)).not.toBe(true);
         expect(viaMcp.structuredContent).toMatchObject({
-          deployment: first.deployment,
+          version: first.version,
           content: expect.stringContaining(account),
         });
       }).pipe(Effect.provide(McpClient.layer)),

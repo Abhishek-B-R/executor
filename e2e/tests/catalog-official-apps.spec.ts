@@ -33,7 +33,7 @@ const Catalog = Schema.Array(
 const Installed = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
-  activeDeployment: Schema.String,
+  activeVersion: Schema.String,
   copiedFrom: Schema.Struct({
     name: Schema.String,
     reference: Schema.String,

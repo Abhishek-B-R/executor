@@ -1,4 +1,5 @@
-import { DeploymentId, OwnerId } from "./shared.ts";
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
+import { VersionId, OwnerId } from "./shared.ts";
 /** App-scoped workflow discovery and run management share one HTTP contract. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -22,7 +23,7 @@ import {
   AccountSelectionInvalid,
 } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
-import { DeploymentNotFound } from "./deployment.ts";
+import { VersionNotFound } from "./version.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 
 export { HostedWorkflow, WorkflowRun, WorkflowRunId, WorkflowRunPage, WorkflowFailure };
@@ -30,19 +31,20 @@ export { HostedWorkflow, WorkflowRun, WorkflowRunId, WorkflowRunPage, WorkflowFa
  * Start keys deduplicate retries within one configured app and actor. The run keeps the accounts it
  * starts with and the current actor, whose access its later steps are checked against.
  */
-export const StartWorkflow = Schema.Struct({
+export const StartWorkflowFields = Schema.Struct({
   app: AppId,
   accounts: Schema.optional(AppAccounts),
-  deployment: Schema.optional(DeploymentId),
+  version: Schema.optional(VersionId),
   workflow: WorkflowName,
   input: WorkflowValue,
   key: Schema.optional(Schema.NonEmptyString.check(Schema.isMaxLength(128))),
 });
+export const StartWorkflow = StartWorkflowFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** Runs are addressed within their configured app, never globally by ID alone. */
 export const WorkflowTarget = Schema.Struct({ app: AppId, run: WorkflowRunId });
 /**
  * What a retained run pinned when it started: its actor and the accounts it may use, by the scope
- * each requirement had on the run's pinned deployment. A run started without a caller names no
+ * each requirement had on the run's pinned version. A run started without a caller names no
  * `user`.
  */
 export const PinnedWorkflowRun = Schema.Struct({
@@ -51,11 +53,12 @@ export const PinnedWorkflowRun = Schema.Struct({
 });
 export type PinnedWorkflowRun = typeof PinnedWorkflowRun.Type;
 /** Bounded definition and history reads preserve product-owned authorization. */
-export const WorkflowApp = Schema.Struct({
+const WorkflowAppFields = Schema.Struct({
   app: AppId,
   accounts: Schema.optional(AppAccounts),
-  deployment: Schema.optional(DeploymentId),
+  version: Schema.optional(VersionId),
 });
+export const WorkflowApp = WorkflowAppFields.pipe(withLegacyKeys({ version: "deployment" }));
 export const ListWorkflowRuns = Schema.Struct({
   app: AppId,
   workflow: Schema.optional(WorkflowName),
@@ -77,7 +80,7 @@ export const WorkflowErrors = [
   AccountRequired,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
-  DeploymentNotFound,
+  VersionNotFound,
   OAuthReconnectRequired,
   OAuthRenewalFailed,
   WorkflowFailure,
@@ -88,7 +91,9 @@ const path = "/v1/apps/:app/workflow-runs";
 export const AppWorkflowsGroup = HttpApiGroup.make("appWorkflows").add(
   HttpApiEndpoint.get("list", "/v1/apps/:app/workflows", {
     params: { app: AppId },
-    query: { accounts: AppAccountsQuery, deployment: Schema.optional(DeploymentId) },
+    query: Schema.Struct({ accounts: AppAccountsQuery, version: Schema.optional(VersionId) }).pipe(
+      withLegacyKeys({ version: "deployment" }),
+    ),
     success: Schema.Array(HostedWorkflow),
     error: WorkflowErrors,
   }),
@@ -98,7 +103,9 @@ export const AppWorkflowRunsGroup = HttpApiGroup.make("appWorkflowRuns")
   .add(
     HttpApiEndpoint.post("start", path, {
       params: { app: AppId },
-      payload: StartWorkflow.mapFields(({ app: _app, ...fields }) => fields),
+      payload: StartWorkflowFields.mapFields(({ app: _app, ...fields }) => fields).pipe(
+        withLegacyKeys({ version: "deployment" }),
+      ),
       success: WorkflowRun,
       error: WorkflowErrors,
     }),

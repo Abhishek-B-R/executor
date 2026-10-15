@@ -17,7 +17,7 @@ export const declarationFreshness = {
 /**
  * How long an evaluated tool listing is reused, with the same meaning as `declarationFreshness`.
  * The app cache's `freshFor`/`staleFor` already bound how old a remote catalog behind a listing
- * can be, and a new deployment, account set or stored credential is a
+ * can be, and a new version, account set or stored credential is a
  * different listing, so this window only bounds re-evaluation and inputs nothing else tracks,
  * such as a factory that fetches without the app cache. `maxStaleMillis` defaults to 24 hours, so
  * a listing read at least once a day is served from memory while it refreshes in the background.
@@ -65,7 +65,7 @@ export interface CatalogReadOptions {
    * false: refreshing every aged result would load every app's Worker, so it serves a kept result
    * of any age below its `maxStaleMillis` as it is, and waits for the whole durable read rather
    * than evaluating beside a slow one. A result is still evaluated when none is kept,
-   * and a deployment, account selection, stored credential or app cache
+   * and a version, account selection, stored credential or app cache
    * invalidation is another result or forgets the kept one, so only inputs nothing tracks, such as
    * a factory that fetches without the app cache, can be older than they would be otherwise.
    */

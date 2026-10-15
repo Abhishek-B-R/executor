@@ -1,10 +1,10 @@
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
-import { StorageError, type App, type DeploymentId } from "@executor-js/sdk/core";
+import { StorageError, type App, type VersionId } from "@executor-js/sdk/core";
 
 /**
  * One-off: ask every organization's default Executor app to move to the current template.
- * Member setup redeploys a copy only while the deployment Executor installed is still active
+ * Member setup redeploys a copy only while the version Executor installed is still active
  * and its workspace has no unsaved edits; customized copies are left alone.
  *
  * Jobs start after a delay so the replacement server, not the one still serving during the
@@ -22,17 +22,17 @@ export const queueExecutorAppUpgrades = Effect.gen(function* () {
 });
 
 /**
- * After a data step redeploys an organization's default Executor app, record the new deployment
- * where the replaced one was recorded. Member setup trusts only the recorded deployment as
- * Executor's own; a copy recorded under another deployment, or none, stays as it was. The host
- * names how the step wakes webhook source reconciliation, which the new deployment leaves pending.
+ * After a data step redeploys an organization's default Executor app, record the new version
+ * where the replaced one was recorded. Member setup trusts only the recorded version as
+ * Executor's own; a copy recorded under another version, or none, stays as it was. The host
+ * names how the step wakes webhook source reconciliation, which the new version leaves pending.
  */
 export const executorDefaultRedeployed =
-  (wake: Effect.Effect<void>) => (app: App, replaced: DeploymentId, deployment: DeploymentId) =>
+  (wake: Effect.Effect<void>) => (app: App, replaced: VersionId, version: VersionId) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`update "organization" set metadata = jsonb_set(
-        metadata::jsonb, '{executorDefaults,deployment}', to_jsonb(${deployment}::text)
+        metadata::jsonb, '{executorDefaults,deployment}', to_jsonb(${version}::text)
       )::text
       where metadata::jsonb -> 'executorDefaults' ->> 'app' = ${app.id}
         and metadata::jsonb -> 'executorDefaults' ->> 'deployment' = ${replaced}`.pipe(

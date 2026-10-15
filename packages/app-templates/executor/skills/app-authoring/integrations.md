@@ -508,7 +508,7 @@ one shared account; public endpoints need no account.
 
 Helpers are separate subpath imports. Importing `apps` alone does not load
 MCP or GraphQL. Optional dependencies must appear in the app's manifest and
-resolve from its own installation. A missing peer fails the deployment with
+resolve from its own installation. A missing peer fails the deploy with
 the package to add. A declared `apps` version owns its framework dependencies;
 otherwise the host supplies them.
 

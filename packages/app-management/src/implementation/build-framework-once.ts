@@ -6,7 +6,7 @@
  */
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
-import { BlobStore, type BlobStorage, BuildId, DeploymentId } from "@executor-js/sdk/core";
+import { BlobStore, type BlobStorage, BuildId, VersionId } from "@executor-js/sdk/core";
 import {
   splitInlinedWorkerBuild,
   type BuildSplitOutcome,
@@ -18,18 +18,18 @@ export interface BuildFrameworkHost {
   readonly blobs: BlobStorage;
 }
 
-/** Each build once, with the first owner and deployment that reference it. */
+/** Each build once, with the first owner and version that reference it. */
 const ReferencedBuilds = Schema.Array(
-  Schema.Struct({ build: BuildId, owner: Schema.String, deployment: DeploymentId }),
+  Schema.Struct({ build: BuildId, owner: Schema.String, version: VersionId }),
 );
 
 /**
- * Every build any deployment row names, active or not: rolled-back deployments and builds a
+ * Every build any version row names, active or not: rolled-back versions and builds a
  * workflow run pinned are loadable too. Builds no row names cannot be loaded and are skipped.
  */
 const referencedBuilds = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`select build, min(owner) as owner, min(id) as deployment
+  return yield* sql`select build, min(owner) as owner, min(id) as version
     from executor_deployments group by build`.pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(ReferencedBuilds)),
   );
@@ -38,10 +38,10 @@ const referencedBuilds = Effect.gen(function* () {
 const splitBuild = (
   host: BuildFrameworkHost,
   build: BuildId,
-  deployment: DeploymentId,
+  version: VersionId,
   mode: DataStepMode,
 ) =>
-  splitInlinedWorkerBuild(build, deployment, mode).pipe(
+  splitInlinedWorkerBuild(build, version, mode).pipe(
     Effect.provideService(BlobStore, host.blobs),
     // Byte counts and framework labels stay out of the journal, which holds outcomes only.
     Effect.tap((split) => Effect.log("Build framework split", { build, mode, ...split })),
@@ -62,10 +62,10 @@ export const buildFrameworkOnceStep = (
   reportsAfterApply: true,
   items: referencedBuilds.pipe(
     Effect.map((builds) =>
-      builds.map(({ build, owner, deployment }) => ({
+      builds.map(({ build, owner, version }) => ({
         id: build,
         owner,
-        run: (mode: DataStepMode) => splitBuild(host, build, deployment, mode),
+        run: (mode: DataStepMode) => splitBuild(host, build, version, mode),
       })),
     ),
   ),

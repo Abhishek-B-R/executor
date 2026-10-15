@@ -3,9 +3,9 @@ const install = () => {
   const context = document.getElementById("executor-context")?.textContent;
   if (!context) return;
   const pinned: unknown = JSON.parse(context);
-  if (typeof pinned !== "object" || pinned === null || !("deployment" in pinned)) return;
-  const deployment = pinned.deployment;
-  if (typeof deployment !== "string" || deployment.length === 0) return;
+  if (typeof pinned !== "object" || pinned === null || !("version" in pinned)) return;
+  const version = pinned.version;
+  if (typeof version !== "string" || version.length === 0) return;
   const stream = new EventSource("/_executor/version");
   let reloading = false;
   const reload = () => {
@@ -19,9 +19,9 @@ const install = () => {
     if (
       typeof current === "object" &&
       current !== null &&
-      "deployment" in current &&
-      (current.deployment === null || typeof current.deployment === "string") &&
-      current.deployment !== deployment
+      "version" in current &&
+      (current.version === null || typeof current.version === "string") &&
+      current.version !== version
     )
       reload();
   });

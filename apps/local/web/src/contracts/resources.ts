@@ -1,4 +1,4 @@
-/** Independent resource queries and mutations retain the accounts and deployment that opened them. */
+/** Independent resource queries and mutations retain the accounts and version that opened them. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
@@ -6,7 +6,7 @@ import { Atom } from "effect/reactivity";
 import {
   WorkflowRunId,
   type AppId,
-  type DeploymentId,
+  type VersionId,
   type AccountId,
   type Json,
   type WebhookId,
@@ -19,7 +19,7 @@ import { DashboardClient } from "./api.ts";
 class Target extends Data.Class<{ readonly app: AppId }> {}
 class DefinitionKey extends Data.Class<{
   readonly app: AppId;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
 }> {}
 class StartKey extends Data.Class<{ readonly target: DefinitionKey; readonly workflow: string }> {}
 class PageKey extends Data.Class<{
@@ -36,7 +36,7 @@ const definitions = Atom.family((key: DefinitionKey) =>
     "definitions",
     hydrated({
       params: { app: key.app },
-      query: { deployment: key.deployment },
+      query: { version: key.version },
     }),
   ).pipe(revalidated, acknowledgedQuery),
 );
@@ -62,7 +62,7 @@ const starts = Atom.family((start: StartKey) => {
       Effect.flatMap(DashboardClient, (client) =>
         client.workflows.start({
           params: { app: key.app },
-          payload: { ...input, deployment: key.deployment },
+          payload: { ...input, version: key.version },
         }),
       ).pipe(
         Effect.tap((saved) =>

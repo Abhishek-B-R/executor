@@ -12,7 +12,7 @@ import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { withApps } from "../support/apps-release.ts";
 
-const DeployedApp = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const DeployedApp = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 
 const files = [
   {
@@ -96,7 +96,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
         );
         yield* evidence.json("app-crash-diagnostic.json", {
           traceId: details.match(/Diagnostic ID: ([a-f0-9]{32})/)?.[1],
-          deployment: app.activeDeployment,
+          version: app.activeVersion,
         });
         yield* browser.checkpoint("React render failure with local error details");
         for (const signal of ["traces", "logs"] as const) {
@@ -284,7 +284,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure recovery", (it) =>
           (entry) => entry.span.operationName === "ui.app.failure",
         )?.span;
         expect(span?.tags["executor.ui.failure.kind"]).toBe("runtime");
-        expect(span?.tags["executor.build.id"]).toBe(app.activeDeployment);
+        expect(span?.tags["executor.build.id"]).toBe(app.activeVersion);
         expect(span?.tags["exception.type"]).toBe("Error");
         expect(span?.tags["code.file.path"]).toMatch(/^\/_executor\/assets\/.*\.js$/);
         expect(Number(span?.tags["code.line.number"])).toBeGreaterThan(0);

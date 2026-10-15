@@ -2,17 +2,17 @@
 
 /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
 export const executorSkillDigests: Readonly<Record<string, string>> = {
-  "app-authoring/SKILL.md": "9ea602acf101a69300c8a502c897e4fe78fad611c6fd0851ab5938aac0b1d571",
+  "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
   "app-authoring/accounts.md": "79ff5338f09684bb033fa829a6ef56062d28c699c01f59d8ea9e99ecf35a8a3d",
-  "app-authoring/deploy.md": "61c21a56dc498504f4b96beb45c684a0172c02cb843658d2611484f1d9cff3c4",
+  "app-authoring/deploy.md": "2ae30feab4d030a2611034b436fbfb8a5619c065c015e343824be078bb198fae",
   "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
-  "app-authoring/integrations.md": "7713f0576c406e78c70361fb8e0fea729abd38c1423e95467b88d85bed44bc89",
-  "app-authoring/starter.md": "3e5b2f55da9aed2a6c0ff95d4c1982d1da6aa206fd404d6b5f1fb0b7c2880077",
-  "app-authoring/storage.md": "f811677f7ff0a5bcf43bf5009cecf797a17cf862cec4ad5c7fde340994c818aa",
-  "app-authoring/tools.md": "641cc2301d56d31b20a4e91fc05ef15c9ff4f86deb701ff73bf3424d80a38a5a",
-  "app-authoring/ui.md": "a304e873bc31c3d865552e4205f9599650a9d5f01c14690f102ae51d79c5f67a",
-  "app-authoring/webhooks.md": "b23ac48b7ff1b34ce0c09c285e1c435650c71068bfa223b277aca68644ca7ffa",
-  "app-authoring/workflows.md": "7a711dac0803032f7ea7fdf1265defabc18d935d868d7058034fc94a8c9d9019",
+  "app-authoring/integrations.md": "2d50abfb3b682eae292f6f02c4387e2eb11eff905e7b668811bc7c1443b43413",
+  "app-authoring/starter.md": "58445ed62c60fbcfa66934f805176e42d71802db9a408c7b8d4028352b0b3562",
+  "app-authoring/storage.md": "78f0658fa492e87c3a8c415c654998104213a945fb4344748b373dcb20fe957e",
+  "app-authoring/tools.md": "5bf392179f32dd46f587a73bf8ee091f72d24571c1a9581257cda2b8d1b60597",
+  "app-authoring/ui.md": "c2331bd689071b1b55d24a4a9da4aa186639a9ba2ee650c160fb05a3fe145729",
+  "app-authoring/webhooks.md": "713dde373c65582dcfb257001f4fd4d79ce6e89ad95669842137a5cd58c873dd",
+  "app-authoring/workflows.md": "243842172b2f3e12f3ba0b0bc28961c85a9e9e6f9a6c8e8191697c1d8dd479ae",
   "code-mode/SKILL.md": "a1fb5110a9d12613eee7097ca01369b2b64ea9ac9d3bd297dafc0f471132875f",
   "executor/SKILL.md": "8e8ae6af79edec98ecb62a14e591ae46f15deed14832972bf0a92de46761b432",
   "executor/feedback.md": "11397bd260917e5a21e92897a19368d0426bf5944a7c081adc2c061d1ea797cd"

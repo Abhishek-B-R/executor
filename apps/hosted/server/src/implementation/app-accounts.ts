@@ -18,7 +18,7 @@ import {
   type App,
   type AppAccounts,
   type AppRequirements,
-  type DeploymentId,
+  type VersionId,
   type Executor,
   type WebhookSourceConfig,
 } from "@executor-js/sdk/core";
@@ -119,18 +119,18 @@ export const callerLinkedAccounts = (apps: readonly AppId[]) =>
 export type CallerLinks = Effect.Effect<AppAccountReads, StorageError>;
 
 /**
- * One deployment of an app and the requirements its code declares: the active one for new
+ * One version of an app and the requirements its code declares: the active one for new
  * operations, or a retained one an operation pins, such as reading an earlier skill.
  */
 export interface AppVersion {
   readonly app: AppId;
-  readonly deployment: DeploymentId | null;
+  readonly version: VersionId | null;
   readonly requirements: AppRequirements;
 }
-/** The app's active deployment. */
+/** The app's active version. */
 export const activeVersion = (app: App): AppVersion => ({
   app: app.id,
-  deployment: app.activeDeployment,
+  version: app.activeVersion,
   requirements: app.requirements,
 });
 /**
@@ -174,7 +174,7 @@ export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
   Effect.gen(function* () {
     const resolved = yield* resolveLinkedAccounts({
       app: version.app,
-      deployment: version.deployment,
+      version: version.version,
       ...(yield* callerRequirements(version, links)),
     });
     const policy = yield* CurrentAuthorization;
@@ -192,7 +192,7 @@ export const stillLinked = (used: AppAccounts, current: AppAccounts) => {
     ids.every((id) => now.get(slot)?.includes(id)),
   );
 };
-/** The accounts an operation the caller starts runs with on the app's active deployment. */
+/** The accounts an operation the caller starts runs with on the app's active version. */
 export const callerAccounts = (app: App, links?: CallerLinks) =>
   versionAccounts(activeVersion(app), links);
 
@@ -366,7 +366,7 @@ export const removeLink = (sql: SqlClient.SqlClient, webhooks: WebhookSources, i
   }).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
 /**
- * Link an account to a requirement of the app's active deployment in the link's scope, in the
+ * Link an account to a requirement of the app's active version in the link's scope, in the
  * caller's transaction, under the app's lock. The requirement must be declared in that scope and
  * use the account's provider (`RequirementMismatch`), and the account must be the app owner's. A
  * plain requirement keeps one link per subject: linking another account replaces it, as

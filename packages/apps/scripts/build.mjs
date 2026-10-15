@@ -112,7 +112,7 @@ async function declarations(directory) {
 }
 await declarations(join(out, "types"));
 
-// Worker hosts retain these ready-to-link modules with each deployment. They
+// Worker hosts retain these ready-to-link modules with each app version. They
 // include runtime dependencies and do not execute npm package scripts.
 const snapshotDirectory = join(out, ".framework");
 const moduleName = (file) =>

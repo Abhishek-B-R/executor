@@ -14,7 +14,7 @@ export const appsVersion = apps.version;
 export const appsPeerVersion = (name: "@modelcontextprotocol/sdk" | "graphql") =>
   apps.devDependencies[name];
 
-/** Parse generated file paths and content before handing them to a host deployment API. */
+/** Parse generated file paths and content before handing them to a host deploy API. */
 export const sourceFiles = (
   files: readonly { readonly path: string; readonly content: string }[],
 ) =>

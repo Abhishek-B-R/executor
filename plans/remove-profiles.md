@@ -59,7 +59,7 @@ Calls never choose accounts. Each runs with the caller's linked accounts.
   the app.
 - `accountRemoving` deletes the account's user links in the same transaction.
   An account with an app link is refused (`AccountLinkedToApp`).
-- Discovery caches by deployment and account set instead of profile revision.
+- Discovery caches by version and account set instead of profile revision.
 - MCP returns to `tools[appSlug]`. Search lists each app's linked account
   labels as context; signatures take no account input.
 
@@ -79,7 +79,7 @@ Schedules and webhooks keep separate tables with the same rule:
   start paused and are enabled by a person.
 - Each member has at most one copy of a schedule declaration, which runs as
   them with their linked accounts. Fan-out within one copy uses `.many()`.
-- Workflows keep their captured accounts and deployment, as today.
+- Workflows keep their captured accounts and version, as today.
 
 ## Product and UI
 
@@ -102,7 +102,7 @@ Approved rules:
 - A member's profiles of one app are grouped by their plain accounts. The group
   of their oldest enabled profile (else oldest profile) stays with the app. Each
   other group becomes a copy of the app, "App (Profile)", with the same owner,
-  source, deployment and access, and an empty database.
+  source, version and access, and an empty database.
 - Each enabled profile's selections become the member's user links to its
   group's app, keyed by the selection's requirement, including shared accounts:
   a plain requirement's first existing account, every account of a many() one.
@@ -156,7 +156,7 @@ Implemented in the SDK layer of the stack.
   `webhooks.unlink({ app, account })` and `webhooks.sources({ app })`. The
   `WebhookSourceHost` dispatcher replaces `ProfileHost` and registers one
   managed subscription per definition the account's provider serves, on the
-  active deployment. Activation re-registers. Subscriptions record `actor`;
+  active version. Activation re-registers. Subscriptions record `actor`;
   callbacks resolve the accounts.
 - Workflow runs record the actor that started them. Runs started by app code
   see only runs of the same actor.

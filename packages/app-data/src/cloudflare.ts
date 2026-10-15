@@ -831,7 +831,7 @@ interface SelectedAccount {
   readonly id: string;
 }
 /**
- * A deployment and its account selection define one warm execution context. Credential values
+ * A version and its account selection define one warm execution context. Credential values
  * and workflow runs are delivered with each invocation: a renewed token or another run must not
  * load another Worker, which the runtime would keep for its lifetime.
  */

@@ -68,7 +68,7 @@ import {
 } from "../../contracts/apps.ts";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { AppTools } from "./app-tools.tsx";
-import { AppSource, AppDeployments } from "./app-source.tsx";
+import { AppSource, AppVersions } from "./app-source.tsx";
 
 /** The organization's inventory and the app, its linked accounts and its access, keyed by the URL. */
 export const appDetailPageReads: OrganizationPageReads = (organization, params) =>
@@ -84,12 +84,7 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
   });
 
 /** Views that read only the app. The others also read the inventory and the app's links. */
-const appWideViews: ReadonlySet<AppView> = new Set([
-  "settings",
-  "deployments",
-  "source",
-  "history",
-]);
+const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
 
 /**
  * Links with their sign-in state and checks by this app. Accounts the caller can use show the
@@ -160,7 +155,7 @@ export function AppDetailPage({
       ? accessPendingReason
       : canManage
         ? undefined
-        : "Only the app creator and organization admins can view app source and deployments.";
+        : "Only the app creator and organization admins can view app source and versions.";
   const missing = (forEveryone: boolean) => (
     <div className="space-y-3 p-5 text-sm text-muted-foreground">
       <p>
@@ -290,14 +285,14 @@ export function AppDetailPage({
             if (
               selectedView === "source" ||
               selectedView === "history" ||
-              selectedView === "deployments"
+              selectedView === "versions"
             )
               return !canManage ? (
                 <p className="p-5 text-sm text-muted-foreground">
                   The app creator and organization admins can inspect app source.
                 </p>
-              ) : selectedView === "deployments" ? (
-                <AppDeployments key={current.id} app={current} />
+              ) : selectedView === "versions" ? (
+                <AppVersions key={current.id} app={current} />
               ) : (
                 <AppSource key={current.id} app={current} view={selectedView} />
               );
@@ -334,7 +329,7 @@ export function AppDetailPage({
             };
             const requirements = requirementAccounts(current, linked);
             const ready = missingRequirements(requirements).length === 0;
-            const deployment = current.activeDeployment ?? undefined;
+            const version = current.activeVersion ?? undefined;
             const gate = (children: ReactNode) =>
               ready
                 ? children
@@ -400,7 +395,7 @@ export function AppDetailPage({
                             ready
                               ? [
                                   {
-                                    key: String(deployment),
+                                    key: String(version),
                                     query: appBrowserBindings(organization, current).workflows,
                                   },
                                 ]
@@ -425,8 +420,8 @@ export function AppDetailPage({
                         ready
                           ? [
                               {
-                                key: String(deployment),
-                                query: toolsAtom({ organization, app: current.id, deployment }),
+                                key: String(version),
+                                query: toolsAtom({ organization, app: current.id, version }),
                               },
                             ]
                           : []

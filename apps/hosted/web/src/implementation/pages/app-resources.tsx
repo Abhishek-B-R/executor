@@ -20,11 +20,11 @@ export function AppResources({
     const bindings = workflowBindings({
       organization,
       app: app.id,
-      deployment: app.activeDeployment ?? undefined,
+      version: app.activeVersion ?? undefined,
     });
     return (
       <AppWorkflows
-        key={String(app.activeDeployment)}
+        key={String(app.activeVersion)}
         app={app}
         bindings={bindings}
         start={(definition, onStarted) => (

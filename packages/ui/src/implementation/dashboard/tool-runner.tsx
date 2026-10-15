@@ -162,7 +162,7 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
 
 /**
  * Run one tool with a form or JSON draft. The product binds the call to its exact app and
- * deployment, and renders its own failures; the call runs with the accounts the caller linked to
+ * version, and renders its own failures; the call runs with the accounts the caller linked to
  * the app. Provider failures keep the shared account recovery. A call that needs approval waits for the person's review of the saved call.
  */
 export function ToolRunner<E>({

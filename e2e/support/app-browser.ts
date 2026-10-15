@@ -52,7 +52,7 @@ export const checkAppBrowser = (input: {
   readonly listUrl: string;
   readonly name: string;
   readonly readPaths: readonly string[];
-  readonly deployment: string;
+  readonly version: string;
   /** Readers browse the deployed catalog; people who can manage the app edit its working source. */
   readonly skills: "reader" | "editor";
 }) =>
@@ -130,10 +130,10 @@ export const checkAppBrowser = (input: {
       ),
     ).toBe(0);
     expect(
-      yield* browser.use("Deployment identifiers are not shown", (page) =>
+      yield* browser.use("Version identifiers are not shown", (page) =>
         page.getByRole("region", { name: "Workflow run details" }).textContent(),
       ),
-    ).not.toContain(input.deployment);
+    ).not.toContain(input.version);
     expect(
       yield* browser.use("Run results remain readable without code blocks", (page) =>
         page.getByRole("region", { name: "Workflow run details" }).locator("pre").count(),

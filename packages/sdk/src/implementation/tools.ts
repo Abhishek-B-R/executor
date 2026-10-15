@@ -38,7 +38,7 @@ import {
   type SelectedAccounts,
 } from "../contracts/apps.ts";
 import { AccountNotFound } from "../contracts/account.ts";
-import { DeploymentNotFound } from "../contracts/deployment.ts";
+import { VersionNotFound } from "../contracts/version.ts";
 import {
   type AppAccountUse,
   CurrentActor,
@@ -56,7 +56,7 @@ import {
   CredentialsError,
   type AccountId,
   type AppId,
-  type DeploymentId,
+  type VersionId,
 } from "../contracts/shared.ts";
 import type { Account } from "../contracts/account.ts";
 import { OAuthReconnectRequired } from "../contracts/oauth.ts";
@@ -98,10 +98,10 @@ import {
   type Credentials,
   type StoredAccount,
   StoredApp,
-  StoredDeployment,
+  StoredVersion,
 } from "../contracts/storage.ts";
 import { makeToolApprovals } from "./tool-approvals.ts";
-import { gotApp, storedDeployment } from "./apps.ts";
+import { gotApp, storedVersion } from "./apps.ts";
 import { database, query, type Query } from "./database.ts";
 import type { OwnerId } from "../contracts/shared.ts";
 import { invocationAccounts } from "./linked-accounts.ts";
@@ -117,7 +117,7 @@ import {
 import type { Listings, ToolListing } from "./listings.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
-/** The configured app with its active deployment, in one statement. */
+/** The configured app with its active version, in one statement. */
 const readApp = (db: Query, app: AppId) =>
   query(() =>
     db.findFirst("apps", {
@@ -137,7 +137,7 @@ interface SnapshotReads {
 }
 
 /**
- * Resolve the app, pinned deployment and the named accounts before invoking authored code. The
+ * Resolve the app, pinned version and the named accounts before invoking authored code. The
  * snapshot keeps the current actor, so work it starts, such as a workflow, is checked against the
  * same subject later.
  *
@@ -154,7 +154,7 @@ export function snapshot(
   db: Query,
   input: {
     app: AppId;
-    deployment?: DeploymentId | undefined;
+    version?: VersionId | undefined;
     accounts?: AppAccounts | undefined;
     /**
      * A selection background work captured, such as a workflow run's or a registration's, with
@@ -173,31 +173,31 @@ export function snapshot(
     const app = yield* Schema.decodeUnknownEffect(StoredApp)(row).pipe(
       Effect.mapError(() => new StorageError()),
     );
-    const deploymentId = input.deployment ?? app.activeDeployment;
-    if (deploymentId === null) return yield* new AppNotDeployed({ app: app.id });
-    // Historical invocations retain their pinned deployment and its lineage check.
-    const deployment =
-      deploymentId !== app.activeDeployment
-        ? yield* storedDeployment(db, app, deploymentId)
+    const versionId = input.version ?? app.activeVersion;
+    if (versionId === null) return yield* new AppNotDeployed({ app: app.id });
+    // Historical invocations retain their pinned version and its lineage check.
+    const version =
+      versionId !== app.activeVersion
+        ? yield* storedVersion(db, app, versionId)
         : row.deployment === null
-          ? yield* new DeploymentNotFound({ app: app.id, deployment: deploymentId })
-          : yield* Schema.decodeUnknownEffect(StoredDeployment)(row.deployment).pipe(
+          ? yield* new VersionNotFound({ app: app.id, version: versionId })
+          : yield* Schema.decodeUnknownEffect(StoredVersion)(row.deployment).pipe(
               Effect.mapError(() => new StorageError()),
             );
     const { scope, accounts, selections } = yield* chooseAccounts(
       db,
       app.id,
-      deployment,
+      version,
       input.captured === undefined
         ? input.accounts
         : scopedSelection(
-            deployment.requirements.accounts,
+            version.requirements.accounts,
             input.captured.accounts,
             input.captured.scope,
           ),
       ahead?.accounts,
     );
-    return { app, deployment, scope, selections, accounts, actor: yield* CurrentActor };
+    return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
   });
 }
 
@@ -239,7 +239,7 @@ class GrantHint {
 /** Whether any of these sign-in types reads a grant; an unknown definition may. */
 const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
   types === undefined || types.some((type) => type !== "secrets");
-/** The {@link GrantHint} for an app's accounts, from its deployment and any account rows read. */
+/** The {@link GrantHint} for an app's accounts, from its version and any account rows read. */
 const grantHint = (
   app: Effect.Success<ReturnType<typeof gotApp>>,
   accounts: AppAccounts | undefined,
@@ -452,7 +452,7 @@ function resolveFor(
           return yield* Effect.fail(
             new AccountRequired({
               app: state.app.id,
-              deployment: state.deployment.id,
+              version: state.version.id,
               slot,
               scope: required.scope,
             }),
@@ -473,7 +473,7 @@ function resolveFor(
 const accountsOutcome = (outcome: "ready" | "reconnect" | "account_required") =>
   Effect.annotateCurrentSpan("executor.accounts.outcome", outcome);
 
-/** One resolved invocation: app, pinned deployment, actor and account selection. */
+/** One resolved invocation: app, pinned version, actor and account selection. */
 export type InvocationSnapshot = Effect.Success<ReturnType<typeof snapshot>>;
 type InvocationContext = Effect.Success<ReturnType<typeof resolve>>;
 type SelectedAccount = HostAccountSlots[string];
@@ -565,7 +565,7 @@ function invocation(
   return Schema.decodeUnknownEffect(ToolInvocation)({
     app: state.app.id,
     owner: state.app.owner,
-    deployment: state.deployment.id,
+    version: state.version.id,
     tool,
     ...(kind === undefined ? {} : { kind }),
     input,
@@ -586,14 +586,14 @@ function invocation(
 }
 
 /**
- * Check failures that are answers: the saved call's app, deployment or accounts are now missing
+ * Check failures that are answers: the saved call's app, version or accounts are now missing
  * or different. Anything else, such as storage failing, answers nothing.
  */
 const isContextChange = Schema.is(
   Schema.Union([
     AppNotFound,
     AppNotDeployed,
-    DeploymentNotFound,
+    VersionNotFound,
     AccountNotFound,
     AccountSelectionInvalid,
     AccountRequired,
@@ -611,7 +611,7 @@ type Renewal = "renewed" | RenewalFailure;
 
 /** The typed error of a failed call. */
 const runtimeFailure = (
-  identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
+  identity: { app: AppId; version: VersionId; tool: ToolName },
   state: InvocationSnapshot,
   renewal: Renewal | undefined,
 ) =>
@@ -783,7 +783,7 @@ export const makeTools = (
   ) =>
     Schema.is(ProviderError)(error)
       ? appProviderFailure(state, error, renewal)
-      : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, error);
+      : evaluationFailure({ app: state.app.id, version: state.version.id }, error);
   /**
    * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
    * service did not perform the refused request, but an earlier request in the same call may
@@ -813,7 +813,7 @@ export const makeTools = (
   /** Runtime options that evaluate one invocation's catalog with its resolved accounts. */
   const inspection = (state: InvocationSnapshot, context: InvocationContext) => ({
     app: state.app.id,
-    build: state.deployment.build,
+    build: state.version.build,
     ...context,
     ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
   });
@@ -853,14 +853,14 @@ export const makeTools = (
     inspectRenewing(state, context, (context) =>
       read(
         inspection(state, context),
-        state.deployment.requirements.capabilities?.toolIndex === true,
-        state.deployment.requirements.capabilities?.scheduledTools === true,
+        state.version.requirements.capabilities?.toolIndex === true,
+        state.version.requirements.capabilities?.scheduledTools === true,
       ),
     );
   /** Inspect the live catalog for one tool, or all of it on builds without a tool index. */
   const inspectTool = (state: InvocationSnapshot, name: ToolName, context: InvocationContext) =>
     runtime.inspect(
-      state.deployment.requirements.capabilities?.toolIndex === true
+      state.version.requirements.capabilities?.toolIndex === true
         ? { ...inspection(state, context), tools: [name] }
         : inspection(state, context),
     );
@@ -878,10 +878,10 @@ export const makeTools = (
         if (failed !== undefined)
           return yield* Schema.is(ProviderError)(failed)
             ? appProviderFailure(state, failed)
-            : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, failed);
+            : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
         return yield* new ToolNotFound({
           app: state.app.id,
-          deployment: state.deployment.id,
+          version: state.version.id,
           tool: name,
         });
       });
@@ -1145,10 +1145,10 @@ export const makeTools = (
       );
       yield* Effect.annotateCurrentSpan({
         "executor.app.id": state.app.id,
-        "executor.deployment.id": state.deployment.id,
-        "executor.build.id": state.deployment.build,
+        "executor.deployment.id": state.version.id,
+        "executor.build.id": state.version.build,
       });
-      return { deployment: state.deployment.id, value: yield* readCatalog(state, context, read) };
+      return { version: state.version.id, value: yield* readCatalog(state, context, read) };
     });
   /** The invocation state a listing is read for, annotated on the caller's span. */
   const listed = (input: Parameters<typeof snapshot>[1]) =>
@@ -1156,8 +1156,8 @@ export const makeTools = (
       const state = yield* snapshot(db, input).pipe(Effect.withSpan("sdk.invocation.snapshot"));
       yield* Effect.annotateCurrentSpan({
         "executor.app.id": state.app.id,
-        "executor.deployment.id": state.deployment.id,
-        "executor.build.id": state.deployment.build,
+        "executor.deployment.id": state.version.id,
+        "executor.build.id": state.version.build,
       });
       return state;
     });
@@ -1167,12 +1167,8 @@ export const makeTools = (
     (state: InvocationSnapshot) =>
     ({ tools, routers }: Effect.Success<ReturnType<typeof runtime.inspect>>): ToolListing => ({
       catalog: {
-        deployment: state.deployment.id,
-        accounts: scopedSelection(
-          state.deployment.requirements.accounts,
-          state.accounts,
-          state.scope,
-        ),
+        version: state.version.id,
+        accounts: scopedSelection(state.version.requirements.accounts, state.accounts, state.scope),
       },
       routers,
       items: [...tools]
@@ -1180,7 +1176,7 @@ export const makeTools = (
         .map((tool) => ({
           ...tool,
           app: state.app.id,
-          deployment: state.deployment.id,
+          version: state.version.id,
           name: ToolName.make(tool.name),
         })),
     });
@@ -1274,9 +1270,9 @@ export const makeTools = (
         const found = yield* listings.searchable(state, listingOf(state), options);
         return {
           listing: found.listing,
-          deployment: state.deployment.id,
+          version: state.version.id,
           accounts: scopedSelection(
-            state.deployment.requirements.accounts,
+            state.version.requirements.accounts,
             state.accounts,
             state.scope,
           ),
@@ -1290,14 +1286,14 @@ export const makeTools = (
     scheduled: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
         const {
-          deployment,
+          version,
           value: { tools },
         } = yield* evaluate(input, (options, _toolIndex, scheduled) =>
           runtime.inspect(scheduled ? { ...options, scheduled: true } : options),
         );
-        // Callers that act on the result can require that this deployment is still active.
+        // Callers that act on the result can require that this version is still active.
         return {
-          deployment,
+          version,
           items: tools.flatMap((tool) =>
             (tool.schedules ?? []).map((schedule) => ({
               ...schedule,
@@ -1340,7 +1336,7 @@ export const makeTools = (
         if (failed !== undefined)
           return yield* Schema.is(ProviderError)(failed)
             ? appProviderFailure(state, failed)
-            : evaluationFailure({ app: state.app.id, deployment: state.deployment.id }, failed);
+            : evaluationFailure({ app: state.app.id, version: state.version.id }, failed);
         yield* Effect.annotateCurrentSpan("executor.tools.source", "live");
         const context = yield* resolve(state, resolveAccount).pipe(
           Effect.withSpan("sdk.accounts.resolve"),
@@ -1349,7 +1345,7 @@ export const makeTools = (
         return {
           ...tool,
           app: state.app.id,
-          deployment: state.deployment.id,
+          version: state.version.id,
           name: ToolName.make(tool.name),
         };
       }).pipe(Effect.withSpan("sdk.tools.get")),
@@ -1382,11 +1378,11 @@ export const makeTools = (
           Effect.withSpan("sdk.accounts.resolve"),
           Effect.provideService(GrantReadAhead, grants),
         );
-        const identity = { app: state.app.id, deployment: state.deployment.id, tool: parsed.tool };
+        const identity = { app: state.app.id, version: state.version.id, tool: parsed.tool };
         yield* Effect.annotateCurrentSpan({
           "executor.app.id": state.app.id,
-          "executor.deployment.id": state.deployment.id,
-          "executor.build.id": state.deployment.build,
+          "executor.deployment.id": state.version.id,
+          "executor.build.id": state.version.build,
         });
         // Set by the host when it hands this call's work to the app's code: catalog reads for its
         // kind, and the call itself.
@@ -1410,8 +1406,8 @@ export const makeTools = (
               return runtime.call({
                 app: state.app.id,
                 ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
-                build: state.deployment.build,
-                database: ownsDatabase(state.deployment.requirements),
+                build: state.version.build,
+                database: ownsDatabase(state.version.requirements),
                 ...context,
                 tool: parsed.tool,
                 ...(kind === undefined ? {} : { kind }),
@@ -1508,7 +1504,7 @@ export const makeTools = (
                 // The saved identities name the accounts; their credentials are resolved again.
                 const checked = yield* snapshot(db, {
                   app: saved.app,
-                  deployment: saved.deployment,
+                  version: saved.version,
                   accounts: invocationAccounts(saved),
                 }).pipe(
                   Effect.withSpan("sdk.invocation.snapshot"),
@@ -1547,8 +1543,8 @@ export const makeTools = (
                 return yield* Effect.gen(function* () {
                   yield* Effect.annotateCurrentSpan({
                     "executor.app.id": saved.app,
-                    "executor.deployment.id": saved.deployment,
-                    "executor.build.id": state.deployment.build,
+                    "executor.deployment.id": saved.version,
+                    "executor.build.id": state.version.build,
                     "executor.tool.name": saved.tool,
                     "executor.approval.id": input.requestId,
                   });
@@ -1570,8 +1566,8 @@ export const makeTools = (
                           ...(workflows === undefined
                             ? {}
                             : { workflowControls: workflows(state) }),
-                          build: state.deployment.build,
-                          database: ownsDatabase(state.deployment.requirements),
+                          build: state.version.build,
+                          database: ownsDatabase(state.version.requirements),
                           ...context,
                           tool: saved.tool,
                           ...(kind === undefined ? {} : { kind }),
@@ -1600,7 +1596,7 @@ export const makeTools = (
                     if (Result.isFailure(result))
                       return yield* Effect.fail(
                         runtimeFailure(
-                          { app: saved.app, deployment: saved.deployment, tool: saved.tool },
+                          { app: saved.app, version: saved.version, tool: saved.tool },
                           state,
                           renewal,
                         )(result.failure),

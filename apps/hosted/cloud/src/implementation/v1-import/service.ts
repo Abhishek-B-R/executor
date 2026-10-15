@@ -46,7 +46,7 @@ import { makeImportStore, sourceHash, type MapResult, type MapRow } from "./stor
 /** The note on an imported policy that matches none of the tools v1 last listed. */
 export const noToolMatches = "It matches no tool v1 last listed for its integration.";
 
-/** The v2 kind of an app imported as source without a deployment, which needs repair. */
+/** The v2 kind of an app imported as source without a version, which needs repair. */
 const undeployedApp = "undeployed_app";
 
 /** The operator's OAuth clients this request's executor offers, by v1's first-party name. */

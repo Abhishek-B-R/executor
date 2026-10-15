@@ -1,8 +1,9 @@
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { ApiError } from "@executor-js/utils/api-error";
 /** Framework data operations. Product hosts authenticate and authorize the configured app. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
-import { AppId, DeploymentId, Json, StorageError, CredentialsError } from "./shared.ts";
+import { AppId, VersionId, Json, StorageError, CredentialsError } from "./shared.ts";
 import {
   AppAccounts,
   AppNotFound,
@@ -12,26 +13,27 @@ import {
   AccountSelectionInvalid,
 } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
-import { DeploymentNotFound } from "./deployment.ts";
+import { VersionNotFound } from "./version.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 
 /** Transportable invocation, independent of closures, credentials or server module imports. */
-export const AppDataInput = Schema.Struct({
+const AppDataInputFields = Schema.Struct({
   app: AppId,
   accounts: Schema.optional(AppAccounts),
-  deployment: Schema.optional(DeploymentId),
+  version: Schema.optional(VersionId),
   name: Schema.NonEmptyString,
   input: Json,
 });
+export const AppDataInput = AppDataInputFields.pipe(withLegacyKeys({ version: "deployment" }));
 /** Parsed app query/mutation invocation. */
 export type AppDataInput = typeof AppDataInput.Type;
-/** The selected deployment did not define this operation. */
+/** The selected version did not define this operation. */
 export const AppDataNotFound = ApiError.define({
   tag: "AppDataNotFound",
   status: 404,
   fields: { app: AppId, name: Schema.String },
-  message: ({ name }) => `The selected deployment does not define the operation “${name}”.`,
-  recorded: () => "The selected deployment does not define the requested operation",
+  message: ({ name }) => `The selected version does not define the operation “${name}”.`,
+  recorded: () => "The selected version does not define the requested operation",
 });
 export type AppDataNotFound = typeof AppDataNotFound.Type;
 /** Invalid input, unavailable storage, or failed app code. Details stay in the host. */
@@ -52,7 +54,7 @@ const errors = [
   AppNotFound,
   AppNotDeployed,
   AccountNotFound,
-  DeploymentNotFound,
+  VersionNotFound,
   AccountRequired,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,

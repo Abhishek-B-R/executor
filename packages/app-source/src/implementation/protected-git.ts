@@ -92,7 +92,7 @@ const commandListParser = () => {
 /** Why a command may not reach the repository, or undefined when it may. */
 const refusal = (update: PushCommand) =>
   update.ref.startsWith("refs/heads/__executor/")
-    ? "Executor keeps this ref for retained deployments"
+    ? "Executor keeps this ref for retained versions"
     : update.ref === "refs/heads/main" && update.new === "0".repeat(40)
       ? "the app's main branch cannot be deleted"
       : undefined;
@@ -213,7 +213,7 @@ export const protectGit = (backend: RepositoryBackend): RepositoryBackend => ({
           parsed.commands,
           parsed.capabilities,
           (update) => refusal(update) ?? "another ref in this push is protected",
-          "Executor refused this push. Branches named __executor/... hold retained deployments, and main cannot be deleted. No ref was changed.",
+          "Executor refused this push. Branches named __executor/... hold retained versions, and main cannot be deleted. No ref was changed.",
         );
         if (refused === undefined) return yield* new SourceError({ reason: "protected" });
         return refused;

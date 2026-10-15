@@ -129,7 +129,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
             page.route(
               (url) =>
                 url.pathname.includes(`/apps/${app.id}/`) &&
-                /\/(source|workspace|history|deployments)$/.test(url.pathname),
+                /\/(source|workspace|history|versions)$/.test(url.pathname),
               (route) => {
                 forbiddenReads.push(new URL(route.request().url()).pathname);
                 return route.fallback();
@@ -188,7 +188,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 yield* browser.use("Member restriction resolves", (page) =>
                   page
                     .locator(
-                      '[data-disabled-reason="Only the app creator and organization admins can view app source and deployments."]',
+                      '[data-disabled-reason="Only the app creator and organization admins can view app source and versions."]',
                     )
                     .first()
                     .waitFor(),
@@ -231,10 +231,10 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                   ),
                 ).toBe(true);
                 expect(
-                  yield* browser.use("Deployments tab is disabled", (page) =>
+                  yield* browser.use("Versions tab is disabled", (page) =>
                     page
                       .getByRole("navigation", { name: "App navigation" })
-                      .getByRole("button", { name: "Deployments", exact: true })
+                      .getByRole("button", { name: "Versions", exact: true })
                       .isDisabled(),
                   ),
                 ).toBe(true);

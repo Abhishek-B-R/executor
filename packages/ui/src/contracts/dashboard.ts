@@ -6,7 +6,7 @@ import type {
   AccountId,
   App,
   AppId,
-  DeploymentId,
+  VersionId,
   Provider,
   ProviderDefinition,
   ToolRouter,
@@ -21,11 +21,11 @@ import {
   type RequirementAccounts,
 } from "./app-accounts.ts";
 import type {
-  DeploymentDisplay,
+  VersionDisplay,
   SourceDisplayFile,
 } from "@executor-js/app-management/contracts/source-display";
 import type { Atom, AsyncResult } from "effect/reactivity";
-import { Schema, type Cause } from "effect";
+import { Schema, SchemaGetter, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
 
 /** An app's live tools with the routers that group them, such as one MCP server each. */
@@ -69,19 +69,19 @@ export interface QueryProps<A, E> {
   readonly query: Query<A, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
 }
-/** Deployment history and retained source supplied by a product-specific dashboard adapter. */
-export interface AppDeploymentsProps<E> {
+/** Version history and retained source supplied by a product-specific dashboard adapter. */
+export interface AppVersionsProps<E> {
   readonly app: App;
-  readonly deployments: readonly {
-    readonly id: DeploymentId;
+  readonly versions: readonly {
+    readonly id: VersionId;
     readonly createdAt: Date;
     readonly fileCount: number;
   }[];
-  readonly deployment: DeploymentId;
-  readonly onDeploymentChange: (deployment: DeploymentId | undefined) => void;
-  readonly query: Query<DeploymentDisplay, E>;
-  /** Reads one file of the listed deployment when the listing did not inline it. */
-  readonly file: (deployment: DeploymentId, path: string) => Query<SourceDisplayFile, E>;
+  readonly version: VersionId;
+  readonly onVersionChange: (version: VersionId | undefined) => void;
+  readonly query: Query<VersionDisplay, E>;
+  /** Reads one file of the listed version when the listing did not inline it. */
+  readonly file: (version: VersionId, path: string) => Query<SourceDisplayFile, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly actions?: ReactNode;
 }
@@ -105,10 +105,23 @@ export const AppView = Schema.Literals([
   "accounts",
   "source",
   "history",
-  "deployments",
+  "versions",
   "settings",
 ]);
 export type AppView = typeof AppView.Type;
+/**
+ * The view a URL names. `deployments`, the former name of `versions`, still opens it, so links
+ * saved before the rename keep working.
+ */
+export const AppViewFromUrl = Schema.Union([
+  AppView,
+  Schema.Literal("deployments").pipe(
+    Schema.decodeTo(Schema.Literal("versions"), {
+      decode: SchemaGetter.transform(() => "versions" as const),
+      encode: SchemaGetter.transform(() => "deployments" as const),
+    }),
+  ),
+]);
 /** Assistants with a setup guide, as setup URLs name them. */
 export const AssistantId = Schema.Literals([
   "claude",
@@ -185,7 +198,7 @@ export function appToolReadiness<A extends AccountSummary>(
   | { readonly state: "unavailable"; readonly accounts: readonly A[] }
   | { readonly state: "rejected"; readonly accounts: readonly A[] }
   | { readonly state: "ready"; readonly warnings: readonly AccountCheckWarning<A>[] } {
-  if (app.activeDeployment === null) return { state: "not-deployed" };
+  if (app.activeVersion === null) return { state: "not-deployed" };
   const selected = usedAccounts(requirements);
   if (selected === undefined)
     return {

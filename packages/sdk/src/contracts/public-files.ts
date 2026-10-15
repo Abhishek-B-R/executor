@@ -1,7 +1,7 @@
 /**
- * A deployment's public files: the `ui/public/` files of its source, copied by the deploy into the
+ * A version's public files: the `ui/public/` files of its source, copied by the deploy into the
  * host's blob store and served from there. Nothing outside the host reads or writes this store;
- * its objects belong to one app code lineage and are referenced by that lineage's deployments.
+ * its objects belong to one app code lineage and are referenced by that lineage's versions.
  */
 import { Schema } from "effect";
 import { BlobKey } from "./blobs.ts";
@@ -33,7 +33,7 @@ export type PublicFile = typeof PublicFile.Type;
 
 /**
  * A build's public files, retained beside it at `<build>/public.json`. `code` names the lineage
- * whose store holds the bytes, so activating any retained deployment serves its own files.
+ * whose store holds the bytes, so activating any retained version serves its own files.
  */
 export const PublicFileManifest = Schema.Struct({
   code: Schema.String,

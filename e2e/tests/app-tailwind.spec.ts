@@ -12,7 +12,7 @@ import { App } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { withApps } from "../support/apps-release.ts";
 
-const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 
 const files = [
   {
@@ -178,12 +178,12 @@ layer(HostedLive, { excludeTestServices: true })("App Tailwind styles", (it) => 
             ),
           });
           expect(rejected.status).toBe(422);
-          expect(rejected.body).toMatchObject({ _tag: "DeploymentBuildFailed" });
+          expect(rejected.body).toMatchObject({ _tag: "VersionBuildFailed" });
           const current = yield* body(
             Deployed,
             yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}`),
           );
-          expect(current.activeDeployment).toBe(app.activeDeployment);
+          expect(current.activeVersion).toBe(app.activeVersion);
         }
         yield* browser.use("A failed stylesheet update keeps the working app", (page) =>
           page.reload(),

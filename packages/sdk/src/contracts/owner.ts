@@ -1,4 +1,5 @@
 /** Owner lifecycle. Products call this when an owner itself stops existing. */
+import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { Schema, type Effect } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { OwnerId, StorageError, WebhookId } from "./shared.ts";
@@ -13,13 +14,14 @@ export class OwnerWebhooksActive extends Schema.TaggedError<OwnerWebhooksActive>
 ) {}
 
 /** What the purge actually deleted, so a product can report and verify the result. */
-export const OwnerRemoved = Schema.Struct({
+const OwnerRemovedFields = Schema.Struct({
   owner: OwnerId,
   apps: Schema.Int,
   accounts: Schema.Int,
-  deployments: Schema.Int,
+  versions: Schema.Int,
   connections: Schema.Int,
 });
+export const OwnerRemoved = OwnerRemovedFields.pipe(withLegacyKeys({ versions: "deployments" }));
 export type OwnerRemoved = typeof OwnerRemoved.Type;
 
 /** A read-only verdict, so a caller can gate irreversible work on a refusal it cannot clear. */
@@ -51,7 +53,7 @@ export const OwnersGroup = HttpApiGroup.make("owners")
       error: [StorageError, OwnerWebhooksActive, AppWorkflowsActive, AccountWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete every record belonging to one owner: configured apps, app records, stopped webhooks, saved accounts and their credentials, retained deployments, pending connections, pending approvals, schedules with their run history and completed workflow runs. Remove live webhook subscriptions and finish or terminate active workflows first. Repeating removal is safe.",
+      "Delete every record belonging to one owner: configured apps, app records, stopped webhooks, saved accounts and their credentials, retained versions, pending connections, pending approvals, schedules with their run history and completed workflow runs. Remove live webhook subscriptions and finish or terminate active workflows first. Repeating removal is safe.",
     ),
   );
 

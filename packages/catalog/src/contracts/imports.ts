@@ -1,4 +1,4 @@
-/** Custom imports retain public configuration; credentials are connected after deployment. */
+/** Custom imports retain public configuration; credentials are connected after deploying. */
 import { Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk";
 

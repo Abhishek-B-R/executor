@@ -65,7 +65,7 @@ there as JSON, so scripts can read it:
 ```json
 {
   "error": {
-    "code": "DeploymentBuildFailed",
+    "code": "VersionBuildFailed",
     "status": 422,
     "message": "App build failed at the declaration stage: ...",
     "details": {
@@ -292,7 +292,7 @@ Local has no organization: omit `path` for `framework.release` and create, and
 pass `path: { app: app.id }` to deploy.
 
 A new app runs only once deployed; its tools and `appUi.location` answer only
-after that first deployment. Deploy the same `{ files }` straight after create,
+after the first deploy. Deploy the same `{ files }` straight after create,
 as above, or read `appManagement.source` and deploy the commit create saved
 with `body: { commit: source.revision.commit }`.
 
@@ -302,7 +302,7 @@ To change the app, read its working source and save the complete file list with
 not the `expected` commit you read before editing, or deploy a complete file
 list with `body: { files }`. Supply exactly one. `appManagement.deploy` takes
 the app ID in `path` and does not accept `name`, `expected` or
-`expectedDeployment`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
+`expectedVersion`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
 Running apps copy their deployed source and deploy the copy. Unfinished apps copy
 their working files and remain undeployed.
 
@@ -322,9 +322,9 @@ installed copies. A changed listing must be reviewed again before installation.
 Local and self-host consume the public registry; publish on the cloud host after
 pushing the source there. Agents edit their owned copy through normal app tools.
 
-Hosted deployment currently creates a new named app and returns the app directly.
-It rejects an existing name. Use source commits and deployment by app ID for edits.
-After deployment, start a new execute to discover and call its tools.
+Hosted deploy currently creates a new named app and returns the app directly.
+It rejects an existing name. Use source commits and deploy by app ID for edits.
+After deploying, start a new execute to discover and call its tools.
 Other hosted operations include `organization.inventory`, `organization.catalog`,
 `apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, `appAccounts` operations, and
 `apps.remove`. Always read their discovered signatures before calling them.
@@ -374,11 +374,11 @@ return await executor.apps.deploy({
 });
 ```
 
-The response contains `app` and `deployment`. Local creates every app under the
+The response contains `app` and `version`. Local creates every app under the
 `local` owner, whatever owner you send. Creating an app with the same name again
 fails with `AppNameTaken`. To deploy an existing app, use
 `body: { owner: app.owner, app: app.id, files }` or `body: { owner: app.owner, app: app.id, commit }`.
-Deployment activates the new build after it succeeds and does not save working
+Deploying activates the new build after it succeeds and does not save working
 source. Use relative file paths such as `index.ts` and `lib/client.ts`.
 
 Discovery is prepared at the start of each `execute`. In a **new** execution,
@@ -457,25 +457,25 @@ Commit sends the complete file list; omitted files are deleted. The result's
 deploying, as above. A deleted file is still in `source.files`: add it back and
 commit against `saved.revision.commit`. A stale
 `expected` returns `SourceError` with `reason: "conflict"`. Read working source
-again and reconcile the edits before retrying. Deployment returns `{ app,
-deployment }`, preserves the app ID and data, and never updates the Git branch.
-It has no expected-active-deployment argument. Check the app's linked accounts
+again and reconcile the edits before retrying. Deploying returns `{ app,
+version }`, preserves the app ID and data, and never updates the Git branch.
+It has no expected-active-version argument. Check the app's linked accounts
 after changing account requirements; an account whose provider no requirement
 uses no longer applies.
 
-Every call follows the active deployment, so nothing needs updating to pick up
+Every call follows the active version, so nothing needs updating to pick up
 new code. The next `execute` lists and calls the new tools. Activating a
-deployment re-registers each webhook source's subscriptions on it in the
+version re-registers each webhook source's subscriptions on it in the
 background, usually within seconds, without blocking tool calls; the app's
 Webhooks tab shows their status. It also deletes the saved settings of schedules
-the new deployment no longer declares.
+the new version no longer declares.
 
-`apps.deployments` lists retained versions. `apps.source` accepts an optional
-`query.deployment` to read a specific version. `apps.activate` requires
-`body: { deployment, expectedDeployment }`, where `expectedDeployment` is the
-app's current active deployment. A stale value returns `AppDeploymentChanged`.
+`apps.versions` lists retained versions. `apps.source` accepts an optional
+`query.version` to read a specific version. `apps.activate` requires
+`body: { version, expectedVersion }`, where `expectedVersion` is the
+app's current active version. A stale value returns `AppVersionChanged`.
 Activation only changes which code runs; it does not reverse app data or changes
-made in external services. Source reads and deployment writes follow the
+made in external services. Source reads and deploys follow the
 hosted product’s access rules. Discover tools again in a new execute after changing code.
 
 ## Dependencies and current boundaries
@@ -486,13 +486,13 @@ version this host runs (`executor apps framework` in the CLI); a deploy without
 it fails and names the same version. That package supplies the server and browser
 framework, and the exact version keeps rebuilds on it across host upgrades. Apps
 Executor generates, such as imported MCP apps, already declare it. Keep it when
-editing, and change it only to upgrade the app. The host retains the compiled version with each deployment. Missing
+editing, and change it only to upgrade the app. The host retains the compiled framework with each app version. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the Executor SDK in
 app code. Native dependencies that need scripts are unsupported.
 
 Hosted builds currently run with limited memory. A build with very large
-dependencies can fail with `BuildMemoryExceeded`; no new deployment is activated.
+dependencies can fail with `BuildMemoryExceeded`; no new version is activated.
 This limit is planned to increase. Report the failure to the user instead of
 changing the app. Executor errors include `recovery.action` for the user and
 `recovery.instructions` for agents; follow those instructions.

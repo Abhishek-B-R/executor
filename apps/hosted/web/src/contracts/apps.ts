@@ -11,7 +11,7 @@ import {
   AppEvaluationFailed,
   type Tool,
   type Cursor,
-  DeploymentId,
+  VersionId,
   AccountConnectionId,
   AccountConnectionTargetChanged,
   type AccountConnection,
@@ -53,12 +53,12 @@ class AppKey extends Data.Class<{
 class SourceKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
 }> {}
 class SourceFileKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   readonly path: string;
 }> {}
 class ConnectionKey extends Data.Class<{
@@ -85,8 +85,8 @@ const appQuery = Atom.family(
   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
     HostedClient.query("apps", "get", hydrated({ params: key })).pipe(revalidated, protectedQuery),
 );
-const deploymentsQuery = Atom.family((key: AppKey) =>
-  HostedClient.query("apps", "deployments", hydrated({ params: key })).pipe(revalidated),
+const versionsQuery = Atom.family((key: AppKey) =>
+  HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
 );
 const sourceQuery = Atom.family((key: SourceKey) =>
   HostedClient.query(
@@ -94,7 +94,7 @@ const sourceQuery = Atom.family((key: SourceKey) =>
     "sourceDisplay",
     hydrated({
       params: { organization: key.organization, app: key.app },
-      query: { deployment: key.deployment },
+      query: { version: key.version },
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
@@ -103,7 +103,7 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
     "apps",
     "sourceDisplayFile",
     hydrated({
-      params: { organization: key.organization, app: key.app, deployment: key.deployment },
+      params: { organization: key.organization, app: key.app, version: key.version },
       query: { path: key.path },
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
@@ -115,7 +115,7 @@ const sourceFileQuery = Atom.family((key: SourceFileKey) =>
 class ToolKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
 }> {}
 /**
  * Browsing reads the schema-free index; one tool's schemas load when it is selected. A refresh
@@ -128,7 +128,7 @@ const toolsQuery = Atom.family((key: ToolKey) =>
     "index",
     hydrated({
       params: key,
-      query: { deployment: key.deployment },
+      query: { version: key.version },
     }),
   ).pipe(revalidated, currentQuery),
 );
@@ -149,13 +149,13 @@ const reloadConnection = (get: Atom.FnContext, key: ConnectionKey) =>
 /** Catalog installation, selection, connection and execution actions. */
 const activateApp = Atom.family((key: AppKey) =>
   HostedClient.runtime.fn(
-    (payload: { deployment: DeploymentId; expectedDeployment: DeploymentId | null }, get) =>
+    (payload: { version: VersionId; expectedVersion: VersionId | null }, get) =>
       Effect.flatMap(HostedClient, (client) => client.apps.activate({ params: key, payload })).pipe(
         Effect.tap((saved) =>
           Effect.sync(() => {
             acknowledgeApp(get, key.organization, saved);
             get.refresh(toolsAtom(key));
-            get.refresh(deploymentsAtom(key));
+            get.refresh(versionsAtom(key));
           }),
         ),
       ),
@@ -209,8 +209,8 @@ export const removeAppAtom = (key: { organization: OrganizationReference; app: A
 export function appConnectionAtoms(key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  /** The deployment whose discovery the page shows, read again once the account is linked. */
-  readonly deployment: DeploymentId | null;
+  /** The version whose discovery the page shows, read again once the account is linked. */
+  readonly version: VersionId | null;
   readonly scope: AccountScope;
   readonly requirement: string;
   readonly provider: ProviderId;
@@ -369,7 +369,7 @@ export const startOAuthAtom = (key: {
 class CallKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
   readonly tool: ToolName;
   readonly kind: "query" | "mutation";
 }> {}
@@ -427,24 +427,24 @@ export const connectionAtom = (key: {
   readonly connection: AccountConnectionId;
 }) => connectionQuery(new ConnectionKey(key));
 
-/** Retained source is immutable; its atom includes both app and deployment identity. */
+/** Retained source is immutable; its atom includes both app and version identity. */
 export const sourceAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
 }) => sourceQuery(new SourceKey(key));
-/** One display file of a retained deployment, read when the listing did not inline it. */
+/** One display file of a retained version, read when the listing did not inline it. */
 export const sourceFileAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   readonly path: string;
 }) => sourceFileQuery(new SourceFileKey(key));
 /** History remains separate from the inexpensive app metadata query. */
-export const deploymentsAtom = (key: {
+export const versionsAtom = (key: {
   readonly organization: OrganizationReference;
   readonly app: AppId;
-}) => deploymentsQuery(new AppKey(key));
+}) => versionsQuery(new AppKey(key));
 
 /** Apply a complete saved app to metadata readers; unknown tool results must be reloaded. */
 export function acknowledgeApp(
@@ -514,7 +514,7 @@ const toolDetailQueries = Atom.family((key: ToolDetailKey) =>
     "get",
     hydrated({
       params: { organization: key.organization, app: key.app, tool: key.tool },
-      query: { deployment: key.deployment },
+      query: { version: key.version },
     }),
   ).pipe(revalidated),
 );
@@ -538,23 +538,23 @@ const connectionToolLists = Atom.family((key: ToolKey) =>
         const tools: Tool[] = [];
         const cursors = new Set<Cursor>();
         let cursor: Cursor | undefined;
-        let deployment = key.deployment;
+        let version = key.version;
         do {
           const page = yield* client.tools.list({
             params: { organization: key.organization, app: key.app },
-            query: { deployment, cursor },
+            query: { version, cursor },
           });
           if (
-            (deployment !== undefined && deployment !== page.deployment) ||
+            (version !== undefined && version !== page.version) ||
             (page.next !== undefined && cursors.has(page.next))
           ) {
             return yield* new AppEvaluationFailed({
               app: key.app,
-              deployment: page.deployment,
+              version: page.version,
               reason: "The tool catalog changed while loading. Try again.",
             });
           }
-          deployment = page.deployment;
+          version = page.version;
           tools.push(...page.items);
           cursor = page.next;
           if (cursor !== undefined) cursors.add(cursor);

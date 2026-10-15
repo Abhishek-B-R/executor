@@ -295,7 +295,7 @@ return { items };`,
             )
             .pipe(Effect.orDie),
         );
-        // The app's page has no address until its first deployment, and the error says so.
+        // The app's page has no address until its first deploy, and the error says so.
         const location = yield* run(
           "Get the URL of an app that has never been deployed",
           `return await ${tools}.appUi.location({ path: ${JSON.stringify({ ...organization, app: app.id })} });`,
@@ -305,11 +305,11 @@ return { items };`,
             .error,
         ).toEqual({
           message:
-            "AppNotDeployed (HTTP 409): The app has no active deployment to load. Recovery: Open Source and deploy the app before using its tools or accounts. Retryable (unchanged call): no.",
+            "AppNotDeployed (HTTP 409): The app has no active version to load. Recovery: Open Source and deploy the app before using its tools or accounts. Retryable (unchanged call): no.",
           response: {
             code: "AppNotDeployed",
             status: 409,
-            message: "The app has no active deployment to load.",
+            message: "The app has no active version to load.",
             recovery: expect.any(Object),
             retryable: false,
           },

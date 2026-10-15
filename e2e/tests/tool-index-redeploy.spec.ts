@@ -22,7 +22,7 @@ const diagnose=query({description:"Diagnose the service",input:object({})},async
 export default defineApp({user: { accounts:{service} }}, async () => ({ tools: router({ ${tools} }) }));`;
 const accountFree = `import {defineApp,query,object,router} from "apps";
 export default defineApp({}, async () => ({ tools: router({ ping: query({input:object({})},async()=>"pong") }) }));`;
-const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 const Executed = Schema.Struct({
   execution: Schema.Struct({
     ok: Schema.Boolean,
@@ -126,7 +126,7 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
           );
         expect(yield* listed("Search before the redeploy")).toEqual(["ping"]);
 
-        // A deploy is a new deployment for every caller: the next execute lists and calls the new
+        // A deploy is a new version for every caller: the next execute lists and calls the new
         // tool without relinking the account or a reconcile.
         const redeployed = yield* api.request(actors.owner, "POST", `${path}/deploy`, {
           files: [{ path: "index.ts", content: source("ping, diagnose") }, appsManifest],
@@ -147,22 +147,22 @@ return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
           `await executor.appManagement.deploy({ path: ${JSON.stringify({ ...organization, app: app.id })}, body: { files: ${JSON.stringify([{ path: "index.ts", content }, appsManifest])} } })`;
 
         // Deploying and calling an existing tool in one execute: the program loaded the app
-        // before the deploy, and the call still runs on the deployment the program just made.
+        // before the deploy, and the call still runs on the version the program just made.
         const changed = yield* execute(
           "Deploy and call a changed tool in one execute",
           `${executor}
 const deployed = ${deployFrom(source("ping, diagnose", "recovered"))};
-return { deployment: deployed.app.activeDeployment, health: await ${tools}.diagnose({}) };`,
+return { version: deployed.app.activeVersion, health: await ${tools}.diagnose({}) };`,
         );
         expect(changed.execution.error, JSON.stringify(changed)).toBeUndefined();
         expect(changed.execution.toolCalls).toEqual([
           expect.objectContaining({ outcome: "success" }),
           expect.objectContaining({ outcome: "success" }),
         ]);
-        const { deployment: recovered, health } = yield* Schema.decodeUnknownEffect(
-          Schema.Struct({ deployment: Schema.String, health: Schema.String }),
+        const { version: recovered, health } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ version: Schema.String, health: Schema.String }),
         )(changed.execution.value);
-        expect(recovered).not.toBe(live.activeDeployment);
+        expect(recovered).not.toBe(live.activeVersion);
         expect(health).toBe("recovered");
         const nextChanged = yield* execute(
           "Call the changed tool in the next execute",
@@ -171,7 +171,7 @@ return { deployment: deployed.app.activeDeployment, health: await ${tools}.diagn
         expect(nextChanged.execution.value, JSON.stringify(nextChanged)).toBe("recovered");
 
         // A tool the deploy added is not in the program's listing of the app, so the program
-        // names the deployment it listed and the next execute instead of a removed tool.
+        // names the version it listed and the next execute instead of a removed tool.
         const sameProgram = yield* execute(
           "Deploy and call the new tool in one execute",
           `${executor}
@@ -183,7 +183,7 @@ return await ${tools}.status({});`,
         ]);
         expect(sameProgram.execution.error?.kind).toBe("UnknownTool");
         expect(sameProgram.execution.error?.suggestions).toEqual([
-          `This execute loaded '${app.slug}' from deployment ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
+          `This execute loaded '${app.slug}' from version ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
         ]);
         const nextProgram = yield* execute(
           "Call the new tool in the next execute",

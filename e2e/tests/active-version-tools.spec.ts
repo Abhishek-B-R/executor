@@ -12,7 +12,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const Catalog = Schema.Struct({
-  deployment: Schema.String,
+  version: Schema.String,
   items: Schema.Array(Schema.Struct({ name: Schema.String })),
 });
 const Pending = Schema.Struct({
@@ -69,8 +69,8 @@ const fixture = Effect.gen(function* () {
     );
   return { api, actors, app, path, catalog, promote };
 });
-layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it) => {
-  it.effect(scenarios.activeDeploymentTools.title, (context) =>
+layer(HostedLive, { excludeTestServices: true })("Active version policy", (it) => {
+  it.effect(scenarios.activeVersionTools.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
@@ -108,7 +108,7 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
             caller.session,
             "POST",
             `${path}/tools/call`,
-            { tool: "guarded", kind: "mutation", input: {}, deployment: catalog.deployment },
+            { tool: "guarded", kind: "mutation", input: {}, version: catalog.version },
             caller.headers,
           );
           expect(result.status).toBe(200);
@@ -120,34 +120,34 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
             caller.session,
             "POST",
             `${path}/tools/call`,
-            { tool: "guarded", kind: "mutation", input: {}, deployment: catalog.deployment },
+            { tool: "guarded", kind: "mutation", input: {}, version: catalog.version },
             caller.headers,
           );
           expect(
             retired.status,
             "A retired build must not bypass the newly required approval",
           ).toBe(404);
-          expect(retired.body).toMatchObject({ _tag: "DeploymentNotFound" });
+          expect(retired.body).toMatchObject({ _tag: "VersionNotFound" });
           for (const endpoint of ["tools", "tools/index", "tools/guarded"]) {
             const stale = yield* api.request(
               caller.session,
               "GET",
-              `${path}/${endpoint}?deployment=${catalog.deployment}`,
+              `${path}/${endpoint}?version=${catalog.version}`,
               undefined,
               caller.headers,
             );
             expect(stale.status, endpoint).toBe(404);
-            expect(stale.body, endpoint).toMatchObject({ _tag: "DeploymentNotFound" });
+            expect(stale.body, endpoint).toMatchObject({ _tag: "VersionNotFound" });
           }
           const current = yield* body(
             Catalog,
             yield* api.request(caller.session, "GET", `${path}/tools`, undefined, caller.headers),
           );
-          expect(current.deployment).not.toBe(catalog.deployment);
+          expect(current.version).not.toBe(catalog.version);
           expect(current.items.map((tool) => tool.name)).not.toContain("retired");
-          for (const deployment of [undefined, current.deployment]) {
+          for (const version of [undefined, current.version]) {
             for (const endpoint of ["tools/index", "tools/guarded"]) {
-              const query = deployment === undefined ? "" : `?deployment=${deployment}`;
+              const query = version === undefined ? "" : `?version=${version}`;
               const inspected = yield* api.request(
                 caller.session,
                 "GET",
@@ -156,7 +156,7 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
                 caller.headers,
               );
               expect(inspected.status, endpoint).toBe(200);
-              expect(inspected.body, endpoint).toMatchObject({ deployment: current.deployment });
+              expect(inspected.body, endpoint).toMatchObject({ version: current.version });
             }
             const result = yield* api.request(
               caller.session,
@@ -166,7 +166,7 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
                 tool: "guarded",
                 kind: "mutation",
                 input: {},
-                ...(deployment === undefined ? {} : { deployment }),
+                ...(version === undefined ? {} : { version }),
               },
               caller.headers,
             );
@@ -186,7 +186,7 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
       }).pipe(Effect.provide(McpOAuth.layer)),
     ),
   );
-  it.effect(scenarios.activeDeploymentResume.title, (context) =>
+  it.effect(scenarios.activeVersionResume.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
@@ -248,7 +248,7 @@ layer(HostedLive, { excludeTestServices: true })("Active deployment policy", (it
           (yield* resume(pending.requestId)).structuredContent,
         );
         expect(resumed.execution).toEqual({ ok: true, value: { version: 1 } });
-        // The program's next call runs on the promoted deployment, under its approval policy, not
+        // The program's next call runs on the promoted version, under its approval policy, not
         // the one the program listed the app from.
         const racedNext = yield* Schema.decodeUnknownEffect(Pending)(
           (yield* resume(racedPending.requestId)).structuredContent,

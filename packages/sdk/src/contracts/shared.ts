@@ -48,20 +48,20 @@ export const AppCodeId = Id("code");
 
 export type AppCodeId = typeof AppCodeId.Type;
 
-/** Id of a Deployment (see `deployment.ts`), prefix `dpl_`. */
-export const DeploymentId = Id("dpl");
+/** Id of a Version (see `version.ts`), prefix `dpl_`. */
+export const VersionId = Id("dpl");
 
-export type DeploymentId = typeof DeploymentId.Type;
+export type VersionId = typeof VersionId.Type;
 
 /**
- * Opaque reference to a deployment's retained compiled output — resolved
+ * Opaque reference to a version's retained compiled output — resolved
  * dependencies and runtime versions included. Not a CRUD entity.
  */
 export const BuildId = Id("bld");
 
 export type BuildId = typeof BuildId.Type;
 
-/** A tool's name within an app's evaluated definition; a tool is addressed by app + deployment + name. */
+/** A tool's name within an app's evaluated definition; a tool is addressed by app + version + name. */
 export const ToolName = Schema.NonEmptyString.pipe(Schema.brand("ToolName"));
 
 export type ToolName = typeof ToolName.Type;

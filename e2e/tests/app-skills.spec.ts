@@ -10,14 +10,14 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-const Deployed = Schema.Struct({ ...App.fields, activeDeployment: Schema.String });
+const Deployed = Schema.Struct({ ...App.fields, activeVersion: Schema.String });
 const Catalog = Schema.Struct({
   app: App,
-  deployment: Schema.String,
+  version: Schema.String,
   skills: Schema.Array(Schema.Struct({ name: Schema.String, description: Schema.String })),
 });
 const Bundle = Schema.Struct({
-  deployment: Schema.String,
+  version: Schema.String,
   skills: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -27,7 +27,7 @@ const Bundle = Schema.Struct({
 });
 const Document = Schema.Struct({
   app: App,
-  deployment: Schema.String,
+  version: Schema.String,
   content: Schema.String,
   files: Schema.Array(Schema.String),
 });
@@ -103,7 +103,7 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
         const bundleResponse = yield* api.request(actors.member, "GET", `${path}/skill-bundle`);
         expect(bundleResponse.status).toBe(200);
         const bundle = yield* body(Bundle, bundleResponse);
-        expect(bundle.deployment).toBe(app.activeDeployment);
+        expect(bundle.version).toBe(app.activeVersion);
         expect(bundle.skills.map((skill) => skill.name)).toEqual(["other", "search-messages"]);
         expect(
           bundle.skills.flatMap((skill) => skill.files.map((file) => file.path)),
@@ -140,7 +140,7 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           ).toBe(404);
         }
         expect(
-          (yield* api.request(actors.member, "GET", `${read}?deployment=${other.activeDeployment}`))
+          (yield* api.request(actors.member, "GET", `${read}?version=${other.activeVersion}`))
             .status,
         ).toBe(404);
         expect((yield* api.request(actors.member, "GET", `${path}/source`)).status).toBe(403);
@@ -157,7 +157,7 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
       }),
     ),
   );
-  it.effect(scenarios.appSkillDeployments.title, (context) =>
+  it.effect(scenarios.appSkillVersions.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
@@ -180,14 +180,14 @@ layer(HostedLive, { excludeTestServices: true })("App skills", (it) => {
           yield* api.request(
             actors.member,
             "GET",
-            `${read}?deployment=${doc.deployment}&file=references%2Fexamples.md`,
+            `${read}?version=${doc.version}&file=references%2Fexamples.md`,
           ),
         );
         expect(reference.content).toBe("Examples v1\r\n");
         expect(
           (yield* api.request(actors.owner, "POST", `${path}/activate`, {
-            deployment: app.activeDeployment,
-            expectedDeployment: updated.activeDeployment,
+            version: app.activeVersion,
+            expectedVersion: updated.activeVersion,
           })).status,
         ).toBe(200);
         expect(

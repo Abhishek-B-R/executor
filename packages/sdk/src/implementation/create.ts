@@ -189,8 +189,8 @@ export const createExecutor = (
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
     // App source defines schedules. Each activation removes saved settings for schedules the new
-    // deployment no longer declares and retimes those whose timing changed. The activation has
-    // committed, so a deployment that cannot be evaluated keeps them and the activation still
+    // version no longer declares and retimes those whose timing changed. The activation has
+    // committed, so a version that cannot be evaluated keeps them and the activation still
     // succeeds. Webhook sources reconcile in the
     // background.
     const activated = (app: AppId) =>
@@ -199,7 +199,7 @@ export const createExecutor = (
         .pipe(
           Effect.catch((error) =>
             Effect.logWarning(
-              "Kept saved schedules: the activated deployment was not evaluated",
+              "Kept saved schedules: the activated version was not evaluated",
               error,
             ),
           ),
@@ -268,8 +268,8 @@ export const createExecutor = (
           apps
             .deploy(input)
             .pipe(
-              Effect.tap(({ app, deployment }) =>
-                app.activeDeployment === deployment.id ? activated(app.id) : Effect.void,
+              Effect.tap(({ app, version }) =>
+                app.activeVersion === version.id ? activated(app.id) : Effect.void,
               ),
             ),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),

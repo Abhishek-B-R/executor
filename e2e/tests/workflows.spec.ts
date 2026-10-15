@@ -225,10 +225,10 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           files: files("v2"),
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
-        // The original run may proceed only after credentials and deployment have changed.
+        // The original run may proceed only after credentials and the version have changed.
         expect((yield* call("release", { label: "pinned" })).status).toBe(200);
         const completed = yield* wait(run.id, "complete");
-        expect(completed.deployment).toBe(app.activeDeployment);
+        expect(completed.version).toBe(app.activeVersion);
         const output = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             version: Schema.String,

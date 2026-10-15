@@ -1,9 +1,10 @@
-/** Initial files seed one editable Git repository independently of deployment inputs. */
+/** Initial files seed one editable Git repository independently of version inputs. */
 import { Context, Effect, Option, Schema } from "effect";
 import { BlobKey, type BlobStorage } from "../contracts/blobs.ts";
 import { type AppCodeId, StorageError } from "../contracts/shared.ts";
 import { SourceError, SourceFiles, type AppSourceStorage } from "../contracts/source.ts";
-import { StoredApp } from "../contracts/storage.ts";
+import { AppFields } from "../contracts/apps.ts";
+import type { StoredApp } from "../contracts/storage.ts";
 import { database, query, type Query } from "./database.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import { storeBytes, uploadsFrom } from "./public-files.ts";
@@ -78,9 +79,9 @@ export const recoverAppRepositories = (options: {
     const pending = yield* Schema.decodeUnknownEffect(
       Schema.Array(
         Schema.Struct({
-          id: StoredApp.fields.id,
-          code: StoredApp.fields.code,
-          repository: StoredApp.fields.repository,
+          id: AppFields.fields.id,
+          code: AppFields.fields.code,
+          repository: AppFields.fields.repository,
         }),
       ),
     )(rows).pipe(Effect.mapError(() => new StorageError()));

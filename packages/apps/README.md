@@ -50,7 +50,7 @@ version in `package.json`; it selects the framework for both server and browser
 code and keeps rebuilds repeatable. A build without it fails and names the
 version the host ships.
 In this repository, playground workspaces use `"apps": "workspace:*"` for development;
-replace that workspace reference with a released version before deployment.
+replace that workspace reference with a released version before deploying.
 
 `liveOpenapiRouter` reads an OpenAPI document through `ctx.cache`. Generated
 imports retain a source URL, allowed origin, and static credential bindings in
@@ -127,11 +127,11 @@ the native HTTP discovery operation for host-side import probing.
 
 Helpers are ordinary app libraries. The SDK still builds and invokes one app
 model with the accounts each operation runs with; there is no protocol dispatcher.
-Existing retained builds keep their bundled code until a new deployment.
+Existing retained builds keep their bundled code until the next deploy.
 
 The packaged runtime uses host protocol 1. A package missing that runtime or using
 an unsupported protocol fails at build time; it is never replaced silently with
-the host's framework. An unsuccessful update preserves the active deployment.
+the host's framework. An unsuccessful update preserves the active version.
 Beta compatibility is checked with an earlier package fixture, not a promise to
 support all historical versions indefinitely.
 
@@ -202,7 +202,7 @@ has an `account` requirement, `config` and `state` schemas, and async `register`
 handle must verify the provider signature before acting.
 
 The SDK creates durable subscriptions with `executor.webhooks.create`. A
-subscription pins its deployment and saved account IDs while resolving fresh
+subscription pins its app version and saved account IDs while resolving fresh
 credentials on each invocation. `.many()` sources use one subscription per
 selected source account. Local, self-host and cloud use the same author API.
 The app-authoring skill's `webhooks.md` covers the lifecycle and examples.

@@ -44,7 +44,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
                 `${prefix}/apps/${hidden.app.id}`,
                 `${prefix}/apps/${hidden.app.id}/tools`,
                 `${prefix}/apps/${app.id}/source`,
-                `${prefix}/apps/${app.id}/deployments`,
+                `${prefix}/apps/${app.id}/versions`,
               ],
               (path) =>
                 Effect.gen(function* () {

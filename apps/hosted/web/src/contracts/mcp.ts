@@ -1,4 +1,4 @@
-import { AppId, type Cursor, type DeploymentId, type Tool } from "@executor-js/sdk";
+import { AppId, type Cursor, type VersionId, type Tool } from "@executor-js/sdk";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
 import { HostedClient } from "./api.ts";
 import { hydratedResult, requestKey } from "@executor-js/ui/contracts/http";
@@ -171,17 +171,17 @@ export const mcpToolsAtoms = Atom.family((organization: OrganizationId) =>
         const tools: Tool[] = [];
         const cursors = new Set<Cursor>();
         let cursor: Cursor | undefined;
-        let deployment: DeploymentId | undefined;
+        let version: VersionId | undefined;
         do {
           const page = yield* client.tools.list({
             params: { organization, app },
             query: { cursor },
           });
-          if (deployment !== undefined && deployment !== page.deployment)
+          if (version !== undefined && version !== page.version)
             return yield* new McpConnectionFailed({
               message: "This app changed while its tools were loading. Try again.",
             });
-          deployment = page.deployment;
+          version = page.version;
           tools.push(...page.items);
           cursor = page.next;
           if (cursor !== undefined) {

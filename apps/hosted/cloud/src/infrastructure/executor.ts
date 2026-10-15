@@ -16,7 +16,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
-import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
+import { cachedVersionSources } from "../implementation/version-source-cache.ts";
 import { organizationPublishers } from "../implementation/publishers.ts";
 import type { AppSources } from "./source.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
@@ -119,7 +119,7 @@ export const cloudExecutor = Effect.fn(function* (
         origin,
         webhookOrigin,
         git: appSources(background),
-        blobs: yield* cachedDeploymentSources(origin, blobs),
+        blobs: yield* cachedVersionSources(origin, blobs),
         runtime: yield* makeRuntime,
         workflows,
         registry: {
