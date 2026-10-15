@@ -1,8 +1,9 @@
 /** Shared private SPA rendering, independent of identity, database, and runtime choice. */
 import { CurrentTelemetryConfig } from "@executor-js/telemetry";
-import { Effect, Option, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  UiContext,
   UiFailed,
   UiForbidden,
   type AppUiAsset,
@@ -66,10 +67,10 @@ export const appDocument = <E, R>(options: {
         status: 404,
         headers: appPrivateHeaders,
       });
-    const context = JSON.stringify({
-      version: options.version,
-      accounts: options.accountIds,
-    }).replaceAll("<", "\\u003c");
+    // Encoded through `UiContext` so pages built before versions were named still find `deployment`.
+    const context = JSON.stringify(
+      Schema.encodeSync(UiContext)({ version: options.version, accounts: options.accountIds }),
+    ).replaceAll("<", "\\u003c");
     const telemetry = yield* CurrentTelemetryConfig;
     const attribute = (text: string) =>
       text.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
