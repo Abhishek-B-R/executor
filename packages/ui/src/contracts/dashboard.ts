@@ -27,6 +27,7 @@ import type {
 import type { Atom, AsyncResult } from "effect/reactivity";
 import { Schema, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
+import { parse } from "tldts";
 
 /** An app's live tools with the routers that group them, such as one MCP server each. */
 export interface ToolCatalog {
@@ -215,7 +216,7 @@ export const emptyManyRequirements = <A extends AccountSummary>(
   requirements.filter(
     (entry) => entry.known && entry.requirement.cardinality === "many" && entry.linked.length === 0,
   );
-/** Public OAuth endpoints can supply a favicon domain; credentials are never inspected. */
+/** Public provider metadata can supply a favicon domain; credentials are never inspected. */
 export function providerDisplayUrl(definition: ProviderDefinition | undefined): string | null {
   if (definition)
     for (const method of Object.values(definition.auth)) {
@@ -226,5 +227,12 @@ export function providerDisplayUrl(definition: ProviderDefinition | undefined): 
             : (method.authorizationUrl ?? method.tokenUrl),
         ).origin;
     }
-  return null;
+  // A renamed API-key provider has neither an OAuth origin nor a catalog name. Only use an
+  // unambiguous exact public host; never send private, wildcard or multi-host grants to the proxy.
+  const hosts = [...new Set(definition?.hosts ?? [])];
+  const host = hosts.length === 1 ? hosts[0] : undefined;
+  if (host === undefined || host.startsWith("*.") || !URL.canParse(`https://${host}`)) return null;
+  const url = new URL(`https://${host}`);
+  const domain = parse(url.hostname);
+  return domain.isIcann && domain.domain !== null ? url.origin : null;
 }
