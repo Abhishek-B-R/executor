@@ -5060,6 +5060,17 @@ export const scenarios = plan({
       local: na("This scenario uses hosted deploys and app authentication."),
     },
   },
+  appUiOlderRelease: {
+    fixtures: "actors",
+    file: "app-ui-older-release.spec.ts",
+    appOrigin: true,
+    title: "an app page built with an apps release from before versions were named loads its data",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deploys and app authentication."),
+    },
+  },
   appStreamRevocation: {
     fixtures: "actors",
     file: "app-observability.spec.ts",
