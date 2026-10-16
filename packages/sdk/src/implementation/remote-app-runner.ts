@@ -26,6 +26,8 @@ import { BuildId } from "../contracts/shared.ts";
 import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
 import { WorkerInvocation } from "../contracts/workerd-host.ts";
 import {
+  classify,
+  failedFrom,
   RunnerIngress,
   runnerIngress,
   type AppCapabilities,
@@ -235,21 +237,32 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
     } satisfies AppCapabilities;
   });
 
+/**
+ * A failure the caller can name. Anything that is not already a runtime failure is classified here,
+ * where its text is: past the boundary the caller would see only that the call failed.
+ */
+const refused = (error: unknown) =>
+  Schema.is(RuntimeProtocolUnsupported)(error)
+    ? { ok: false as const, unsupported: error }
+    : Schema.is(RuntimeProtocolFailed)(error)
+      ? {
+          ok: false as const,
+          ...(error.reason === undefined ? {} : { reason: error.reason }),
+          ...(error.message ? { message: error.message } : {}),
+        }
+      : { ok: false as const, reason: classify(error) };
+const encodeResult = Schema.encodeUnknownEffect(RemoteResult);
+
 const answer = (effect: Effect.Effect<unknown, unknown>) =>
   effect.pipe(
     Effect.map((value) => ({ ok: true as const, value })),
-    Effect.catchCause((cause) => {
-      const error = Cause.squash(cause);
-      if (Schema.is(RuntimeProtocolUnsupported)(error))
-        return Effect.succeed({ ok: false as const, unsupported: error });
-      if (!Schema.is(RuntimeProtocolFailed)(error)) return Effect.succeed({ ok: false as const });
-      return Effect.succeed({
-        ok: false as const,
-        ...(error.reason === undefined ? {} : { reason: error.reason }),
-        ...(error.message ? { message: error.message } : {}),
-      });
-    }),
-    Effect.flatMap(Schema.encodeUnknownEffect(RemoteResult)),
+    Effect.catchCause((cause) => Effect.succeed(refused(Cause.squash(cause)))),
+    Effect.flatMap((result) =>
+      encodeResult(result).pipe(
+        // A value that is not JSON cannot cross; say so instead of failing the RPC without a reason.
+        Effect.catch(() => encodeResult({ ok: false, reason: "invalid-reply" })),
+      ),
+    ),
     Effect.orDie,
   );
 
@@ -299,9 +312,13 @@ export const serveAppRunner = (
 
 const result = <E>(effect: Effect.Effect<string, E>) =>
   effect.pipe(
-    Effect.mapError(() => new RuntimeProtocolFailed()),
-    Effect.flatMap(Schema.decodeUnknownEffect(RemoteResult)),
-    Effect.mapError(() => new RuntimeProtocolFailed()),
+    // A rejected RPC carries the platform's text, such as a size or memory limit, only here.
+    Effect.catch(failedFrom(false)),
+    Effect.flatMap((reply) =>
+      Schema.decodeUnknownEffect(RemoteResult)(reply).pipe(
+        Effect.catch(() => Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" }))),
+      ),
+    ),
     Effect.flatMap(
       (reply): Effect.Effect<unknown, RuntimeProtocolFailed | RuntimeProtocolUnsupported> =>
         reply.ok

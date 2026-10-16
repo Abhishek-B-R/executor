@@ -201,6 +201,7 @@ interface CacheSession {
 
 /** Platform failures by the text the runtime reports them with, most specific first. */
 const platformFailures: ReadonlyArray<readonly [RegExp, RuntimeFailure]> = [
+  [/Serialized RPC arguments or return values are limited to/i, "too-large"],
   [/exceeded (its )?memory limit/i, "memory"],
   [/exceeded (its )?CPU time limit/i, "cpu"],
   [/timed out|exceeded (a |its )?(time limit|timeout|wall)/i, "timeout"],
@@ -214,7 +215,7 @@ const platformFailures: ReadonlyArray<readonly [RegExp, RuntimeFailure]> = [
  * The kind of a failed call. App code can throw anything, a rejected call carries it, and a decode
  * failure names paths in the app's output, so a cause's text is matched here and goes no further.
  */
-const classify = (cause: unknown): RuntimeFailure => {
+export const classify = (cause: unknown): RuntimeFailure => {
   if (Schema.isSchemaError(cause)) return "invalid-reply";
   if (failedColdStart(cause)) return "cold-start";
   const text = describeBuildCause(cause);
@@ -240,7 +241,7 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
       ),
     ),
   );
-const failedFrom = (explain: boolean) => (cause: unknown) =>
+export const failedFrom = (explain: boolean) => (cause: unknown) =>
   failed(classify(cause), cause, explain);
 /** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
 const failedBuild = (cause: unknown) =>

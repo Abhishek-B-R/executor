@@ -278,8 +278,24 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             expect(descriptions).toContain('"#/anyOf/0/properties/input/$defs/Value"');
             expect(descriptions).toContain('"#/anyOf/1/properties/input/$defs/Value"');
             // Calls return the whole MCP result; the server's schema describes its structuredContent.
+            // Both accounts return the same output schema, so it is described once.
             expect(descriptions).toContain('"#/anyOf/0/$defs/Account"');
-            expect(descriptions).toContain('"#/anyOf/1/$defs/Account"');
+            expect(descriptions).not.toContain('"#/anyOf/1/$defs/Account"');
+          } else {
+            // Accounts of one upstream describe the same input, so they share one branch: a
+            // tool's schema does not grow with the accounts linked to it.
+            const [described] = (yield* body(Tools, tools)).items;
+            expect(
+              Schema.decodeUnknownSync(Schema.Struct({ anyOf: Schema.Array(Schema.Json) }))(
+                described?.inputSchema,
+              ).anyOf,
+            ).toEqual([
+              expect.objectContaining({
+                properties: expect.objectContaining({
+                  accountId: { type: "string", enum: accounts },
+                }),
+              }),
+            ]);
           }
           const call = (accountId: string, label: string) =>
             api.request(actors.owner, "POST", `${path}/tools/call`, {

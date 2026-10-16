@@ -18,6 +18,42 @@ const decoderDocument = (decoder: Schema.Decoder<unknown>) => {
   return Schema.decodeUnknownSync(JsonObject)({ ...document.schema, $defs: document.definitions });
 };
 
+/**
+ * Accounts of one source usually describe the same schema. Those accounts share one branch, so a
+ * tool's schemas grow with its distinct schemas rather than with its accounts: a large API linked
+ * through many accounts would otherwise be described once per account.
+ */
+const accountBranches = (variants: readonly (readonly [string, JsonObject])[]) => {
+  const groups = new Map<string, { schema: JsonObject; first: string; rest: string[] }>();
+  for (const [accountId, schema] of variants) {
+    const key = JSON.stringify(schema);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, { schema, first: accountId, rest: [] });
+    else group.rest.push(accountId);
+  }
+  return {
+    type: "object",
+    anyOf: [...groups.values()].map(({ schema, first, rest }, index) => ({
+      type: "object",
+      properties: {
+        accountId:
+          rest.length === 0
+            ? { type: "string", const: first }
+            : { type: "string", enum: [first, ...rest] },
+        input: nestJsonSchema(schema, `#/anyOf/${index}/properties/input`),
+      },
+      required: ["accountId", "input"],
+    })),
+  };
+};
+
+/** Each distinct output schema once: a value matches the union whichever account returned it. */
+const outputBranches = (outputs: readonly JsonObject[]) => ({
+  anyOf: [...new Map(outputs.map((output) => [JSON.stringify(output), output])).values()].map(
+    (output, index) => nestJsonSchema(output, `#/anyOf/${index}`),
+  ),
+});
+
 /** Read whether an output schema is declared without building one that is computed on demand. */
 const declaresOutput = (operation: AppOperation) => {
   if (operation.output !== undefined) return true;
@@ -49,20 +85,10 @@ const combineOperation = (accounts: ReadonlyMap<string, AppOperation>): AppOpera
     ),
   );
   // Combined schemas are built when a tool is described, not on every evaluation for a call.
-  const inputSchema = () => ({
-    type: "object",
-    anyOf: [...accounts].map(([accountId, operation], index) => ({
-      type: "object",
-      properties: {
-        accountId: { type: "string", const: accountId },
-        input: nestJsonSchema(
-          decoderDocument(operation.input),
-          `#/anyOf/${index}/properties/input`,
-        ),
-      },
-      required: ["accountId", "input"],
-    })),
-  });
+  const inputSchema = () =>
+    accountBranches(
+      [...accounts].map(([accountId, operation]) => [accountId, decoderDocument(operation.input)]),
+    );
   const declaration = operationDeclaration({
     kind,
     ...(first.description === undefined ? {} : { description: first.description }),
@@ -97,14 +123,14 @@ const combineOperation = (accounts: ReadonlyMap<string, AppOperation>): AppOpera
     },
   });
   if (variants.every(declaresOutput)) {
-    const outputSchema = once(() => ({
-      anyOf: variants
-        .flatMap((operation) => {
+    const outputSchema = once(() =>
+      outputBranches(
+        variants.flatMap((operation) => {
           const output = outputDocument(operation);
           return output === undefined ? [] : [output];
-        })
-        .map((output, index) => nestJsonSchema(output, `#/anyOf/${index}`)),
-    }));
+        }),
+      ),
+    );
     const native = nativeOperation(declaration);
     if (native !== undefined)
       Object.defineProperty(native, "outputSchema", { enumerable: true, get: outputSchema });
@@ -141,30 +167,20 @@ const mergeSummary = (
   });
 };
 
-/** Calls take { accountId, input }, so each account's schema is one branch of the input union. */
+/** Calls take { accountId, input }, so each distinct account schema is one branch of the union. */
 const merge = (name: string, variants: readonly (readonly [string, HostedTool])[]) =>
   Schema.decodeUnknownSync(HostedTool)({
     ...mergeSummary(name, variants),
-    inputSchema: {
-      type: "object",
-      anyOf: variants.map(([accountId, tool], index) => ({
-        type: "object",
-        properties: {
-          accountId: { type: "string", const: accountId },
-          input: nestJsonSchema(tool.inputSchema, `#/anyOf/${index}/properties/input`),
-        },
-        required: ["accountId", "input"],
-      })),
-    },
+    inputSchema: accountBranches(
+      variants.map(([accountId, tool]) => [accountId, tool.inputSchema]),
+    ),
     ...(variants.every(([, tool]) => tool.outputSchema !== undefined)
       ? {
-          outputSchema: {
-            anyOf: variants.flatMap(([, tool], index) =>
-              tool.outputSchema === undefined
-                ? []
-                : [nestJsonSchema(tool.outputSchema, `#/anyOf/${index}`)],
+          outputSchema: outputBranches(
+            variants.flatMap(([, tool]) =>
+              tool.outputSchema === undefined ? [] : [tool.outputSchema],
             ),
-          },
+          ),
         }
       : {}),
     ...sameAcross("_meta", variants),
