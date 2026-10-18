@@ -51,6 +51,11 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),
+  /** Self-host's OpenID Connect sign-in, which an operator configures after first start. */
+  SSO_DISCOVERY_URL: Schema.optionalKey(Schema.NonEmptyString),
+  SSO_CLIENT_ID: Schema.optionalKey(Schema.NonEmptyString),
+  SSO_CLIENT_SECRET: Schema.optionalKey(Schema.NonEmptyString),
+  SSO_ALLOWED_DOMAINS: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.optionalKey(Schema.NonEmptyString),
   /** The build an upgrade installs. */
   EXECUTOR_BUILD_VERSION: Schema.optionalKey(Schema.NonEmptyString),

@@ -1,19 +1,31 @@
 /** Disposable external identity provider for the real Cloud SSO journeys. */
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { generateKeyPairSync, createHash, randomUUID, sign } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import samlify from "samlify";
-import { Config, Deferred, Effect, FileSystem, Layer, Redacted, Schema } from "effect";
+import { Config, Deferred, Effect, FileSystem, Layer, Option, Redacted, Schema } from "effect";
 import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const Control = Schema.Struct({
   email: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+@[a-z0-9.-]+$/u)),
-  mode: Schema.Literals(["valid", "tamper", "wrong-audience"]),
+  /**
+   * `userinfo-verified` omits `email_verified` from the ID token and asserts it only at UserInfo,
+   * as Okta's org authorization server does; `userinfo-other-subject` also answers UserInfo for a
+   * different subject.
+   */
+  mode: Schema.Literals([
+    "valid",
+    "tamper",
+    "wrong-audience",
+    "userinfo-verified",
+    "userinfo-other-subject",
+  ]),
 });
 const { IdentityProvider, ServiceProvider, SamlLib } = samlify;
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown) =>
@@ -24,8 +36,11 @@ const escape = (text: string) =>
 const command = Command.make("sso-idp", {
   directory: Flag.String("directory"),
   application: Flag.String("application"),
+  // Self-host accepts only an HTTPS discovery URL; the caller trusts this certificate explicitly.
+  certificate: Flag.String("tls-certificate").pipe(Flag.optional),
+  key: Flag.String("tls-key").pipe(Flag.optional),
 }).pipe(
-  Command.withHandler(({ directory, application }) =>
+  Command.withHandler(({ directory, application, certificate: tlsCertificate, key: tlsKey }) =>
     Effect.scoped(
       Effect.gen(function* () {
         yield* Config.String("NODE_ENV").pipe(
@@ -33,7 +48,10 @@ const command = Command.make("sso-idp", {
         );
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // The browser reaches `address`; Executor's server reaches `issuer`, which is HTTPS when
+        // the caller passes a certificate and otherwise the same loopback HTTP origin.
         const address = yield* Deferred.make<string>();
+        const issuer = yield* Deferred.make<string>();
         const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
         const certificateDirectory = yield* fs.makeTempDirectoryScoped();
         const keyFile = `${certificateDirectory}/key.pem`,
@@ -64,6 +82,7 @@ const command = Command.make("sso-idp", {
         const privateKey = Redacted.make(yield* fs.readFileString(keyFile));
         const certificate = yield* fs.readFileString(certFile);
         let control: typeof Control.Type = { email: "oidc-user@sso.example.test", mode: "valid" };
+        const accessTokens = new Map<string, typeof Control.Type>();
         let lastSaml: { response: string; relay: string; acs: string } | undefined;
         const codes = new Map<
           string,
@@ -101,16 +120,20 @@ const command = Command.make("sso-idp", {
             "GET",
             "/.well-known/openid-configuration",
             Effect.gen(function* () {
-              const origin = yield* Deferred.await(address);
+              const origin = yield* Deferred.await(issuer);
               return yield* HttpServerResponse.json({
                 issuer: origin,
-                authorization_endpoint: `${origin}/authorize`,
+                authorization_endpoint: `${yield* Deferred.await(address)}/authorize`,
                 token_endpoint: `${origin}/token`,
+                userinfo_endpoint: `${origin}/userinfo`,
                 jwks_uri: `${origin}/jwks`,
                 response_types_supported: ["code"],
                 subject_types_supported: ["public"],
                 id_token_signing_alg_values_supported: ["RS256"],
-                token_endpoint_auth_methods_supported: ["client_secret_basic"],
+                token_endpoint_auth_methods_supported: [
+                  "client_secret_basic",
+                  "client_secret_post",
+                ],
                 code_challenge_methods_supported: ["S256"],
               });
             }),
@@ -171,6 +194,8 @@ const command = Command.make("sso-idp", {
                   code: Schema.String,
                   code_verifier: Schema.String,
                   redirect_uri: Schema.String,
+                  client_id: Schema.optionalKey(Schema.String),
+                  client_secret: Schema.optionalKey(Schema.String),
                 }),
                 Object.fromEntries(form),
               );
@@ -181,11 +206,14 @@ const command = Command.make("sso-idp", {
                 code.redirect !== input.redirect_uri ||
                 code.challenge !==
                   createHash("sha256").update(input.code_verifier).digest("base64url") ||
-                request.headers.authorization !==
-                  `Basic ${Buffer.from("synthetic-sso-client:synthetic-sso-secret").toString("base64")}`
+                // client_secret_basic (Cloud's SSO) or client_secret_post (self-host's).
+                (request.headers.authorization !==
+                  `Basic ${Buffer.from("synthetic-sso-client:synthetic-sso-secret").toString("base64")}` &&
+                  (input.client_id !== "synthetic-sso-client" ||
+                    input.client_secret !== "synthetic-sso-secret"))
               )
                 return HttpServerResponse.empty({ status: 401 });
-              const origin = yield* Deferred.await(address);
+              const origin = yield* Deferred.await(issuer);
               const now = Math.floor(Date.now() / 1000);
               const header = Buffer.from(
                 JSON.stringify({ alg: "RS256", kid: "synthetic", typ: "JWT" }),
@@ -199,7 +227,10 @@ const command = Command.make("sso-idp", {
                       : "synthetic-sso-client",
                   sub: code.identity.email,
                   email: code.identity.email,
-                  email_verified: true,
+                  ...(code.identity.mode === "userinfo-verified" ||
+                  code.identity.mode === "userinfo-other-subject"
+                    ? {}
+                    : { email_verified: true }),
                   name: "Synthetic SSO Member",
                   nonce: code.nonce,
                   iat: now,
@@ -210,11 +241,33 @@ const command = Command.make("sso-idp", {
               const signature = sign("RSA-SHA256", Buffer.from(signed), keys.privateKey).toString(
                 "base64url",
               );
+              const accessToken = randomUUID();
+              accessTokens.set(accessToken, code.identity);
               return yield* HttpServerResponse.json({
-                access_token: "synthetic-access-token",
+                access_token: accessToken,
                 token_type: "Bearer",
                 expires_in: 300,
                 id_token: `${signed}.${code.identity.mode === "tamper" ? signature.slice(1) : signature}`,
+              });
+            }),
+          ),
+          HttpRouter.add(
+            "GET",
+            "/userinfo",
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              const identity = accessTokens.get(
+                request.headers.authorization?.replace(/^Bearer /u, "") ?? "",
+              );
+              if (!identity) return HttpServerResponse.empty({ status: 401 });
+              return yield* HttpServerResponse.json({
+                sub:
+                  identity.mode === "userinfo-other-subject"
+                    ? "another-subject@sso.example.test"
+                    : identity.email,
+                email: identity.email,
+                email_verified: true,
+                name: "Synthetic SSO Member",
               });
             }),
           ),
@@ -325,19 +378,43 @@ const command = Command.make("sso-idp", {
             }),
           ),
         );
-        const services = yield* Layer.build(
-          HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-            Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
-          ),
-        );
-        const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
-        if (!("port" in server.address))
-          return yield* Effect.die("Expected a loopback TCP listener");
-        const origin = `http://127.0.0.1:${server.address.port}`;
+        if (Option.isSome(tlsCertificate) !== Option.isSome(tlsKey))
+          return yield* Effect.die("Pass both --tls-certificate and --tls-key, or neither");
+        const tls =
+          Option.isSome(tlsCertificate) && Option.isSome(tlsKey)
+            ? {
+                cert: yield* fs.readFileString(tlsCertificate.value),
+                key: yield* fs.readFileString(tlsKey.value),
+              }
+            : undefined;
+        const listen = (
+          evaluate: typeof createServer | (() => ReturnType<typeof createHttpsServer>),
+        ) =>
+          Effect.gen(function* () {
+            const services = yield* Layer.build(
+              HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+                Layer.provideMerge(NodeHttpServer.layer(evaluate, { host: "127.0.0.1", port: 0 })),
+              ),
+            );
+            const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+            if (!("port" in server.address))
+              return yield* Effect.die("Expected a loopback TCP listener");
+            return server.address.port;
+          });
+        const origin = `http://127.0.0.1:${yield* listen(createServer)}`;
+        const secureOrigin =
+          tls === undefined
+            ? undefined
+            : `https://127.0.0.1:${yield* listen(() => createHttpsServer(tls))}`;
         yield* Deferred.succeed(address, origin);
-        yield* fs.writeFileString(`${directory}/sso-idp.json`, JSON.stringify({ origin }), {
-          mode: 0o600,
-        });
+        yield* Deferred.succeed(issuer, secureOrigin ?? origin);
+        yield* fs.writeFileString(
+          `${directory}/sso-idp.json`,
+          JSON.stringify({ origin, issuer: secureOrigin ?? origin }),
+          {
+            mode: 0o600,
+          },
+        );
         return yield* Effect.never;
       }),
     ),

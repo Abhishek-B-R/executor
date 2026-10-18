@@ -4598,6 +4598,16 @@ export const scenarios = plan({
       local: na("Local has no hosted sign-in."),
     },
   },
+  selfHostSsoUserinfoClaims: {
+    file: "self-host-sso.spec.ts",
+    title:
+      "Self-host SSO admits a member whose provider asserts email_verified only at UserInfo, and not when UserInfo names another subject",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud customer SSO uses its own provider registration."),
+      local: na("Local has no hosted sign-in."),
+    },
+  },
   signInSettingsSso: {
     file: "sign-in-settings.spec.ts",
     title:
