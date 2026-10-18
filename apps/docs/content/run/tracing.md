@@ -99,6 +99,32 @@ OTEL_EXPORTER_OTLP_HEADERS='authorization=Bearer%20<token>'
 The self-host compose file passes every one of these through. An unset variable
 stays absent, which keeps the bundled collector as the destination.
 
+## Turning off the bundled collector
+
+Set a traces or logs endpoint. Executor then sends nothing to Motel: no
+traces and no logs. One variable is enough:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector.local:4318/v1/traces
+```
+
+With only the traces endpoint set, log records go to the container log and
+are not exported. Set `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` too if your collector
+should receive them.
+
+In self-host Docker, the Motel workerd process still starts, because the host
+always supervises it. With no exports, it stays idle and its store stays
+empty. A busy server can spend more memory and CPU in Motel than in the
+product itself, so an external collector also frees those resources. There is
+no setting that skips the Motel process.
+
+To see that the change took effect, list traces through the host process. The
+result stays empty:
+
+```bash
+docker exec executor-v2 executor-host telemetry '/api/traces?limit=20'
+```
+
 ## Using Motel on your own machine
 
 Motel runs standalone too. It needs [Bun](https://bun.sh/) and listens on port
