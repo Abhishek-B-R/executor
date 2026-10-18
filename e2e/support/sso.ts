@@ -71,13 +71,23 @@ export type IdentityMode =
   | "tamper"
   | "wrong-audience"
   | "userinfo-verified"
-  | "userinfo-other-subject";
+  | "userinfo-other-subject"
+  | "discovery-redirect"
+  | "cleartext-authorization"
+  | "cleartext-token"
+  | "cleartext-jwks"
+  | "token-redirect"
+  | "jwks-redirect"
+  | "unverified"
+  | "unverified-thin"
+  | "unverified-absent";
 
 /**
  * Start the synthetic IdP for one self-host scenario. Self-host accepts only an HTTPS discovery
  * URL, so the IdP serves its server-to-server endpoints with a one-day certificate the product
- * trusts through `NODE_EXTRA_CA_CERTS`, without disabling TLS verification. The browser still
- * signs in through loopback HTTP.
+ * trusts through `NODE_EXTRA_CA_CERTS`, without disabling TLS verification. Discovery names the
+ * HTTPS sign-in page, which the browser cannot trust, so the scenario routes the browser from
+ * `issuer` to the same page at `origin`, the loopback HTTP listener.
  */
 export const selfHostSsoIdp = (application: string) =>
   Effect.gen(function* () {
@@ -143,6 +153,8 @@ export const selfHostSsoIdp = (application: string) =>
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
       );
     return {
+      origin,
+      issuer,
       certificate,
       discoveryUrl: `${issuer}/.well-known/openid-configuration`,
       configure: (email: string, mode: IdentityMode) =>

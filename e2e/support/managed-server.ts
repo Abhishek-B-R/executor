@@ -576,7 +576,7 @@ const startIsolatedSelfHost = (
       entry,
       environment,
     );
-    return server;
+    return { ...server, directory };
   });
 
 /** Start the complete self-host development entry point beside the production test target. */
@@ -596,15 +596,17 @@ export const startFreshSelfHost = (
 
 /**
  * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that
- * reaches it: its origin, and the control plane `serverControl` uses to move its clock.
+ * reaches it: its origin, its directory with `server.log`, and the control plane `serverControl`
+ * uses to move its clock.
  */
 export const startControlledSelfHost = (
   target: typeof Target.Service,
   environment: Readonly<Record<string, string>> = {},
 ) =>
   startIsolatedSelfHost(target, "product", environment).pipe(
-    Effect.map(({ origin, controlOrigin }): typeof Target.Service => ({
+    Effect.map(({ origin, controlOrigin, directory }): typeof Target.Service => ({
       ...target,
+      directory,
       controlOrigin,
       metadata: { ...target.metadata, origin, target: "self-host" },
     })),
