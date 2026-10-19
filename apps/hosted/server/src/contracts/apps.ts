@@ -208,6 +208,11 @@ export const HostedApps = HttpApiGroup.make("apps")
       payload: Schema.Struct({ name: AppName }),
       success: App,
       error: [StorageError, AppNotFound, AppNameTaken, AppSlugTaken, OrganizationForbidden],
-    }).annotate(RequiredAction, "manage"),
+    })
+      .annotate(RequiredAction, "manage")
+      .annotate(
+        OpenApi.Description,
+        "Rename an app and derive its new slug from the name; the app ID, accounts, links and data stay. The new slug changes the app's tool namespace, Git clone URL and the page address appUi.location returns, and the old address stops working. The name and slug must be unique in the organization.",
+      ),
   )
   .middleware(RequireOrganization);
