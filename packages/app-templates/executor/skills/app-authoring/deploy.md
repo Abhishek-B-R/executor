@@ -227,8 +227,9 @@ Search returns `items` with the exact callable `path`, the first line of the
 `description` and the `input` type on one line. `namespaces` lists each app,
 with its linked accounts, once. A page holds at most `limit` items, 10 by
 default, and ends sooner at its size budget. `remaining` counts the matches
-after it; pass `next` to `tools.search` for the following page, until `next` is
-null. An item with `inputTruncated` has a longer input type than search shows.
+after it; call `tools.search(next)`, with `next` as the whole input, for the
+following page, until `next` is null. An item with `inputTruncated` has a longer
+input type than search shows.
 
 Read the whole signature, with the output type, and the whole description before
 relying on a result's shape:
