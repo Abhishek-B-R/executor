@@ -7450,7 +7450,7 @@ export const scenarios = plan({
   },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
-    title: "Self-host administrator setup opens the agent handoff before Apps",
+    title: "Self-host administrator setup connects accounts and an agent before Apps",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud has its own team creation journey."),
@@ -7478,6 +7478,26 @@ export const scenarios = plan({
     title:
       "Cloud onboarding can skip a passkey and returning email sign-in keeps the existing team",
     targets: cloudOnboarding,
+  },
+  // The flag stub and the collector that receives the exposure exist only in a managed local
+  // Cloud; deployed stages evaluate the stage project's draft flag and serve the control.
+  onboardingAssistantFirst: {
+    file: "cloud-onboarding-experiment.spec.ts",
+    title:
+      "Cloud onboarding experiment assistant_first connects the assistant, then accounts, then sends the first prompt",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  onboardingAccountsFirst: {
+    file: "cloud-onboarding-experiment.spec.ts",
+    title:
+      "Cloud onboarding experiment accounts_first connects accounts, then the assistant, then sends the first prompt",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  onboardingExperimentUnavailable: {
+    file: "cloud-onboarding-experiment.spec.ts",
+    title:
+      "Cloud onboarding experiment serves accounts first without an exposure when its flag is unavailable",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   // The v1 check reads the emulated v1 database only a managed local Cloud has, and its
   // scenarios write that database; deployed stages leave the check off.

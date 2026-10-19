@@ -33,6 +33,7 @@ import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Cause, Data, Effect, Option, Schema, type Redacted } from "effect";
 import { HostedClient } from "./api.ts";
+import { SetupHandoff } from "./navigation.ts";
 import {
   acknowledge,
   acknowledgedQuery,
@@ -397,6 +398,15 @@ export const toolRunApprovalAtoms = (key: {
     `/api/organizations/${encodeURIComponent(key.organization)}/apps/${encodeURIComponent(key.app)}/tools/approvals/${encodeURIComponent(key.requestId)}`,
   );
 
+/**
+ * Pages other than the app's Accounts view that an account sign-in can return to: onboarding's
+ * account step, with the assistant handoff its URL carried.
+ */
+export const OAuthReturn = Schema.Struct({
+  page: Schema.Literal("setup"),
+  handoff: Schema.optionalKey(SetupHandoff),
+});
+export type OAuthReturn = typeof OAuthReturn.Type;
 /** Return context from the tab that started sign-in; the callback page resolves it from the server. */
 export const PendingOAuth = Schema.Struct({
   organization: OrganizationReference,
@@ -407,6 +417,8 @@ export const PendingOAuth = Schema.Struct({
   /** A reconnect keeps its account name, so completion does not ask for one. */
   reconnect: Schema.optionalKey(Schema.Boolean),
   manualClient: Schema.optionalKey(Schema.Boolean),
+  /** The page the sign-in started from when it is not the app's own: onboarding's account step. */
+  returnTo: Schema.optionalKey(OAuthReturn),
 });
 export { appError } from "./errors.ts";
 

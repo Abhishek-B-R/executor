@@ -15,7 +15,12 @@ import {
   PostHogInsight,
   postHogReportProviders,
 } from "./src/infrastructure/posthog-reports.ts";
-import { retiredExperimentProvider } from "./src/infrastructure/posthog-experiment.ts";
+import {
+  onboardingExperimentDefinition,
+  PostHogExperiment,
+  postHogExperimentProvider,
+  retiredExperimentProvider,
+} from "./src/infrastructure/posthog-experiment.ts";
 import { stackState } from "./src/infrastructure/state.ts";
 import { usageReports } from "./src/infrastructure/usage-reports.ts";
 import { cloudHosts } from "./src/infrastructure/stage.ts";
@@ -27,6 +32,7 @@ export default Alchemy.Stack(
       Layer.mergeAll(
         postHogProjectProvider(),
         postHogReportProviders(),
+        postHogExperimentProvider(),
         retiredExperimentProvider(),
         RandomProvider(),
       ),
@@ -68,7 +74,13 @@ export default Alchemy.Stack(
         ...report,
       }).pipe(retain());
     }
+    // A draft: PostHog serves every evaluation as unavailable until the experiment is launched.
+    const onboarding = yield* PostHogExperiment("OnboardingOrderExperiment", {
+      projectId: project.id,
+      definition: onboardingExperimentDefinition,
+    }).pipe(retain());
     return {
+      onboardingExperimentId: onboarding.id,
       proxyPath: proxy.text.pipe(Output.map((value) => `/api/${Redacted.value(value)}`)),
       dashboardId: dashboard.id,
       projectId: project.id,
