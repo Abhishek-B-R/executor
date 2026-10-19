@@ -262,6 +262,17 @@ export const scenarios = plan({
       local: na("Local signs the CLI in with an API key, not a saved session."),
     },
   },
+  deviceLoginBrowserStays: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "The CLI polls while the browser it started stays open, signs in once approved and leaves that browser open",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local signs the CLI in with an API key, not a saved session."),
+    },
+  },
   deviceAuthorizationGrant: {
     fixtures: "actors",
     file: "device-login.spec.ts",
