@@ -33,9 +33,9 @@ client after a successful connection and reuses it. Give the user the connect
 link as usual; never ask for a client ID or secret in chat.
 
 The redirect URI belongs to the host. The connect page shows it. On hosted
-Executor, `accounts.connection` also returns it as `redirectUri`, so you can tell
-the user what to register before they open the link. The local server uses
-`/api/oauth/callback` on its own origin.
+Executor, `appAccounts.userConnect`, `appAccounts.appConnect` and
+`accounts.connection` also return it as `redirectUri`, so you can tell the user
+what to register before they open the link. The local server uses `/api/oauth/callback` on its own origin.
 
 Expect to need a user's client for Google, GitHub and Slack, which offer no
 registration, and for services such as Fastmail that accept only clients and

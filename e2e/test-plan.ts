@@ -2515,6 +2515,35 @@ export const scenarios = plan({
       local: na("The shared catalog form is exercised through hosted installation."),
     },
   },
+  catalogAgentSearch: {
+    fixtures: "actors",
+    managementApps: ["owner"],
+    file: "catalog-agent-search.spec.ts",
+    title:
+      "Agents search the official app catalog, and an install by URL or unlisted id is refused with the steps to take next",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The catalog filters and install refusal are shared code, exercised through self-host.",
+      ),
+      local: na("Local's catalog routes do not take the hosted API's filters."),
+    },
+  },
+  catalogCachedDocument: {
+    fixtures: "actors",
+    file: "catalog-agent-search.spec.ts",
+    title:
+      "An Executor app on apps beta.9 refuses catalog filters from its cached document until a pin-only redeploy",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "This scenario serves the published beta.9 archive on loopback; Cloud shares the framework and its cache.",
+      ),
+      local: na(
+        "Local regenerates its own Executor app from the template at every start whose template changed.",
+      ),
+    },
+  },
   cloudCatalogInstall: {
     fixtures: "actors",
     file: "cloud-compiler.spec.ts",

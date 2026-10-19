@@ -35,8 +35,10 @@ user and resume it; never repeat the call or run the program again.
 ## Build an app
 
 Build an app when no existing app provides the tools, data, UI or automation
-the user needs. For a known service, first check Quick Add on the Add app page,
-which installs published apps and remote MCP servers without code. With a
+the user needs. For a known service, first search Executor's catalog with
+`organization.catalog({ query: { search: "gmail", limit: "20" } })` and install
+a listed app with `apps.install`; add an unlisted remote MCP server by URL with
+`apps.importCustom`. Quick Add on the Add app page does the same. With a
 shell, deploy a source directory with the `executor apps` CLI; without one,
 build through `execute`. Read the `app-authoring` skill before writing an app.
 
