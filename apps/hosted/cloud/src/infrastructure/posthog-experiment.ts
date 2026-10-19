@@ -68,6 +68,46 @@ const Definition = Schema.Struct({
 /** Declared native configuration carried in Alchemy resource props and state. */
 export type PostHogExperimentDefinition = typeof Definition.Type;
 
+/**
+ * Where an experiment is in PostHog's lifecycle: `draft` serves nothing, `running` serves the
+ * variants and counts exposures, `paused` deactivates the flag so everyone gets the application
+ * default, and `stopped` freezes the results window at its end date.
+ */
+export type PostHogExperimentStatus = "draft" | "running" | "paused" | "stopped";
+
+/** PostHog's experiment actions (`POST experiments/{id}/{action}/`) that change the status. */
+type Action = "launch" | "pause" | "resume" | "end";
+
+/**
+ * The actions that move an experiment between statuses, keyed by current then declared status.
+ * A missing pair is a move PostHog cannot make or that would discard results: an experiment never
+ * returns to draft or leaves stopped, and a draft only launches. Ending a running experiment leaves
+ * its flag serving the assigned variants, as PostHog's end does; ending a paused one leaves it off.
+ */
+const transitions: Record<
+  PostHogExperimentStatus,
+  Partial<Record<PostHogExperimentStatus, ReadonlyArray<Action>>>
+> = {
+  draft: { draft: [], running: ["launch"] },
+  running: { running: [], paused: ["pause"], stopped: ["end"] },
+  paused: { paused: [], running: ["resume"], stopped: ["end"] },
+  stopped: { stopped: [] },
+};
+
+/** PostHog's own derivation: launched sets start_date, ending sets end_date, pausing the flag. */
+const statusOf = (experiment: {
+  readonly start_date: string | null;
+  readonly end_date: string | null;
+  readonly flag: { readonly active: boolean };
+}): PostHogExperimentStatus =>
+  experiment.start_date === null
+    ? "draft"
+    : experiment.end_date !== null
+      ? "stopped"
+      : experiment.flag.active
+        ? "running"
+        : "paused";
+
 const window = {
   kind: "ExperimentMetric",
   metric_type: "funnel",
@@ -242,7 +282,7 @@ export const nativeExperiments = Effect.gen(function* () {
       feature_flag_key: flag.key,
       feature_flag: flag,
     });
-    return { ...experiment, flag, definition: actual };
+    return { ...experiment, flag, definition: actual, status: statusOf({ ...experiment, flag }) };
   });
   const find = Effect.fn(function* (project: number, flagKey: string) {
     let offset = 0;
@@ -277,17 +317,12 @@ export const nativeExperiments = Effect.gen(function* () {
       offset += page.results.length;
     }
   });
-  const sync = Effect.fn(function* (project: number, definition: PostHogExperimentDefinition) {
-    const existing = yield* find(project, definition.feature_flag_key);
-    if (
-      existing !== undefined &&
-      !existing.description.endsWith(ownership(definition.feature_flag_key))
-    )
-      return yield* Effect.die(`The ${definition.feature_flag_key} experiment is not owned here`);
-    if (existing !== undefined && isDeepStrictEqual(existing.definition, definition))
-      return existing;
-    if (existing !== undefined && existing.start_date !== null)
-      return yield* Effect.die("Use a new experiment key to change a launched experiment");
+  /** Writes the declared definition to a draft, creating it first when absent. */
+  const define = Effect.fn(function* (
+    project: number,
+    definition: PostHogExperimentDefinition,
+    existing: Effect.Success<ReturnType<typeof get>> | undefined,
+  ) {
     if (existing === undefined) {
       const flags = yield* request(
         project,
@@ -336,15 +371,48 @@ export const nativeExperiments = Effect.gen(function* () {
     const result = yield* get(project, created.id);
     if (
       !isDeepStrictEqual(result.definition, definition) ||
-      result.start_date !== null ||
+      result.status !== "draft" ||
       result.flag.active
     )
       return yield* Effect.die("PostHog did not retain the declared draft configuration");
     return result;
   });
+  /**
+   * Moves the experiment to the declared definition and status. Every refusal happens before the
+   * first write: an unowned experiment, a move the lifecycle does not allow, or a changed
+   * definition for an experiment that has already launched.
+   */
+  const sync = Effect.fn(function* (
+    project: number,
+    definition: PostHogExperimentDefinition,
+    status: PostHogExperimentStatus,
+  ) {
+    const key = definition.feature_flag_key;
+    const existing = yield* find(project, key);
+    if (existing !== undefined && !existing.description.endsWith(ownership(key)))
+      return yield* Effect.die(`The ${key} experiment is not owned here`);
+    const current = existing?.status ?? "draft";
+    const actions = transitions[current][status];
+    if (actions === undefined)
+      return yield* Effect.die(
+        `The ${key} experiment cannot move from ${existing === undefined ? "absent" : current} to ${status}`,
+      );
+    const unchanged = existing !== undefined && isDeepStrictEqual(existing.definition, definition);
+    if (!unchanged && current !== "draft")
+      return yield* Effect.die("Use a new experiment key to change a launched experiment");
+    if (unchanged && actions.length === 0) return existing;
+    const experiment = unchanged ? existing : yield* define(project, definition, existing);
+    for (const action of actions)
+      yield* request(project, `experiments/${experiment.id}/${action}/`, "POST", {});
+    if (actions.length === 0) return experiment;
+    const result = yield* get(project, experiment.id);
+    if (!isDeepStrictEqual(result.definition, definition) || result.status !== status)
+      return yield* Effect.die(`PostHog did not move the ${key} experiment to ${status}`);
+    return result;
+  });
   const results = (project: number, experiment: Effect.Success<ReturnType<typeof get>>) =>
     Effect.gen(function* () {
-      if (experiment.start_date === null) return { status: "draft", results: [] };
+      if (experiment.status === "draft") return { status: experiment.status, results: [] };
       const output = [];
       for (const metric of [...experiment.metrics, ...experiment.metrics_secondary]) {
         const result = yield* request(project, "query/", "POST", {
@@ -353,11 +421,7 @@ export const nativeExperiments = Effect.gen(function* () {
         });
         output.push({ metric, result });
       }
-      return {
-        status:
-          experiment.end_date !== null ? "stopped" : experiment.flag.active ? "running" : "paused",
-        results: output,
-      };
+      return { status: experiment.status, results: output };
     });
   return { find, sync, results };
 });
@@ -365,6 +429,8 @@ export const nativeExperiments = Effect.gen(function* () {
 interface Props {
   readonly projectId: number;
   readonly definition: PostHogExperimentDefinition;
+  /** The status each deploy moves the experiment to; see `transitions` for the allowed moves. */
+  readonly status: PostHogExperimentStatus;
 }
 interface Attributes extends Props {
   readonly id: number;
@@ -372,9 +438,13 @@ interface Attributes extends Props {
 }
 /** A native experiment lifecycle retained separately from the application deployment. */
 export type PostHogExperiment = Resource<"Executor.PostHogExperiment", Props, Attributes>;
-/** Declares a draft experiment and its native multivariate feature flag. */
+/** Declares an experiment, its native multivariate feature flag and its lifecycle status. */
 export const PostHogExperiment = Resource<PostHogExperiment>("Executor.PostHogExperiment");
-/** No deployment starts, pauses or deletes an experiment or changes a launched definition. */
+/**
+ * Deploys launch, pause, resume and end an experiment as its declared status says. No deployment
+ * deletes an experiment, returns one to draft, restarts a stopped one or changes a launched
+ * definition.
+ */
 export const postHogExperimentProvider = () =>
   Provider.effect(
     PostHogExperiment,
@@ -388,6 +458,7 @@ export const postHogExperimentProvider = () =>
         id: value.id,
         featureFlagId: value.flag.id,
         definition: value.definition,
+        status: value.status,
       });
       return {
         stables: ["id", "projectId", "featureFlagId"],
@@ -398,23 +469,26 @@ export const postHogExperimentProvider = () =>
                 news.projectId !== output.projectId ||
                   news.definition.feature_flag_key !== output.definition.feature_flag_key
                   ? { action: "replace" as const }
-                  : isDeepStrictEqual(news.definition, output.definition)
+                  : isDeepStrictEqual(news.definition, output.definition) &&
+                      news.status === output.status
                     ? undefined
                     : { action: "update" as const },
               ),
         read: Effect.fn(function* ({ olds }) {
-          const value = yield* api.find(olds.projectId, olds.definition.feature_flag_key);
-          if (
-            value !== undefined &&
-            !value.description.endsWith(ownership(olds.definition.feature_flag_key))
-          )
-            return yield* Effect.die("Experiment ownership mismatch");
+          const key = olds.definition.feature_flag_key;
+          const value = yield* api.find(olds.projectId, key);
+          if (value !== undefined && !value.description.endsWith(ownership(key)))
+            return yield* Effect.die(`The ${key} experiment is not owned here`);
           return value === undefined ? undefined : attributes(olds.projectId, value);
         }),
         reconcile: Effect.fn(function* ({ news }) {
-          return attributes(news.projectId, yield* api.sync(news.projectId, news.definition));
+          return attributes(
+            news.projectId,
+            yield* api.sync(news.projectId, news.definition, news.status),
+          );
         }),
-        // Retiring an experiment orphans its state; its results stay in PostHog.
+        // Removing the declaration orphans the state and leaves the experiment, its flag and its
+        // results in PostHog as they are, so declare it stopped and deploy before removing it.
         delete: () => Effect.void,
       };
     }),

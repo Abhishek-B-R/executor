@@ -74,10 +74,11 @@ export default Alchemy.Stack(
         ...report,
       }).pipe(retain());
     }
-    // A draft: PostHog serves every evaluation as unavailable until the experiment is launched.
+    // Running: deploying launches it, and changing the status here pauses, resumes or ends it.
     const onboarding = yield* PostHogExperiment("OnboardingOrderExperiment", {
       projectId: project.id,
       definition: onboardingExperimentDefinition,
+      status: "running",
     }).pipe(retain());
     return {
       onboardingExperimentId: onboarding.id,
