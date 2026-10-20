@@ -91,6 +91,10 @@ withApprovals(await mcpRouter(options), (tool) =>
 );
 ```
 
+To classify an MCP tool yourself, pass `kinds` as `mcpRouter`'s second argument, such as
+`{ get_live_context: "query", run_script: "mutation" }`. Rules see its `readOnlyHint` from that
+classification, not the server's. Mark a tool a query only when you have checked that it reads.
+
 The callback also receives the tool's name relative to the router. Returning
 `undefined` keeps the tool's own approval. With accounts, wrap each account's
 router inside the `accountRouter` callback, so each account keeps its own
