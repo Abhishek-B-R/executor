@@ -8,9 +8,6 @@ import { protectedQuery } from "./protected-query.ts";
 /** Organization-specific app queries and mutations use the shared hosted API. */
 import {
   AppId,
-  AppEvaluationFailed,
-  type Tool,
-  type Cursor,
   VersionId,
   AccountConnectionId,
   AccountConnectionTargetChanged,
@@ -542,40 +539,12 @@ const toolDetails = Atom.family((key: ToolDetailKey) =>
 export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[0]) =>
   toolDetails(new ToolDetailKey(key));
 
+/** Connection search reads the whole schema-free index, so it includes every tool. */
 const connectionToolLists = Atom.family((key: ToolKey) =>
-  HostedClient.runtime
-    .atom(
-      Effect.gen(function* () {
-        const client = yield* HostedClient;
-        const tools: Tool[] = [];
-        const cursors = new Set<Cursor>();
-        let cursor: Cursor | undefined;
-        let version = key.version;
-        do {
-          const page = yield* client.tools.list({
-            params: { organization: key.organization, app: key.app },
-            query: { version, cursor },
-          });
-          if (
-            (version !== undefined && version !== page.version) ||
-            (page.next !== undefined && cursors.has(page.next))
-          ) {
-            return yield* new AppEvaluationFailed({
-              app: key.app,
-              version: page.version,
-              reason: "The tool catalog changed while loading. Try again.",
-            });
-          }
-          version = page.version;
-          tools.push(...page.items);
-          cursor = page.next;
-          if (cursor !== undefined) cursors.add(cursor);
-        } while (cursor !== undefined);
-        return tools;
-      }),
-    )
-    .pipe(Atom.setIdleTTL("5 minutes")),
+  Atom.map(
+    toolsQuery(key),
+    AsyncResult.map((index) => index.items),
+  ),
 );
-/** Load the complete catalog on demand so connection search includes every tool. */
 export const connectionToolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   connectionToolLists(new ToolKey(key));

@@ -5131,6 +5131,33 @@ export const scenarios = plan({
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
   },
+  largeOpenapiExpandableApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app whose resources expand into one another lists its tools in bounded pages, each tool's schema complete, and MCP search ranks them",
+    targets: {
+      "self-host": scheduled,
+      // The attached run checks that a deployed Worker holds the catalog within Cloudflare's
+      // memory limit, as it must Stripe's.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
+  localExpandableOpenapiTools: {
+    file: "local-openapi-tools.spec.ts",
+    title:
+      "the local Tools tab lists an OpenAPI app whose resources expand into one another and shows a selected tool's schemas",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Hosted tools pages read the schema-free index; largeOpenapiExpandableApp lists it.",
+      ),
+      cloud: na(
+        "Hosted tools pages read the schema-free index; largeOpenapiExpandableApp lists it.",
+      ),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
