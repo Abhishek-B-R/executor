@@ -5485,6 +5485,17 @@ export const scenarios = plan({
       local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
     },
   },
+  toolCallOverheadDatabaseFacets: {
+    fixtures: "actors",
+    file: "tool-call-overhead.spec.ts",
+    title:
+      "Executor time counts a fresh facet for each database call that finds it idle, and overlapping calls share one",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("This scenario uses hosted MCP; the runtime and collector are shared with Local."),
+    },
+  },
   toolCallOverheadStart: {
     fixtures: "actors",
     file: "tool-call-overhead.spec.ts",
