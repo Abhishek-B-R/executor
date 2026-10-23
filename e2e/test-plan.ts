@@ -7601,6 +7601,12 @@ export const scenarios = plan({
       "Cloud v1 import keeps a workspace that fails verification frozen in v1, and accepts MCP requests v1 forwards for an imported workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportToolkitCalls: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import makes toolkits over the workspace's and a member's connections callable through their v1 URLs, running the org toolkit's copy as the app the workspace's account is linked to and the personal toolkit's as the member's account",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportRollback: {
     file: "cloud-v1-import-run.spec.ts",
     title:

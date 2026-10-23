@@ -53,6 +53,7 @@ import {
   ItemFailed,
   artifactMapping,
   checkIntegration,
+  connectionTarget,
   importAccount,
   importArtifact,
   importFixedAccount,
@@ -660,7 +661,10 @@ const plannedLookup = (
     Effect.succeed(
       connectionPlan(snapshot, firstParty, connection).ok
         ? {
-            target: { kind: "account", id: AccountId.make(`acc_planned_${connection.row_id}`) },
+            target: connectionTarget(
+              connection,
+              AccountId.make(`acc_planned_${connection.row_id}`),
+            ),
             account: `acc_planned_${connection.row_id}`,
           }
         : undefined,

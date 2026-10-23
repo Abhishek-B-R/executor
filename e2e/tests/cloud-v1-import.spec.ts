@@ -1125,6 +1125,130 @@ const seedToolkits = (organization: string, user: string, slug: string) =>
   });
 
 /**
+ * A workspace whose toolkits call an API: one OpenAPI integration on the loopback service with the
+ * workspace's API key (`shared`) and the member's own (`mine`), an org toolkit over the workspace's
+ * connection and a personal toolkit over the member's. Each key is one only that connection holds.
+ */
+const ledgerKeys = {
+  shared: "synthetic-ledger-workspace-key",
+  mine: "synthetic-ledger-member-key",
+};
+const seedToolkitCalls = (organization: string, user: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const ledger = `ledger_${randomUUID().slice(0, 6)}`;
+    const sharedItem = `connection:org:${ledger}:shared:token`;
+    const mineItem = `connection:user:${ledger}:mine:token`;
+    const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
+    const orgScope = `executor/org/${encodeURIComponent(organization)}`;
+    yield* emulators.v1VaultObject(vaultName(orgScope, sharedItem), ledgerKeys.shared);
+    yield* emulators.v1VaultObject(vaultName(userScope, mineItem), ledgerKeys.mine);
+    const text = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic ledger", version: "1" },
+      servers: [{ url: `${origin}/ledger` }],
+      paths: {
+        "/entries": {
+          get: {
+            operationId: "listEntries",
+            tags: ["entries"],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    });
+    const hash = createHash("sha256").update(text).digest("hex");
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const toolkitRow = (owner: "org" | "user", collection: string, data: Record<string, string>) =>
+      row(
+        `insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, '${owner}', $2, 'toolkits', $3, $4, $5::json)`,
+        organization,
+        owner === "user" ? user : "",
+        collection,
+        data.id ?? "",
+        JSON.stringify(data),
+      );
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic ledger workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', 'Ledger', $3::json)",
+        organization,
+        ledger,
+        JSON.stringify({
+          specHash: hash,
+          authenticationTemplate: [
+            {
+              slug: "apikey-0",
+              kind: "apikey",
+              placements: [{ carrier: "header", name: "X-Api-Key" }],
+            },
+          ],
+        }),
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${hash}`,
+        text,
+      ),
+      row(
+        "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+        organization,
+        `op.${ledger}.entries.list`,
+        JSON.stringify({
+          integration: ledger,
+          toolName: "entries.list",
+          binding: { method: "get", pathTemplate: "/entries" },
+        }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'org', '', $2, 'shared', 'apikey-0', $3::json, now() - interval '2 hours')",
+        organization,
+        ledger,
+        JSON.stringify({ token: sharedItem }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template, item_ids, created_at) values ($1, 'user', $2, $3, 'mine', 'apikey-0', $4::json, now() - interval '1 hour')",
+        organization,
+        user,
+        ledger,
+        JSON.stringify({ token: mineItem }),
+      ),
+      // What v1 last listed through each connection.
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'org', '', $2, 'shared', 'openapi', 'entries.list')",
+        organization,
+        ledger,
+      ),
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name) values ($1, 'user', $2, $3, 'mine', 'openapi', 'entries.list')",
+        organization,
+        user,
+        ledger,
+      ),
+      toolkitRow("org", "toolkits", { id: "tk_team", name: "Team ledger", slug: "team" }),
+      toolkitRow("org", "toolkitConnections", {
+        id: "tkconn_team",
+        toolkitId: "tk_team",
+        pattern: `${ledger}.org.shared.*`,
+        position: "a0",
+      }),
+      toolkitRow("user", "toolkits", { id: "tk_mine", name: "My ledger", slug: "mine" }),
+      toolkitRow("user", "toolkitConnections", {
+        id: "tkconn_mine",
+        toolkitId: "tk_mine",
+        pattern: `${ledger}.user.mine.*`,
+        position: "a0",
+      }),
+    ]);
+  });
+
+/**
  * Two host names of one synthetic service, under one registrable domain, for the loopback
  * service's port. `*.localhost` resolves to loopback.
  */
@@ -3369,6 +3493,148 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           ),
         ).toBe(403);
         expect(yield* initialize(sign(toolkit), toolkitQuery)).toBe(200);
+      }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportToolkitCalls.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          fs = yield* FileSystem.FileSystem,
+          target = yield* Target,
+          mcp = yield* McpClient;
+        const upstream = yield* credentialUpstream;
+        const { secret } = yield* fs
+          .readFileString(`${target.directory}/${v1McpForwardFile}`)
+          .pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(V1McpForwardSecret))),
+          );
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedToolkitCalls(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        // The service answers only the two keys, each where v1 sent it.
+        yield* upstream.issue(
+          Object.values(ledgerKeys).map((value) => ({ in: "header", name: "x-api-key", value })),
+        );
+        yield* googleSignIn(identity.email);
+
+        const { report, target: imported, results } = yield* importOnServer(own.organization);
+        for (const name of ["Ledger", "shared", "mine", "Team ledger", "My ledger"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+        expect(report.cutover).toBe(true);
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${imported.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        const app = inventory.apps.find((candidate) => candidate.name === "Ledger")?.id;
+        const connections = yield* call(
+          "List the scoped MCP connections",
+          "GET",
+          `/api/organizations/${imported.id}/mcp-connections`,
+        ).pipe(Effect.flatMap((response) => decode(Connections, response)));
+        const policyOf = (toolkit: string) =>
+          connections.find((connection) => connection.id === results.get(toolkit)?.v2Id)?.policy
+            .apps;
+        // The workspace's account is linked to the app for everyone, so the org toolkit's copy runs
+        // as the app; the member's toolkit runs as their own account.
+        expect(policyOf("Team ledger")).toEqual([
+          { app, runsAs: [{ kind: "app" }], tools: { kind: "selected", names: ["entries.list"] } },
+        ]);
+        expect(policyOf("My ledger")).toEqual([
+          {
+            app,
+            runsAs: [{ kind: "account", id: results.get("mine")?.v2Id }],
+            tools: { kind: "selected", names: ["entries.list"] },
+          },
+        ]);
+
+        let minted = 0;
+        const sign = (claims: Partial<V1ForwardClaims>) =>
+          Redacted.make(
+            v1ForwardBearer(secret, {
+              account: own.user,
+              organization: own.organization,
+              exp: Math.floor(Date.now() / 1000) + 300 + minted++,
+              ...claims,
+            }),
+          );
+        const Found = Schema.Struct({
+          items: Schema.Array(Schema.Struct({ path: Schema.String })),
+        });
+        // Through the v1 URL of each toolkit, as v1 forwards it to the caller's own copy: search
+        // finds the tool, and calling it with the connection's account reaches the service with
+        // that connection's key.
+        for (const [toolkit, connection, key] of [
+          ["Team ledger", "shared", ledgerKeys.shared],
+          ["My ledger", "mine", ledgerKeys.mine],
+        ] as const) {
+          const row = report.items?.find(
+            (item) => item.kind === "toolkit" && item.label === toolkit,
+          )?.id;
+          if (row === undefined) return yield* Effect.die(`The import has no ${toolkit} toolkit`);
+          const copy = v1ToolkitConnectionId(imported.id, row, own.user);
+          expect(results.get(toolkit)?.v2Id).toBe(copy);
+          const client = yield* mcp.connect(
+            () => sign({ toolkit: row, connection: copy }),
+            `toolkit-${connection}`,
+            { connection: copy },
+          );
+          const run = (operation: string, code: string) =>
+            client
+              .use(operation, (client, signal) =>
+                client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                ),
+              );
+          const searched = yield* run(
+            `Search ${toolkit}`,
+            `return await tools.search({query: "entries", limit: 50})`,
+          );
+          expect(searched.execution.ok, JSON.stringify(searched)).toBe(true);
+          const paths = (yield* Schema.decodeUnknownEffect(Found)(searched.execution.value)).items
+            .map((item) => item.path)
+            .filter((path) => path.endsWith("entries.list"));
+          expect(paths, JSON.stringify(searched)).toHaveLength(1);
+          const [path] = paths;
+          const callWith = (operation: string, account: string | undefined) =>
+            run(
+              operation,
+              `return await ${(path ?? "")
+                .split(".")
+                .map((part, index) => (index === 0 ? part : `[${JSON.stringify(part)}]`))
+                .join("")}(${JSON.stringify({ accountId: account, input: {} })})`,
+            );
+          const called = yield* callWith(
+            `Call entries.list through ${toolkit}`,
+            results.get(connection)?.v2Id,
+          );
+          expect(called.execution.ok, JSON.stringify(called)).toBe(true);
+          const received = yield* upstream.received;
+          expect(received.at(-1)?.url).toBe("/ledger/entries");
+          expect(received.at(-1)?.headers["x-api-key"]).toBe(key);
+          // The org toolkit's copy grants no member's own account: a call with one is refused
+          // before it reaches the service. App accounts follow app access, so the personal copy
+          // is not narrowed away from the workspace's account.
+          if (connection === "shared") {
+            const crossed = yield* callWith(
+              `Call entries.list through ${toolkit} as mine`,
+              results.get("mine")?.v2Id,
+            );
+            expect(crossed.execution.ok, JSON.stringify(crossed)).toBe(false);
+            expect(yield* upstream.received).toHaveLength(received.length);
+          }
+        }
       }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
     ),
   );

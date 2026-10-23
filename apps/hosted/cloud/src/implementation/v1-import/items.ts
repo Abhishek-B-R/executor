@@ -1427,12 +1427,23 @@ export interface ImportedLookup {
 }
 
 /**
+ * What a connection's tools run as once its account is linked (see `linkConnectionAccount`): an org
+ * connection's account is an app link, which a call reaches through the app itself, since a grant
+ * names only the caller's own accounts; a member's is their own account.
+ */
+export const connectionTarget = (
+  row: Pick<ConnectionRow, "owner">,
+  account: AccountId,
+): RunTarget => (row.owner === "org" ? { kind: "app" } : { kind: "account", id: account });
+
+/**
  * The import map's view of earlier item requests. A connection is done once its `profile` row is:
  * the row keeps the kind it had when imports made a profile per connection, so imports started
  * then still read. Its `v2_kind` is `app` for a public app's connection, whose tools run as the
  * app; otherwise the connection's account, recorded in its `connection` row, is linked to the app
- * and is what its tools run as. Its `v2_id` is the linked account, or, in a row from before
- * profiles were removed, the profile, which the item's result replaces with that account.
+ * and its tools run as `connectionTarget` says. Its `v2_id` is the linked account, or, in a row
+ * from before profiles were removed, the profile, which the item's result replaces with that
+ * account.
  */
 export const mapLookup = (store: ImportStore): ImportedLookup => ({
   app: (integration) =>
@@ -1451,7 +1462,7 @@ export const mapLookup = (store: ImportStore): ImportedLookup => ({
       const account = yield* store.find("connection", connection.row_id);
       if (account?.status !== "imported" || account.v2_id === null) return undefined;
       return {
-        target: { kind: "account", id: AccountId.make(account.v2_id) } as const,
+        target: connectionTarget(connection, AccountId.make(account.v2_id)),
         account: account.v2_id,
       };
     }),
@@ -1464,8 +1475,8 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 
 /**
  * A toolkit's scoped MCP connection: for each imported app whose tools it granted, the tools v1
- * served through it (`selected`, by the app's names) and the linked accounts of the connections it
- * granted (or the app itself, for a public app). v2 selects an app's tools and accounts
+ * served through it (`selected`, by the app's names) and what the connections it granted run as:
+ * the app itself for an org connection or a public app's, and a member's own account for theirs. v2 selects an app's tools and accounts
  * separately, so a tool v1 granted for only some of those connections becomes available through
  * all of them; the note says so.
  *
