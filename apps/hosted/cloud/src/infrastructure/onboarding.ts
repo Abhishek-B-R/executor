@@ -304,7 +304,14 @@ const v1ImportWriter = (production: boolean) =>
     );
     if (production) {
       if (Option.isNone(value)) return yield* Effect.die(new Error(missingV1ImportWriter));
-      return value;
+      const database = yield* Effect.try(() => new URL(Redacted.value(value.value))).pipe(
+        Effect.orElseSucceed(() => undefined),
+      );
+      if (database === undefined || !/^postgres(?:ql)?:$/u.test(database.protocol))
+        return yield* Effect.die(new Error(`${v1ImportWriterName} must be a Postgres URL`));
+      // v1's PlanetScale database accepts only TLS; the live reads above set the same mode.
+      database.searchParams.set("sslmode", "verify-full");
+      return Option.some(Redacted.make(database.toString()));
     }
     if (Option.isNone(value)) return Option.none<Redacted.Redacted<string>>();
     return Option.some(
