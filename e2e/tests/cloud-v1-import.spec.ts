@@ -152,11 +152,22 @@ const compiledV1Names = [
  * A synthetic API with one safe read, \`GET /v1/me\`, recording each request's path, query and key.
  * The disabled key gets Google's answer for an API that is not enabled in the client's project.
  * The redirected key is sent on to \`/landing\` over plain HTTP, which answers every request as the
- * user and records what reached it.
+ * user and records what reached it. It also serves the specification v1 stored only as its URL,
+ * counting each time it is fetched.
  */
 const checkedApi = Effect.gen(function* () {
   const received = yield* Ref.make<ReadonlyArray<{ path: string; key: string | undefined }>>([]);
   const landed = yield* Ref.make<ReadonlyArray<{ path: string; key: string | undefined }>>([]);
+  const specFetches = yield* Ref.make(0);
+  let origin = "";
+  const linked = HttpRouter.add(
+    "GET",
+    "/openapi.json",
+    Effect.gen(function* () {
+      yield* Ref.update(specFetches, (count) => count + 1);
+      return yield* HttpServerResponse.json(linkedDocument(origin));
+    }),
+  );
   const me = HttpRouter.add(
     "GET",
     "/v1/me",
@@ -199,19 +210,82 @@ const checkedApi = Effect.gen(function* () {
     }),
   );
   const services = yield* Layer.build(
-    HttpRouter.serve(Layer.mergeAll(me, landing), {
+    HttpRouter.serve(Layer.mergeAll(me, landing, linked), {
       disableLogger: true,
       disableListenLog: true,
     }).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
   );
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  origin = `http://127.0.0.1:${server.address.port}`;
   return {
-    origin: `http://127.0.0.1:${server.address.port}`,
+    origin,
     received: Ref.get(received),
     landed: Ref.get(landed),
+    specFetches: Ref.get(specFetches),
   };
 });
+
+/** The document behind the specification v1 stored only as its URL. */
+const linkedDocument = (origin: string) => ({
+  openapi: "3.0.3",
+  info: { title: "Linked API", version: "1" },
+  servers: [{ url: `${origin}/v1` }],
+  paths: {
+    "/me": {
+      get: {
+        operationId: "readMe",
+        tags: ["profile"],
+        responses: { "200": { description: "ok" } },
+      },
+    },
+  },
+});
+
+/**
+ * A document whose operations are references, as some generators write them: each names an
+ * Operation Object under `components`, with its own operationId, tags and a security requirement
+ * whose scheme the document declares. v1 named such an operation from its method and path.
+ * One answers with a component whose name holds a space.
+ */
+const referencedText = JSON.stringify({
+  openapi: "3.0.3",
+  info: { title: "Referenced API", version: "1" },
+  servers: [{ url: "https://api.example.com" }],
+  security: [],
+  components: {
+    securitySchemes: { key: { type: "apiKey", in: "header", name: "X-Key" } },
+    pathItems: {
+      listWidgets: {
+        operationId: "listWidgets",
+        tags: ["widgets"],
+        security: [{ key: [] }],
+        responses: { "200": { description: "ok" } },
+      },
+      getWidget: {
+        operationId: "getWidget",
+        tags: ["widgets"],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+        responses: {
+          "200": {
+            description: "ok",
+            // A component whose name has a space, referenced with it percent-encoded.
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/Widget%20Page" } },
+            },
+          },
+        },
+      },
+    },
+    schemas: { "Widget Page": { type: "object", properties: { id: { type: "string" } } } },
+  },
+  paths: {
+    "/v1/widgets": { get: { $ref: "#/components/pathItems/listWidgets" } },
+    "/v1/widgets/{id}": { get: { $ref: "#/components/pathItems/getWidget" } },
+  },
+});
+/** v1's names for the Referenced API's operations, by method and path. */
+const referencedV1Names = { "widgets.list": "/v1/widgets", "widgets.read": "/v1/widgets/{id}" };
 
 /**
  * A workspace whose OpenAPI integration declares v1's account check (an identity read with a pinned
@@ -278,6 +352,12 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
     });
     const mergedHash = createHash("sha256").update(mergedText).digest("hex");
     const merged = `merged_${randomUUID().slice(0, 6)}`;
+    const referencedHash = createHash("sha256").update(referencedText).digest("hex");
+    const referenced = `referenced_${randomUUID().slice(0, 6)}`;
+    // v1 kept a specification given as a URL as that text, and fetched the document from it.
+    const linkedText = `${origin}/openapi.json`;
+    const linkedHash = createHash("sha256").update(linkedText).digest("hex");
+    const linked = `linked_${randomUUID().slice(0, 6)}`;
     const document = {
       openapi: "3.0.3",
       info: { title: "Checked API", version: "1" },
@@ -309,6 +389,8 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
       [compiled, "compiled"],
       [unmatched, "unmatched"],
       [merged, "merged"],
+      [referenced, "referenced"],
+      [linked, "linked"],
     ] as const)
       yield* emulators.v1VaultObject(
         vaultName(userScope, tokenItem(integration, connection)),
@@ -433,11 +515,17 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
         organization,
         `${api}.*.*.me.unlisted`,
       ),
-      row(
-        "insert into blob (namespace, key, value) values ($1, $2, $3)",
-        `o:${organization}/openapi`,
-        `spec/${compiledHash}`,
-        compiledText,
+      ...[
+        [compiledHash, compiledText],
+        [referencedHash, referencedText],
+        [linkedHash, linkedText],
+      ].map(([key, text]) =>
+        row(
+          "insert into blob (namespace, key, value) values ($1, $2, $3)",
+          `o:${organization}/openapi`,
+          `spec/${key}`,
+          text ?? "",
+        ),
       ),
       row(
         "insert into blob (namespace, key, value) values ($1, $2, $3)",
@@ -460,13 +548,17 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
           },
         }),
       ),
-      // No operation rows: v1 compiled the document and found each listed tool by its name.
+      // No operation rows for the first two: v1 compiled the document and found each listed tool
+      // by its name. The Merged API's row is above; the others bind each tool to its operation by
+      // method and path.
       ...[
         {
           integration: compiled,
           name: "Compiled API",
           connection: "compiled",
+          specHash: compiledHash,
           tools: compiledV1Names,
+          operations: {},
         },
         // The organization revised it before v1 last listed its tools, so the tool v2 would not
         // provide is one v1 still lists, which blocks.
@@ -474,24 +566,55 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
           integration: unmatched,
           name: "Unmatched API",
           connection: "unmatched",
+          specHash: compiledHash,
           tools: ["items.itemsList", "items.archive"],
           revised: { at: 1_000, listed: 2_000 },
+          operations: {},
         },
         {
           integration: merged,
           name: "Merged API",
           connection: "merged",
-          tools: ["calendar.channels.stop", "drive.channels.stop"],
           specHash: mergedHash,
+          tools: ["calendar.channels.stop", "drive.channels.stop"],
+          operations: {},
         },
-      ].flatMap(({ integration, name, connection, tools, specHash, revised }) => [
+        {
+          integration: referenced,
+          name: "Referenced API",
+          connection: "referenced",
+          specHash: referencedHash,
+          tools: Object.keys(referencedV1Names),
+          operations: referencedV1Names,
+        },
+        {
+          integration: linked,
+          name: "Linked API",
+          connection: "linked",
+          specHash: linkedHash,
+          tools: ["profile.read"],
+          operations: { "profile.read": "/me" },
+        },
+      ].flatMap(({ integration, name, connection, specHash, tools, operations, revised }) => [
+        ...Object.entries(operations).map(([tool, path]) =>
+          row(
+            "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+            organization,
+            `op.${integration}.${tool}`,
+            JSON.stringify({
+              integration,
+              toolName: tool,
+              binding: { method: "get", pathTemplate: path, parameters: [] },
+            }),
+          ),
+        ),
         row(
           "insert into integration (tenant, slug, plugin_id, name, config, config_revised_at) values ($1, $2, 'openapi', $3, $4::json, nullif($5, '')::bigint)",
           organization,
           integration,
           name,
           JSON.stringify({
-            specHash: specHash ?? compiledHash,
+            specHash,
             authenticationTemplate: [
               {
                 slug: "apikey-0",
@@ -3094,6 +3217,10 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(results.get("Merged API")?.status, results.get("Merged API")?.reason).toBe(
           "imported",
         );
+        for (const name of ["Referenced API", "Linked API"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+        // v1 stored the Linked API's specification as its URL; the import fetched it once.
+        expect(yield* upstream.specFetches).toBe(1);
         // A tool v1 listed that the document does not name fails the integration by name.
         expect(results.get("Unmatched API")).toMatchObject({
           status: "failed",
@@ -3143,6 +3270,22 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect((yield* decode(Tools, compiledTools)).items.map((tool) => tool.name).sort()).toEqual(
           compiledV1Names,
         );
+        // Operations that are references, and the operations of a specification v1 stored as its
+        // URL, keep v1's names.
+        for (const [name, expected] of [
+          ["Referenced API", Object.keys(referencedV1Names)],
+          ["Linked API", ["profile.read"]],
+        ] as const) {
+          const listed = yield* call(
+            `List the ${name}'s tools`,
+            "GET",
+            `/api/organizations/${target.id}/apps/${appId(name)}/tools`,
+          );
+          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+          expect((yield* decode(Tools, listed)).items.map((tool) => tool.name).sort()).toEqual(
+            expected,
+          );
+        }
         const source = yield* call(
           "Read the MCP app's deployed source",
           "GET",

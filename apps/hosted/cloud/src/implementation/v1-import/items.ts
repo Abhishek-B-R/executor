@@ -49,7 +49,7 @@ import {
   type OwnerId,
   type OAuthSetupFailed,
 } from "@executor-js/sdk/core";
-import { planOperationNames } from "apps/openapi";
+import { OpenapiCompileError, openapiOperationNames } from "apps/openapi";
 import { Effect, Option, Redacted, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { V1StaleCategory } from "../../contracts/v1-import-run.ts";
@@ -74,7 +74,6 @@ import {
 import { openapiHealth, v1IntrospectionQuery } from "./health.ts";
 import {
   credentialOrigins,
-  documentOperations,
   importedDocument,
   operationBaseUrls,
   parseSpec,
@@ -616,7 +615,7 @@ export const compiledTools = (
 /** The v1 reads source generation needs. */
 export type GenerationSource = Pick<
   V1Source,
-  "tools" | "openApiOperations" | "openApiBinding" | "blob" | "blobMissing"
+  "tools" | "openApiOperations" | "openApiBinding" | "blob" | "blobMissing" | "specification"
 >;
 
 /**
@@ -795,8 +794,21 @@ export const generate = (
       case "openapi": {
         const stored = yield* context.source.blob(tenant, "openapi", `spec/${decoded.specHash}`);
         if (Option.isNone(stored)) return yield* fail(context.source.blobMissing);
-        const parsed = parseSpec(stored.value);
-        if (!parsed.ok) return yield* failStale("unreadable_spec", parsed.reason);
+        const read = parseSpec(stored.value);
+        if (read.ok === false) return yield* failStale("unreadable_spec", read.reason);
+        // v1 stored some specifications as their URL and fetched the document once; so does this.
+        // v1 kept what it fetched, so a document that cannot be fetched or read now still blocks.
+        const parsed =
+          read.ok === "url"
+            ? parseSpec(
+                yield* context.source
+                  .specification(read.url)
+                  .pipe(Effect.catchTag("SpecificationUnavailable", (error) => fail(error.reason))),
+              )
+            : read;
+        if (parsed.ok === "url")
+          return yield* fail("v1's stored specification is a URL whose document is another URL.");
+        if (!parsed.ok) return yield* fail(parsed.reason);
         const { document } = parsed;
         const operations = yield* context.source.openApiOperations(tenant, integration.slug);
         const tools = yield* context.source.tools(tenant, subjects, integration.slug);
@@ -830,10 +842,20 @@ export const generate = (
           return yield* fail(
             `Its operations call ${insecure.join(", ")} over plain HTTP, and an imported app sends an account's credentials to more than one host only over HTTPS.`,
           );
-        // v2's names for every operation, as liveOpenapiRouter plans them, mapped to v1's.
+        // The name liveOpenapiRouter gives each operation, as it reads the document, mapped to v1's.
+        const declared = yield* Effect.tryPromise({
+          try: () => openapiOperationNames(prepared.document),
+          catch: (error) => error,
+        }).pipe(
+          Effect.catch((error) =>
+            error instanceof OpenapiCompileError ? fail(error.reason) : Effect.die(error),
+          ),
+        );
         const names: Record<string, string> = {};
-        for (const operation of planOperationNames(documentOperations(prepared)))
-          if (operation.v1 !== undefined) names[operation.name] = operation.v1;
+        for (const operation of declared) {
+          const v1 = prepared.named.get(`${operation.method.toLowerCase()} ${operation.path}`);
+          if (v1 !== undefined) names[operation.name] = v1;
+        }
         const exposed = new Set(Object.values(names));
         // Every tool v1 bound or last listed, except those of the TRACE operations it drops and
         // of the operations v1 never reached.
