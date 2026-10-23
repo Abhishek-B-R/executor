@@ -129,6 +129,17 @@ const binaryInput: JsonObject = {
   contentEncoding: "base64",
 };
 /**
+ * A Parameter Object's documentation, which OpenAPI keeps beside its schema rather than in it.
+ * It describes this use of the schema, so it replaces the schema's own on the input property;
+ * requests never read it. Documentation alone never fails an operation that is otherwise valid.
+ */
+const parameterDocumentation = (parameter: JsonObject): JsonObject => ({
+  ...(typeof parameter.description === "string" && parameter.description.trim() !== ""
+    ? { description: parameter.description }
+    : {}),
+  ...(parameter.deprecated === true ? { deprecated: true } : {}),
+});
+/**
  * Where a Responses, Request Body or Parameter entry is declared: the object a reference resolved
  * to, or the entry's own place under its operation.
  */
@@ -649,7 +660,10 @@ export const compileOpenApiDocument = (
               }),
             ),
           ];
-          const parameters = new Map<string, { parameter: Parameter; at: string | undefined }>();
+          const parameters = new Map<
+            string,
+            { parameter: Parameter; documentation: JsonObject; at: string | undefined }
+          >();
           for (const { parameter, at: parameterAt } of declared) {
             const declaration = document.resolve(record(parameter));
             // A parameter in a place OpenAPI 3 does not have, such as Swagger 2.0's `body`, is not
@@ -666,7 +680,11 @@ export const compileOpenApiDocument = (
                   `The querystring parameter at ${parameterAt} must declare one form, JSON or text media type in content.`,
                 );
             }
-            parameters.set(`${p.in}:${p.name}`, { parameter: p, at: parameterAt });
+            parameters.set(`${p.in}:${p.name}`, {
+              parameter: p,
+              documentation: parameterDocumentation(declaration),
+              at: parameterAt,
+            });
           }
           // A path prefix parameter the operation declares without placing it keeps its schema.
           for (const name of prefix) {
@@ -679,6 +697,7 @@ export const compileOpenApiDocument = (
             if (!parameters.has(key))
               parameters.set(key, {
                 parameter: { name, in: "path", required: true, schema: { type: "string" } },
+                documentation: {},
                 at: undefined,
               });
           }
@@ -687,7 +706,7 @@ export const compileOpenApiDocument = (
             string,
             { properties: Record<string, (api: ApiSchema) => Json>; required: string[] }
           >();
-          for (const { parameter: p, at: parameterAt } of parameters.values()) {
+          for (const { parameter: p, documentation, at: parameterAt } of parameters.values()) {
             const key = p.in === "header" ? "headers" : p.in;
             const group = groups.get(key) ?? { properties: {}, required: [] };
             const [mediaType, content] =
@@ -700,7 +719,9 @@ export const compileOpenApiDocument = (
                 : mediaSchemaAt(document, `${parameterAt}`, mediaType, content);
             // A parameter that only the path prefix declares is Executor's own Draft 2020-12.
             group.properties[p.name] =
-              parameterAt === undefined ? () => schema : (api) => api(schema, schemaAt);
+              parameterAt === undefined
+                ? () => schema
+                : (api) => ({ ...api(schema, schemaAt), ...documentation });
             if (p.required || p.in === "path") group.required.push(p.name);
             groups.set(key, group);
           }
