@@ -164,6 +164,22 @@ export const migrateV1ImportOrgs = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The v1 session handoff tokens v2 has accepted (`v1-session-handoff.ts`), so each is used once.
+ * A row is needed only until its token expires; the handoff deletes expired rows. Additive: the
+ * running server never reads it.
+ */
+export const migrateV1SessionHandoffs = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists private_v1_session_handoff (
+    jti text primary key,
+    expires_at timestamptz not null,
+    used_at timestamptz not null default now()
+  )`;
+  yield* sql`create index if not exists private_v1_session_handoff_expires
+    on private_v1_session_handoff (expires_at)`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -202,6 +218,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "5_v1_import_map": migrateV1ImportMap,
         "6_setup_assignments": migrateSetupAssignments,
         "7_v1_import_orgs": migrateV1ImportOrgs,
+        "8_v1_session_handoffs": migrateV1SessionHandoffs,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

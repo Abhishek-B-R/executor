@@ -24,6 +24,7 @@ import { emulatedSocialProviders } from "./emulated-auth.ts";
 import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
 import { chatGptSettings, chatGptSignIn } from "./chatgpt-sign-in.ts";
 import { cloudMemberLimit } from "./member-limit.ts";
+import { v1HandoffSessions } from "./v1-session-handoff.ts";
 
 /** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
@@ -361,6 +362,8 @@ export const cloudAuthOptions = (
           ),
       }),
       ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
+      // Server only: sessions for members v1 vouches for (`v1-session-handoff.ts`).
+      v1HandoffSessions(),
       // The native migrator creates tables in plugin order; SSO references organization.
       cloudSso(billing),
       emailOTP({

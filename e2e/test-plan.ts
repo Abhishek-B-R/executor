@@ -7633,6 +7633,18 @@ export const scenarios = plan({
       "Cloud v1 import keeps a workspace that fails verification frozen in v1, and accepts MCP requests v1 forwards for an imported workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1HandoffSignIn: {
+    file: "cloud-v1-session-handoff.spec.ts",
+    title:
+      "Cloud v1 import hands a moved workspace's member from their v1 session to v2: the handoff starts a session for the user the import mapped and opens the organization with no referrer, a browser signed in as them is only redirected, one signed in as another member keeps its session, and a used token opens sign-in",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1HandoffRefusals: {
+    file: "cloud-v1-session-handoff.spec.ts",
+    title:
+      "Cloud v1 import opens v2 sign-in without a session for a handoff with a wrong signature, an expired or too long-lived token, another audience or version, a WorkOS user the import never mapped, or a member who has left the organization",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportToolkitCalls: {
     file: "cloud-v1-import.spec.ts",
     title:

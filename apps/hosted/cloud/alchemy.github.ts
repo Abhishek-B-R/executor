@@ -31,6 +31,7 @@ import {
   missingV1McpForwardSecret,
   v1ImportWriterName,
   v1McpForwardSecretName,
+  v1SessionHandoffSecretName,
   v1ImportOperatorTokenMinLength,
   missingV1ImportOperatorToken,
   v1FirstPartyClientsName,
@@ -510,6 +511,19 @@ export default Alchemy.Stack(
         ...target,
         name: v1McpForwardSecretName,
         value: v1Forward.value,
+        environment: production,
+      }).pipe(retain());
+
+    /**
+     * The secret v1 signs session handoffs with (`v1-session-handoff.ts`), the same value as v1's
+     * `V2_SESSION_HANDOFF_SECRET`. Without it a member v1 sends to a moved workspace signs in to v2.
+     */
+    const v1Handoff = yield* nonEmptySecret(v1SessionHandoffSecretName);
+    if (Option.isSome(v1Handoff))
+      yield* GitHub.Secret(`production-${v1SessionHandoffSecretName}`, {
+        ...target,
+        name: v1SessionHandoffSecretName,
+        value: v1Handoff.value,
         environment: production,
       }).pipe(retain());
 

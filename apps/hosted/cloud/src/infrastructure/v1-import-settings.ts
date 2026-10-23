@@ -78,6 +78,13 @@ export const v1McpForwardSecretName = "V1_MCP_FORWARD_SECRET";
 export const missingV1McpForwardSecret = `v1 imports that write need ${v1McpForwardSecretName}, the secret v1 signs forwarded MCP requests with (v1's V2_MCP_FORWARD_SECRET): without it a moved workspace's MCP URLs stop working`;
 
 /**
+ * The secret v1 signs session handoffs with, shared with v1's `V2_SESSION_HANDOFF_SECRET`: v1's
+ * dashboard sends a signed-in member of a moved organization to `/api/v1-handoff` with a token
+ * signed with it, so they need not sign in again (`v1-session-handoff.ts`).
+ */
+export const v1SessionHandoffSecretName = "V1_SESSION_HANDOFF_SECRET";
+
+/**
  * Where a non-production Cloud reads v1. `live` is v1's production WorkOS, database, blob bucket
  * and Autumn account, read-only, from local Cloud dev on a loopback origin only. It never writes:
  * such a Cloud refuses every import that writes, whatever `CLOUD_V1_IMPORT_WRITES` says.

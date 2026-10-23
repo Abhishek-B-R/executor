@@ -59,6 +59,7 @@ import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
+import { v1HandoffPath } from "./implementation/v1-session-handoff.ts";
 import { cloudOnboarding, cloudV1ImportSettings } from "./infrastructure/onboarding.ts";
 import {
   V1ImportConfiguration,
@@ -600,6 +601,8 @@ export default Api.make(
         auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
       ),
       HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
+      // A member of a moved v1 workspace, signed in to v1, opens it here without signing in again.
+      HttpRouter.add("GET", v1HandoffPath, auth.v1Handoff),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
       HttpRouter.add(
         "GET",
