@@ -100,7 +100,7 @@ import {
   type Unsupported,
 } from "./plan.ts";
 import type { V1Snapshot, V1Source } from "./source.ts";
-import { sourceHash, type ImportStore, type MapResult } from "./store.ts";
+import { sourceHash, toolkitCopyId, type ImportStore, type MapResult } from "./store.ts";
 import { v1ToolPaths } from "./v1-tool-paths.ts";
 
 /** v1's OAuth callback; imported clients keep it, and v1's edge forwards it to v2. */
@@ -1583,7 +1583,7 @@ export const toolkitMembers = (toolkit: V1Toolkit, members: readonly string[]) =
 
 /** The map key of one member's copy of a toolkit. */
 export const toolkitCopyKey = (toolkit: Pick<V1Toolkit, "row">, member: string) =>
-  `${toolkit.row.row_id}:${member}`;
+  toolkitCopyId(toolkit.row.row_id, member);
 
 /** Create or update a member's copy of the toolkit: a scoped MCP connection they own. */
 export const importToolkit = (context: ItemContext, toolkit: V1Toolkit, member: string) =>

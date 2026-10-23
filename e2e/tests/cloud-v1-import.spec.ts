@@ -9,10 +9,11 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Ref, Schema } from "effect";
+import { Effect, FileSystem, Layer, Redacted, Ref, Schema } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
+  HttpClientRequest,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
@@ -25,6 +26,15 @@ import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
 import { largeOpenapiDocument } from "../support/large-openapi.ts";
 import { Emulators } from "../support/emulators.ts";
+import { McpClient } from "../support/mcp-client.ts";
+import { Execution } from "../support/mcp-connections.ts";
+import {
+  type V1ForwardClaims,
+  V1McpForwardSecret,
+  v1ForwardBearer,
+  v1McpForwardFile,
+  v1ToolkitConnectionId,
+} from "../support/v1-mcp-forward.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import {
   OperatorOAuthFixture,
@@ -3159,6 +3169,207 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         // Its package files are not read here: managed local Cloud has no Git storage for app
         // source, and the v1 import runs only there.
       }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportMcpForward.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          fs = yield* FileSystem.FileSystem,
+          target = yield* Target,
+          mcp = yield* McpClient;
+        const { secret } = yield* fs
+          .readFileString(`${target.directory}/${v1McpForwardFile}`)
+          .pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(V1McpForwardSecret))),
+          );
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        const stranger = yield* emulators.v1Workspace([
+          (yield* emulators.identity("google")).email,
+        ]);
+        const seeded = yield* seedWorkspace(
+          own.organization,
+          own.user,
+          `v1-${randomUUID().slice(0, 8)}`,
+        );
+        // A toolkit over the user's Widgets account that blocks creating.
+        const toolkitRow = (collection: string, data: Record<string, string>) =>
+          ({
+            sql: `insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, 'user', $2, 'toolkits', $3, $4, $5::json)`,
+            params: [own.organization, own.user, collection, data.id ?? "", JSON.stringify(data)],
+          }) satisfies RowStatement;
+        yield* writeRows("v1-database.json", [
+          toolkitRow("toolkits", { id: "tk_forward", name: "Forwarded", slug: "forwarded" }),
+          toolkitRow("toolkitConnections", {
+            id: "tkconn_forward",
+            toolkitId: "tk_forward",
+            pattern: `${seeded.widgets}.user.main.*`,
+            position: "a0",
+          }),
+          toolkitRow("toolkitPolicies", {
+            id: "tkpol_forward",
+            toolkitId: "tk_forward",
+            pattern: `${seeded.widgets}.*.*.${seeded.v1Names.create}`,
+            action: "block",
+            position: "a0",
+          }),
+        ]);
+        yield* googleSignIn(identity.email);
+
+        const { report, target: imported, items } = yield* importOnServer(own.organization);
+        // This workspace has an item that cannot move, so verification fails: the import does not
+        // cut it over, and v1 keeps it frozen for a person to fix and restart or roll back.
+        expect(items.some((item) => item.status === "failed")).toBe(true);
+        expect(report.verification?.passed).toBe(false);
+        expect(report.cutover).toBe(false);
+        const flag = yield* writeRows("v1-database.json", [
+          {
+            sql: "select state from org_moved_to_v2 where org_id = $1",
+            params: [own.organization],
+          },
+        ]);
+        expect(flag).toEqual([[{ state: "moving" }]]);
+        // v2 accepts what v1 forwards from the import map alone; v1 forwards only once moved.
+        const forwarded = items.find(
+          (item) => item.kind === "toolkit" && item.label === "Forwarded",
+        );
+        expect(forwarded?.status).toBe("imported");
+        if (forwarded === undefined)
+          return yield* Effect.die("The import has no Forwarded toolkit");
+        // v1 names a toolkit by its row; the connection id it computes for the caller is the id of
+        // the caller's own copy.
+        const row = forwarded.id;
+        const connection = v1ToolkitConnectionId(imported.id, row, own.user);
+        expect(forwarded.v2Id).toBe(connection);
+
+        /** A bearer as v1 signs it for one request; each is distinct and lives a few minutes. */
+        let minted = 0;
+        const sign = (claims: Partial<V1ForwardClaims> = {}, signedWith = secret) =>
+          Redacted.make(
+            v1ForwardBearer(signedWith, {
+              account: own.user,
+              organization: own.organization,
+              exp: Math.floor(Date.now() / 1000) + 300 + minted++,
+              ...claims,
+            }),
+          );
+        const toolkit = { toolkit: row, connection };
+
+        const run = (
+          client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>,
+          operation: string,
+          code: string,
+        ) =>
+          client
+            .use(operation, (client, signal) =>
+              client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+            )
+            .pipe(
+              Effect.flatMap((result) =>
+                Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+              ),
+            );
+        const Found = Schema.Struct({
+          items: Schema.Array(Schema.Struct({ path: Schema.String })),
+        });
+        const search = (
+          client: Effect.Success<ReturnType<McpClient["Service"]["connect"]>>,
+          query: string,
+        ) =>
+          run(
+            client,
+            `Search for ${query}`,
+            `return await tools.search({query: ${JSON.stringify(query)}, limit: 50})`,
+          ).pipe(
+            Effect.flatMap((done) => Schema.decodeUnknownEffect(Found)(done.execution.value)),
+            Effect.map((found) => found.items.map((item) => item.path)),
+          );
+
+        // The account and organization alone reach every imported app, with a new bearer for each
+        // request of the one session.
+        const before = minted;
+        const workspace = yield* mcp.connect(() => sign(), "forwarded-workspace");
+        const listed = yield* workspace.use(
+          "List the forwarded session's tools",
+          (client, signal) => client.listTools(undefined, { signal }),
+        );
+        expect(listed.tools.map((tool) => tool.name)).toContain("execute");
+        const everything = yield* search(workspace, "widgets");
+        const has = (paths: readonly string[], name: string) =>
+          paths.some((path) => path.endsWith(name));
+        expect(has(everything, seeded.v1Names.list)).toBe(true);
+        expect(has(everything, seeded.v1Names.create)).toBe(true);
+        // Initialize, its notification, the listing and a search each signed their own bearer.
+        expect(minted - before).toBeGreaterThanOrEqual(4);
+
+        // A toolkit's bearer and URL reach only what the caller's copy of the toolkit grants.
+        const scoped = yield* mcp.connect(() => sign(toolkit), "forwarded-toolkit", {
+          connection,
+        });
+        const granted = yield* search(scoped, "widgets");
+        // The listing tool, and not the tool the toolkit blocks.
+        expect(granted).toHaveLength(1);
+        expect(has(granted, seeded.v1Names.list)).toBe(true);
+        expect(has(granted, seeded.v1Names.create)).toBe(false);
+
+        /** The status of one initialize request carrying this bearer, at this URL query. */
+        const initialize = (bearer: Redacted.Redacted<string>, query = "") =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const http = yield* HttpClient.HttpClient;
+              const request = HttpClientRequest.post(`${target.metadata.origin}/mcp${query}`).pipe(
+                HttpClientRequest.setHeaders({
+                  accept: "application/json, text/event-stream",
+                  authorization: `Bearer ${Redacted.value(bearer)}`,
+                }),
+              );
+              const response = yield* http.execute(
+                yield* HttpClientRequest.bodyJson(request, {
+                  jsonrpc: "2.0",
+                  id: 1,
+                  method: "initialize",
+                  params: {
+                    protocolVersion: "2025-06-18",
+                    capabilities: {},
+                    clientInfo: { name: "forwarded-refusal", version: "1" },
+                  },
+                }),
+              );
+              yield* response.text;
+              return response.status;
+            }),
+          ).pipe(Effect.provide(FetchHttpClient.layer));
+        const now = Math.floor(Date.now() / 1000);
+        const toolkitQuery = `?connection=${connection}`;
+        expect(yield* initialize(sign())).toBe(200);
+        // v1 vouches for no one else, and a signature or lifetime v1 did not give is refused.
+        expect(yield* initialize(sign({}, "x".repeat(64)))).toBe(401);
+        expect(yield* initialize(sign({ exp: now - 10 }))).toBe(401);
+        expect(yield* initialize(sign({ exp: now + 3_600 }))).toBe(401);
+        expect(yield* initialize(sign({ toolkit: row }), toolkitQuery)).toBe(401);
+        // A valid bearer for an account or organization the import never mapped.
+        expect(yield* initialize(sign({ account: stranger.user }))).toBe(403);
+        expect(yield* initialize(sign({ organization: stranger.organization }))).toBe(403);
+        // A toolkit connection that is not the caller's copy: another member's, or another row's.
+        const otherMember = v1ToolkitConnectionId(imported.id, row, stranger.user);
+        expect(
+          yield* initialize(
+            sign({ toolkit: row, connection: otherMember }),
+            `?connection=${otherMember}`,
+          ),
+        ).toBe(403);
+        const otherRow = v1ToolkitConnectionId(imported.id, "tk_other", own.user);
+        expect(
+          yield* initialize(
+            sign({ toolkit: "tk_other", connection: otherRow }),
+            `?connection=${otherRow}`,
+          ),
+        ).toBe(403);
+        expect(yield* initialize(sign(toolkit), toolkitQuery)).toBe(200);
+      }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
     ),
   );
 

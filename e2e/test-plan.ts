@@ -7595,6 +7595,18 @@ export const scenarios = plan({
       "Cloud v1 import turns toolkits into scoped MCP connections with v1's tools, linked accounts and approvals, and artifacts into undeployed apps that need repair",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportMcpForward: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import keeps a workspace that fails verification frozen in v1, and accepts MCP requests v1 forwards for an imported workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportRollback: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportRequests: {
     file: "cloud-v1-import.spec.ts",
     title:
@@ -7629,7 +7641,7 @@ export const scenarios = plan({
   v1ImportShared: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import moves a shared workspace on the server: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
+      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportDryRun: {
