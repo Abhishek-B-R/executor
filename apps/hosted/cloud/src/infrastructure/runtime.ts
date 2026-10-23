@@ -57,6 +57,7 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
       new RuntimeBuildFailed({
         stage: "compile",
         message: `The compiler did not answer within ${compilerDeadline}. No new version was activated; deploy again.`,
+        unanswered: true,
       }),
     ),
   ),
@@ -164,7 +165,7 @@ export const cloudRuntime = Effect.fn(function* (
             capabilities,
           ),
         ),
-      build: ({ files, public: publicPaths = [] }) =>
+      build: ({ files, public: publicPaths = [], retain = true }) =>
         withActor(
           Effect.gen(function* () {
             const headers = Object.fromEntries(Object.entries(yield* traceHeaders));
@@ -213,6 +214,8 @@ export const cloudRuntime = Effect.fn(function* (
                 ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
+            // A check keeps nothing: no R2 object, no cache entry. Its build id names nothing.
+            if (!retain) return { build, requirements };
             const stored = yield* retainCloudBuild(
               build,
               { ...bundle, database: ownsDatabase(requirements), protocol },
