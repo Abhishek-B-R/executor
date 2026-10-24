@@ -4733,7 +4733,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "oauth-clients.spec.ts",
     title:
-      "Without an OAuth client for a service, administrators are told Executor provides none and register one from the connect form, and members enter their own details",
+      "Without an OAuth client for a service, administrators enter one in the connect form, which registers it before sign-in, keeps it when sign-in fails and edits it for the retry, and members enter their own details for one account",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),
