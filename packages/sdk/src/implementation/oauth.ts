@@ -2712,35 +2712,60 @@ export const makeOAuth = (
     );
 
   /**
-   * Fail as `resolve` would when the stored grant can no longer release credentials, without
+   * Fail as `resolve` would when a stored grant can no longer release credentials, without
    * renewing it or releasing anything. A grant that renewal would replace still passes; its
    * outcome is known only once a live resolve renews it. A grant that needs reconnecting is
    * recorded as the span's outcome, as `resolve` records it, and fails only after the span.
+   *
+   * Each of `checks` is checked in order, and the first that fails decides the failure. Their
+   * grants are read in one query and one span covers the whole check, so checking a selection
+   * costs the same however many accounts it names.
    */
-  const usable = (account: StoredAccount, provider: ProviderDefinition) =>
+  const usableAll = (
+    checks: ReadonlyArray<{
+      readonly account: StoredAccount;
+      readonly provider: ProviderDefinition;
+    }>,
+  ) =>
     Effect.gen(function* () {
-      yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
-      if (provider.auth[account.method]?.type === "secrets") return;
-      const reconnect = (reason: ReconnectReason) =>
-        reconnectRequired("oauth.usable", account.id, reason);
-      const row = yield* query(() =>
-        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
-      );
-      if (row === null) return yield* reconnect("grant_missing");
-      if (row.status === "reconnect") return yield* reconnect("grant_unusable");
-      // A renewal in progress, or one a stopped process abandoned, is settled by the next live
-      // resolve; its outcome is not known until then.
-      if (!row.status.startsWith("ready_")) return;
-      const now = yield* Clock.currentTimeMillis;
-      const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
-      const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
-      if (
-        grant.expiresAt === undefined ||
-        grant.expiresAt > now + 30_000 ||
-        (!renewable && grant.expiresAt > now)
-      )
-        return;
-      if (protocol === undefined || !renewable) return yield* reconnect("not_renewable");
+      yield* Effect.annotateCurrentSpan("oauth.usable.accounts", checks.length);
+      const granted = [
+        ...new Set(
+          checks
+            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+            .map(({ account }) => account.id),
+        ),
+      ];
+      const rows =
+        granted.length === 0
+          ? []
+          : yield* query(() =>
+              db.findMany("oauthGrants", { where: (b) => b("id", "in", granted) }),
+            );
+      const grants = new Map(rows.map((row) => [row.id, row] as const));
+      for (const { account, provider } of checks) {
+        // The provider of the account checked last: on failure, the one that failed.
+        yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
+        if (provider.auth[account.method]?.type === "secrets") continue;
+        const reconnect = (reason: ReconnectReason) =>
+          reconnectRequired("oauth.usable", account.id, reason);
+        const row = grants.get(account.id);
+        if (row === undefined) return yield* reconnect("grant_missing");
+        if (row.status === "reconnect") return yield* reconnect("grant_unusable");
+        // A renewal in progress, or one a stopped process abandoned, is settled by the next live
+        // resolve; its outcome is not known until then.
+        if (!row.status.startsWith("ready_")) continue;
+        const now = yield* Clock.currentTimeMillis;
+        const grant = yield* decrypt(account.id, row.encrypted, OAuthGrant);
+        const renewable = grant.grant === "client_credentials" || grant.refreshToken !== undefined;
+        if (
+          grant.expiresAt === undefined ||
+          grant.expiresAt > now + 30_000 ||
+          (!renewable && grant.expiresAt > now)
+        )
+          continue;
+        if (protocol === undefined || !renewable) return yield* reconnect("not_renewable");
+      }
     }).pipe(
       Effect.withSpan("oauth.usable"),
       Effect.flatMap((checked) =>
@@ -2866,23 +2891,50 @@ export const makeOAuth = (
       selected,
     ),
   ) =>
-    Effect.flatMap(authority, (checked) => {
-      const recheck = selectionAuthorized(use, selected);
-      return Effect.forEach(selected, ({ account, provider }) =>
-        Effect.gen(function* () {
-          const credential = yield* resolveAuthorized(
-            account,
-            provider,
-            checked,
-            { contested: false },
-            undefined,
-            recheck,
-          );
-          /** The account as one slot's invocation sends it, under that slot's definition. */
-          return (definition: ProviderDefinition) =>
-            invocationAccount(account, definition, credential, firstPartyClients);
-        }),
+    Effect.flatMap(authority, (checked) =>
+      Effect.gen(function* () {
+        const recheck = selectionAuthorized(use, selected);
+        // Without grant rows the caller read in its own batch, the selection's grants are read
+        // here in one query and stand in for each grant's first read, as the caller's would.
+        const readAhead = (yield* GrantReadAhead) ?? (yield* selectionGrants(selected));
+        return yield* Effect.forEach(selected, ({ account, provider }) =>
+          Effect.gen(function* () {
+            const credential = yield* resolveAuthorized(
+              account,
+              provider,
+              checked,
+              { contested: false },
+              undefined,
+              recheck,
+            );
+            /** The account as one slot's invocation sends it, under that slot's definition. */
+            return (definition: ProviderDefinition) =>
+              invocationAccount(account, definition, credential, firstPartyClients);
+          }),
+        ).pipe(Effect.provideService(GrantReadAhead, readAhead));
+      }),
+    );
+  /**
+   * The grant rows of the selected accounts that sign in with OAuth, read in one query, by
+   * account. An account without a row maps to null, as a missing grant reads.
+   */
+  const selectionGrants = (
+    selected: ReadonlyArray<{
+      readonly account: StoredAccount;
+      readonly provider: ProviderDefinition;
+    }>,
+  ) =>
+    Effect.gen(function* () {
+      const ids = selected
+        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+        .map(({ account }) => account.id);
+      if (ids.length === 0) return undefined;
+      const rows = yield* query(() =>
+        db.findMany("oauthGrants", { where: (b) => b("id", "in", ids) }),
       );
+      const byId = new Map<AccountId, GrantRow | null>(ids.map((id) => [id, null]));
+      for (const row of rows) if (byId.has(row.id as AccountId)) byId.set(row.id as AccountId, row);
+      return byId;
     });
   /**
    * The service refused these credentials. Renew the grant once, or read a renewal another call
@@ -3259,7 +3311,7 @@ export const makeOAuth = (
     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
     resolveSelected,
     renewRejected,
-    usable,
+    usableAll,
     revokeRemoved,
   };
 };

@@ -753,7 +753,7 @@ const summarizeTool = ({
 /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 export const makeTools = (
   storage: ExecutorDatabase,
-  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
@@ -1223,16 +1223,19 @@ export const makeTools = (
     accountNeedingReconnect: (input: { app: AppId; accounts: AppAccounts }) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
-        for (const { required, accounts } of state.selections)
-          for (const account of accounts) {
-            const usable = yield* oauth.usable(account, required.definition).pipe(Effect.result);
-            if (Result.isFailure(usable)) {
-              if (!Schema.is(OAuthReconnectRequired)(usable.failure))
-                return yield* Effect.fail(usable.failure);
-              yield* accountsOutcome("reconnect");
-              return account.id;
-            }
-          }
+        const usable = yield* oauth
+          .usableAll(
+            state.selections.flatMap(({ required, accounts }) =>
+              accounts.map((account) => ({ account, provider: required.definition })),
+            ),
+          )
+          .pipe(Effect.result);
+        if (Result.isFailure(usable)) {
+          if (!Schema.is(OAuthReconnectRequired)(usable.failure))
+            return yield* Effect.fail(usable.failure);
+          yield* accountsOutcome("reconnect");
+          return usable.failure.account;
+        }
         yield* accountsOutcome("ready");
         return undefined;
       }).pipe(
