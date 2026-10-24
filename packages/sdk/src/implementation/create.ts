@@ -33,6 +33,7 @@ import { makeSchedules } from "./schedules.ts";
 import { makeTools } from "./tools.ts";
 import { makeSkills } from "./skills.ts";
 import { toEffectRuntime } from "./runtime.ts";
+import { validateFields } from "./provider.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
@@ -222,6 +223,11 @@ export const createExecutor = (
       },
       [OAuthGrantImport]: {
         importOAuthGrant: oauth.importGrant,
+        checkOAuthGrant: oauth.checkGrant,
+        checkAccountFields: (input) =>
+          validateFields(input.provider, input.definition, input.method, input.fields).pipe(
+            Effect.asVoid,
+          ),
         firstPartyClient: oauth.firstPartyClient,
         credentialsReadable: credentialsReadable(db, credentials),
       },
