@@ -7753,6 +7753,20 @@ export const scenarios = plan({
       ),
     },
   },
+  localSkillsInputSchema: {
+    file: "local-skills.spec.ts",
+    title:
+      "MCP skills accept exactly the inputs their advertised schema accepts, and every skills call the tool descriptions and Executor skills show succeeds",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Every product serves the same skills tool, descriptions and Executor skills from packages/mcp and app-templates; local reaches all three modes with one bearer.",
+      ),
+      cloud: na(
+        "Every product serves the same skills tool, descriptions and Executor skills from packages/mcp and app-templates; local reaches all three modes with one bearer.",
+      ),
+    },
+  },
   skillReadTelemetry: {
     fixtures: "actors",
     managementApps: ["owner"],
