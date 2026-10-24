@@ -90,7 +90,7 @@ import { webFiles } from "./web.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { layerBuildHeader } from "@executor-js/dashboard-start/build-header";
 import { LocalExecutorApi, localManagementDocument } from "../contracts/management.ts";
-import { nativeRepositories } from "@executor-js/app-source/node";
+import { bundledGit, nativeRepositories, systemGit } from "@executor-js/app-source/node";
 import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 import { LocalFeedbackApi } from "../contracts/feedback.ts";
 import { localAnalytics, observeLocalExecutor, scheduleAnalytics } from "./product-analytics.ts";
@@ -149,7 +149,12 @@ export const localApi = (
           Config.withDefault(hostedExecutorOrigin),
         ),
       );
-      const repositories = nativeRepositories(path.join(directory, "repositories"));
+      // A release names the Git it bundles; a source checkout uses the Git on PATH.
+      const git = Option.match(
+        yield* Config.NonEmptyString("EXECUTOR_GIT_DIRECTORY").pipe(Config.option),
+        { onNone: () => systemGit, onSome: bundledGit },
+      );
+      const repositories = nativeRepositories(path.join(directory, "repositories"), git);
       const server = yield* Scope.Scope;
       const evaluation = yield* declarationConfig;
       // MCP grants are checked again before each event delivery; OAuth starts after the executor.

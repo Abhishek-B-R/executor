@@ -76,8 +76,8 @@ const build = Effect.gen(function* () {
     path.join(runtime, "desktop-server.mjs"),
     `import { flushCompileCache } from "node:module";
 import { enablePrivateCompileCache } from "./compile-cache.mjs";
-import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
-Object.assign(process.env, packagedRuntimeEnvironment(process.env));
+import { useBundledGit } from "./runtime-env.mjs";
+useBundledGit();
 process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
 ${yield* launcherAnalytics}enablePrivateCompileCache();
 await import("./runtime/desktop.mjs");

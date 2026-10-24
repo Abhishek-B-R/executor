@@ -76,9 +76,11 @@ The npm launcher is under `.local/releases/<version>/wrapper/` and uses exact
 native version aliases. These build commands do not publish anything.
 The app compiler and framework are prepared for workerd at build time. No
 runtime download is needed. Each compressed native archive must fit within
-180 MiB before publication. This is a release budget with margin, not a
-documented npm registry limit. External source maps stay in the separate CI
-artifact for release diagnostics.
+178 MiB before publication (`npmArchiveBudgetBytes` in `config.ts`). npm
+documents no limit; the budget stays below the largest archive it has accepted
+from Executor. Most of each archive is the executable, workerd and the bundled
+Git, which keeps only what the runtime runs (`keptGit` in `runtime-bundle.ts`).
+External source maps stay in the separate CI artifact for release diagnostics.
 
 Stock Bun lets any local process run its own code inside a compiled executable,
 through `BUN_OPTIONS`, `BUN_BE_BUN`, `BUN_INSPECT` and similar variables that
