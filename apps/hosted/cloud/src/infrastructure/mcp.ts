@@ -12,7 +12,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { HttpServerError } from "effect/http/HttpServerError";
-import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
+import { forwardMcpRequest, refuseTooDeep } from "../implementation/mcp-forward.ts";
 import {
   mcpSessionNotFound,
   sessionOrganizationHeader,
@@ -70,7 +70,9 @@ export const cloudMcp = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const headers = yield* traceHeaders;
       const traced = request.modify({ headers: { ...request.headers, ...headers } });
-      const response = yield* forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt)));
+      const response = yield* refuseTooDeep(
+        forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
+      );
       const organization = response.headers[sessionOrganizationHeader];
       if (organization !== undefined)
         yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
