@@ -1272,15 +1272,99 @@ export const scenarios = plan({
   desktopCrashRecovery: {
     file: "desktop-recovery.spec.ts",
     title:
-      "desktop restarts a stopped or crashed local server with backoff, stops after a crash loop and restarts from the recovery page",
+      "desktop shows a background server stopped on purpose as stopped without starting one, joins the next one the CLI starts or starts one from that page, replaces a crashed one, shows recovery after three crashes within a minute and reconnects from the recovery page",
     targets: {
       local: {
         status: "not-run",
         reason:
           "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
       },
-      cloud: na("Desktop process supervision"),
-      "self-host": na("Desktop process supervision"),
+      cloud: na("Desktop background server connection"),
+      "self-host": na("Desktop background server connection"),
+    },
+  },
+  desktopSharedService: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop and CLI share one background server for a data directory, which keeps running after the desktop quits",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop background server connection"),
+      "self-host": na("Desktop background server connection"),
+    },
+  },
+  desktopMigrationMoved: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop moves its old data and port into the CLI's empty data directory once, before starting the server, leaves it private whatever the old directory's mode, and explains a move it cannot make yet",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop data migration"),
+      "self-host": na("Desktop data migration"),
+    },
+  },
+  desktopMigrationReplaced: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop data replaces the CLI's data in the shared directory, which is stopped, archived and named in a notice that shows once, on the launch that moved it",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop data migration"),
+      "self-host": na("Desktop data migration"),
+    },
+  },
+  desktopMigrationReplacedClosed: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop window closed while its data replaces the CLI's data ends the app once the move is done, before any server starts and with only the app's own menu meanwhile, and the next launch names the archived CLI data in a notice that shows once",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop data migration"),
+      "self-host": na("Desktop data migration"),
+    },
+  },
+  desktopMigrationSettings: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop moving its data into a CLI data directory that holds only settings keeps the CLI's env settings with the desktop's port, leaves out the CLI's key settings and turns the service back on, uses the CLI's settings as they are when a move kept from an earlier launch finishes, and names where its settings went and what changed in a notice",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop data migration"),
+      "self-host": na("Desktop data migration"),
+    },
+  },
+  desktopSlowStop: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop shows a background server that takes seconds to stop, answering that it is stopping, as stopped, without starting one or counting a crash, and joins the next one the CLI starts",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop background server connection"),
+      "self-host": na("Desktop background server connection"),
     },
   },
   desktopLateLoadFailure: {
@@ -1295,6 +1379,34 @@ export const scenarios = plan({
       },
       cloud: na("Desktop window loading"),
       "self-host": na("Desktop window loading"),
+    },
+  },
+  desktopDashboardRetry: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop loads a dashboard that failed to load again with a fresh pairing link, shows the dashboard's own recovery page, without reset, with the failure after three failures in a row, and pairs the window again from that page",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop window loading"),
+      "self-host": na("Desktop window loading"),
+    },
+  },
+  desktopStarterDeadline: {
+    file: "desktop-recovery.spec.ts",
+    title:
+      "desktop shows the start recovery page when its server starter stops answering after starting a server, ends the start attempt a hung starter left, and starts a server from that page",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs against the packaged desktop in the release workflow with desktop-recovery.config.ts.",
+      },
+      cloud: na("Desktop background server connection"),
+      "self-host": na("Desktop background server connection"),
     },
   },
   desktopClipboard: {
@@ -1313,7 +1425,7 @@ export const scenarios = plan({
   desktopReset: {
     file: "desktop-recovery.spec.ts",
     title:
-      "desktop missing-key failure offers reset, which backs up the data with a manifest and starts fresh, or leaves it in place when the move fails",
+      "desktop missing-key failure offers reset, which backs up the data with a manifest and starts fresh, or leaves it in place when the move fails, and resets data whose background server was killed",
     targets: {
       local: {
         status: "not-run",
@@ -1327,7 +1439,7 @@ export const scenarios = plan({
   desktopResetWithheld: {
     file: "desktop-recovery.spec.ts",
     title:
-      "desktop does not offer reset when its data is in use, its key settings do not match, or the OS credential store is unavailable or denies access",
+      "desktop does not offer reset when its data is in use, its key settings do not match, EXECUTOR_KEY_STORAGE is invalid, which creates nothing, or the OS credential store is unavailable or denies access",
     targets: {
       local: {
         status: "not-run",
@@ -1354,7 +1466,7 @@ export const scenarios = plan({
   localBootstrapPair: {
     file: "local-bootstrap.spec.ts",
     title:
-      "local pair sends the key where the directory keeps it to its running server and never creates, replaces or moves keys",
+      "local pair needs no saved keys, and executor --server sends the key where the directory keeps it to its running server, never creating, replacing or moving keys",
     targets: {
       local: {
         status: "not-run",
@@ -1405,7 +1517,7 @@ export const scenarios = plan({
   localPair: {
     file: "local-pair.spec.ts",
     title:
-      "local pair prints a link for the running server and explains missing keys, a rejected key, a wrong port or another service on it without changing keys",
+      "local pair prints a link from the registered server whatever EXECUTOR_PORT says, and explains no running server, a rejected supplied key, a bad port or another service on it without changing keys",
     targets: {
       local: scheduled,
       cloud: na("Local CLI pairing"),
@@ -1415,7 +1527,7 @@ export const scenarios = plan({
   localUpgrade: {
     file: "local-upgrade.spec.ts",
     title:
-      "executor upgrade installs the newest release with the detected or chosen package manager, refuses an old Node, prints commands for one-shot and unknown installs, verifies the new command and names a running server to restart",
+      "executor upgrade installs the newest release with the detected or chosen package manager, refuses an old Node, prints commands for one-shot and unknown installs, verifies the new command, and stops a running background server for the install and starts it again on the new version, or the old one when the install fails",
     targets: {
       local: scheduled,
       cloud: na("Local CLI upgrade"),
@@ -1430,6 +1542,193 @@ export const scenarios = plan({
       local: scheduled,
       cloud: na("Local CLI commands"),
       "self-host": na("Local CLI commands"),
+    },
+  },
+  localServiceSharedStart: {
+    // The CLI starts and stops its own servers; an outer managed server would compete with them.
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "two concurrent `executor service start` share one background server on the configured port, registered in a private server.json",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceJoin: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor` joins the running background server, prints where it runs, opens a one-use link that pairs a browser and exits; the start that created keys.json names it",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceVersion: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor` replaces a background server of another version, and `executor service start` keeps the version that runs",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceStandalone: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor --standalone` runs a private server on another port without registering it, which a background start cannot stop, stops it when interrupted, fails once it stops on its own, and states its own reason when the background server holds the data directory",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServicePortInUse: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service start` names EXECUTOR_PORT or `executor service set port`, whichever chose the port another program holds, and `executor apps` reports it as a LocalServerUnavailable failure",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceLifecycle: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service status`, `restart` and `stop` report, replace and stop the background server, which starts with a lone EXECUTOR_API_KEY in the client's environment",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceRegistration: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title: "a background server stops within ten seconds once its server.json is removed",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServicePortSetting: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service set port` stops the background server, and the next start listens on the new port",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceDirectoryLock: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "a second `executor serve` for a data directory the registered server holds exits with the directory-in-use message naming that server's URL, on its port or another",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceAppsCli: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor apps list` without --host starts the background server, and the next command reuses it; with the service disabled it runs a private server instead",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceEarlierServer: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service start` and `executor serve` refuse a data directory whose server.json names a running Executor from before the background service, and ignore such a record once nothing answers at its URL",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceImpostor: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "a process that replays a killed background server's service info on its port is not trusted: `executor service status` reports stopped, and `executor` neither pairs with it nor sends it the password",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceStopping: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service status` reports a background server that is stopping as stopping, and `executor service start` waits for it to exit, without joining it or asking it to stop, and then starts one",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceSuspendedLock: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "a suspended background server keeps its data directory however long ago it refreshed its lock: `executor --standalone` and a foreground `executor serve` on another port refuse it after a minute, `executor service status` says it is not responding, and once resumed it serves and refreshes its lock as before",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceCrashedLock: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "the next server takes over the lock a killed background server left at once, also when its process ID now names another running program, and when that program also listens on its port",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceReusedPid: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "`executor service stop` and `executor service start` never signal a program that now has a killed background server's process ID while its port accepts connections and never answers: they remove the registration and leave that program running",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
+    },
+  },
+  localServiceKeyStorageInvalid: {
+    fixtures: "cli",
+    file: "local-service.spec.ts",
+    title:
+      "an invalid EXECUTOR_KEY_STORAGE, in the environment or saved with `executor service set env`, makes `executor`, `executor service start`, `executor --standalone` and `executor serve` refuse before they create anything in the data directory",
+    targets: {
+      local: scheduled,
+      cloud: na("Local CLI background service"),
+      "self-host": na("Local CLI background service"),
     },
   },
   localStartupObservability: {

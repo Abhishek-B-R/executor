@@ -299,7 +299,7 @@ const internalWorkers = (directory: string) =>
     return workers;
   });
 
-/** Bundle both process entry points once; copy only locked native dependencies and resource files. */
+/** Bundle the CLI entry point; copy only locked native dependencies and resource files. */
 export const bundleLocalRuntime = (root: string, stage: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -332,10 +332,7 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
     const bundled = yield* Effect.tryPromise(() =>
       build({
         absWorkingDir: root,
-        entryPoints: {
-          cli: "apps/local/server/src/bin.ts",
-          desktop: "apps/local/desktop/src/server.ts",
-        },
+        entryPoints: { cli: "apps/local/server/src/bin.ts" },
         outdir: output,
         outExtension: { ".js": ".mjs" },
         bundle: true,
