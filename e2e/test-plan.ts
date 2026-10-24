@@ -2814,6 +2814,20 @@ export const scenarios = plan({
       ),
     },
   },
+  appFetchBrotliUndecoded: {
+    fixtures: "actors",
+    file: "app-fetch-brotli.spec.ts",
+    title:
+      "an app's fetch receives a Brotli-encoded response as the bytes the service sent, never decoded by the runtime",
+    targets: {
+      "self-host": scheduled,
+      // The scenario reaches a loopback fixture.
+      cloud: managedCloud,
+      local: na(
+        "Hosted app routes; local runs apps with the same runner and the same compatibility flags.",
+      ),
+    },
+  },
   appFetchUnsupportedOption: {
     fixtures: "actors",
     file: "app-fetch-errors.spec.ts",
