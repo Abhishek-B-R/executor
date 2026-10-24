@@ -131,7 +131,7 @@ export function hostedPageTitle(
   if (pathname === "/mcp/authorize") return "Authorize client";
   if (pathname === "/device") return "Connect a device";
   if (pathname === "/oauth/callback") return "Connecting account";
-  const [root, section, page, item, action] = pathname.split("/").filter(Boolean);
+  const [root, section, page, item] = pathname.split("/").filter(Boolean);
   if (root === "account")
     return section === "tokens"
       ? "Tokens"
@@ -149,14 +149,7 @@ export function hostedPageTitle(
   if (page === "connect") return "Connections";
   if (page === "webhooks") return "Webhook setup";
   if (page === "connections") return "Connect account";
-  if (page === "apps")
-    return item === "add"
-      ? action === "custom"
-        ? "Add custom app"
-        : "Add app"
-      : item
-        ? "App"
-        : "Apps";
+  if (page === "apps") return item === "add" ? "App catalog" : item ? "App" : "Apps";
   if (page === "accounts") return "Accounts";
   return "Dashboard";
 }

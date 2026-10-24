@@ -28,7 +28,6 @@ import { Route as DashboardWebhooksAppIdSubscriptionIdRouteImport } from './rout
 import { Route as DashboardInventoryApiOauthCallbackRouteImport } from './routes/_dashboard._inventory.api.oauth.callback'
 import { Route as DashboardInventoryAppsAppIdDeleteRouteImport } from './routes/_dashboard._inventory.apps.$appId_.delete'
 import { Route as DashboardInventoryAppsAppIdSetupRouteImport } from './routes/_dashboard._inventory.apps.$appId_.setup'
-import { Route as DashboardInventoryAppsAddCustomRouteImport } from './routes/_dashboard._inventory.apps.add_.custom'
 
 const DashboardRoute = DashboardRouteImport.update({
   id: '/_dashboard',
@@ -132,12 +131,6 @@ const DashboardInventoryAppsAppIdSetupRoute =
     path: '/apps/$appId/setup',
     getParentRoute: () => DashboardInventoryRoute,
   } as any)
-const DashboardInventoryAppsAddCustomRoute =
-  DashboardInventoryAppsAddCustomRouteImport.update({
-    id: '/apps/add_/custom',
-    path: '/apps/add/custom',
-    getParentRoute: () => DashboardInventoryRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof DashboardInventoryIndexRoute
@@ -157,7 +150,6 @@ export interface FileRoutesByFullPath {
   '/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
   '/apps/$appId/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
   '/apps/$appId/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-  '/apps/add/custom': typeof DashboardInventoryAppsAddCustomRoute
 }
 export interface FileRoutesByTo {
   '/': typeof DashboardInventoryIndexRoute
@@ -177,7 +169,6 @@ export interface FileRoutesByTo {
   '/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
   '/apps/$appId/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
   '/apps/$appId/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-  '/apps/add/custom': typeof DashboardInventoryAppsAddCustomRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -200,7 +191,6 @@ export interface FileRoutesById {
   '/_dashboard/_inventory/api/oauth/callback': typeof DashboardInventoryApiOauthCallbackRoute
   '/_dashboard/_inventory/apps/$appId_/delete': typeof DashboardInventoryAppsAppIdDeleteRoute
   '/_dashboard/_inventory/apps/$appId_/setup': typeof DashboardInventoryAppsAppIdSetupRoute
-  '/_dashboard/_inventory/apps/add_/custom': typeof DashboardInventoryAppsAddCustomRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -222,7 +212,6 @@ export interface FileRouteTypes {
     | '/api/oauth/callback'
     | '/apps/$appId/delete'
     | '/apps/$appId/setup'
-    | '/apps/add/custom'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -242,7 +231,6 @@ export interface FileRouteTypes {
     | '/api/oauth/callback'
     | '/apps/$appId/delete'
     | '/apps/$appId/setup'
-    | '/apps/add/custom'
   id:
     | '__root__'
     | '/_dashboard'
@@ -264,7 +252,6 @@ export interface FileRouteTypes {
     | '/_dashboard/_inventory/api/oauth/callback'
     | '/_dashboard/_inventory/apps/$appId_/delete'
     | '/_dashboard/_inventory/apps/$appId_/setup'
-    | '/_dashboard/_inventory/apps/add_/custom'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -410,13 +397,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardInventoryAppsAppIdSetupRouteImport
       parentRoute: typeof DashboardInventoryRoute
     }
-    '/_dashboard/_inventory/apps/add_/custom': {
-      id: '/_dashboard/_inventory/apps/add_/custom'
-      path: '/apps/add/custom'
-      fullPath: '/apps/add/custom'
-      preLoaderRoute: typeof DashboardInventoryAppsAddCustomRouteImport
-      parentRoute: typeof DashboardInventoryRoute
-    }
   }
 }
 
@@ -430,7 +410,6 @@ interface DashboardInventoryRouteChildren {
   DashboardInventoryApiOauthCallbackRoute: typeof DashboardInventoryApiOauthCallbackRoute
   DashboardInventoryAppsAppIdDeleteRoute: typeof DashboardInventoryAppsAppIdDeleteRoute
   DashboardInventoryAppsAppIdSetupRoute: typeof DashboardInventoryAppsAppIdSetupRoute
-  DashboardInventoryAppsAddCustomRoute: typeof DashboardInventoryAppsAddCustomRoute
 }
 
 const DashboardInventoryRouteChildren: DashboardInventoryRouteChildren = {
@@ -445,7 +424,6 @@ const DashboardInventoryRouteChildren: DashboardInventoryRouteChildren = {
   DashboardInventoryAppsAppIdDeleteRoute:
     DashboardInventoryAppsAppIdDeleteRoute,
   DashboardInventoryAppsAppIdSetupRoute: DashboardInventoryAppsAppIdSetupRoute,
-  DashboardInventoryAppsAddCustomRoute: DashboardInventoryAppsAddCustomRoute,
 }
 
 const DashboardInventoryRouteWithChildren =

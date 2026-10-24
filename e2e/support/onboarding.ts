@@ -1282,7 +1282,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.use("The confirmed team stays open", (page) =>
           page
-            .getByRole("link", { name: "Add app", exact: true })
+            .getByRole("button", { name: "Add app", exact: true })
             .first()
             .waitFor({ state: "visible" }),
         );

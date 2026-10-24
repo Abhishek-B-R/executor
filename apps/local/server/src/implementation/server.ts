@@ -519,7 +519,6 @@ export const localApi = (
         ),
         HttpRouter.add("GET", "/", web.document),
         HttpRouter.add("GET", "/apps", web.document),
-        HttpRouter.add("GET", "/apps/add/custom", web.document),
         HttpRouter.add("GET", "/apps/:app", web.document),
         HttpRouter.add("GET", "/app-auth", signIn.signIn(web.document)),
         HttpRouter.add("GET", "/apps/:app/setup", web.document),

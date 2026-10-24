@@ -1144,7 +1144,12 @@ it.live(scenarios.desktopClipboard.title, () =>
       const electron = yield* launchDesktop({ cwd: home, env });
       const page = yield* driver("desktop window", () => electron.firstWindow());
       yield* dashboard(page);
-      yield* driver("open the custom app page", () => page.goto(`${origin}/apps/add/custom`));
+      yield* driver("open the From scratch dialog", () =>
+        page
+          .goto(`${origin}/apps`)
+          .then(() => page.getByRole("button", { name: "Add app", exact: true }).click())
+          .then(() => page.getByRole("menuitem", { name: /^From scratch/ }).click()),
+      );
       const copy = page.getByRole("button", { name: "Copy setup prompt" });
       yield* driver("copy the setup prompt", () => copy.click());
       yield* driver("the copy succeeds", () =>
@@ -1153,7 +1158,7 @@ it.live(scenarios.desktopClipboard.title, () =>
       const copied = yield* driver("read the system clipboard", () =>
         electron.evaluate(({ clipboard }) => clipboard.readText()),
       );
-      expect(copied).toContain("Help me add a service to Executor as an app.");
+      expect(copied).toContain("Help me build a new Executor app.");
     }),
   ).pipe(Effect.provide(services)),
 );
