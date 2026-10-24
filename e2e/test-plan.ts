@@ -4096,6 +4096,41 @@ export const scenarios = plan({
       local: na("The hosted and local dashboards share the credential form and check contract."),
     },
   },
+  accountSecretFieldsExact: {
+    fixtures: "actors",
+    file: "account-secret-fields.spec.ts",
+    title:
+      "A multi-line secret with plus signs, percent escapes and non-ASCII text pasted into the credential form reaches the app's check exactly as pasted, before and after saving, and the accessibility tree holds none of it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The hosted and local dashboards share the credential form and check contract."),
+    },
+  },
+  accountSecretFieldsSummary: {
+    fixtures: "actors",
+    file: "account-secret-fields.spec.ts",
+    title:
+      "A paste or drop that spans lines replaces a credential field's value exactly and shows a summary that undo, label clicks and dragging leave unchanged, and Clear returns to the password input",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The summary is in the shared browser form; the exact-paste scenario covers Cloud's transport.",
+      ),
+      local: na("The hosted and local dashboards share the credential form and check contract."),
+    },
+  },
+  webhookProviderSigningSecretExact: {
+    fixtures: "actors",
+    file: "account-secret-fields.spec.ts",
+    title:
+      "A provider signing secret that spans lines, pasted into a webhook's setup, reaches the webhook's handler exactly as pasted",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local's webhook setup uses the same shared setup form."),
+    },
+  },
   accountDescriptions: {
     fixtures: "actors",
     file: "account-descriptions.spec.ts",
