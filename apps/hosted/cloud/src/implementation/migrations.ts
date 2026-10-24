@@ -180,6 +180,22 @@ export const migrateV1SessionHandoffs = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The v1 organizations an import may write (`notes/v1-import.md`, `v1-import/writes.ts`): an import
+ * of an organization without a row is refused. A guard apart from the operator token, which alone
+ * allows nothing. No route, operator command or app path writes it; rows are added only by direct
+ * SQL from someone with access to the database. It starts empty and copies nothing, so until rows
+ * are inserted every import is refused. Additive: the running server never reads it.
+ */
+export const migrateV1ImportAllowed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists private_v1_import_allowed (
+    v1_org_id text primary key,
+    added_at timestamptz not null default now(),
+    note text
+  )`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -219,6 +235,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "6_setup_assignments": migrateSetupAssignments,
         "7_v1_import_orgs": migrateV1ImportOrgs,
         "8_v1_session_handoffs": migrateV1SessionHandoffs,
+        "9_v1_import_allowed": migrateV1ImportAllowed,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

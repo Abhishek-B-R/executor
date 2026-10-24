@@ -7694,6 +7694,12 @@ export const scenarios = plan({
       "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportAllowed: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import writes only organizations with a row in its allow table, refuses one without a row, a start that adds one and a start that pages through v1, writing nothing to v1 or v2, and runs dry runs whatever the table holds",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportDryRun: {
     file: "cloud-v1-import-run.spec.ts",
     title:

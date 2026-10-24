@@ -539,7 +539,10 @@ export default Api.make(
     const routes = Layer.mergeAll(
       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
-      HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+      // Starting an import reads the allow table (`writes.ts`) from the product database.
+      HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start).pipe(
+        HttpRouter.provideRequest(executor),
+      ),
       HttpRouter.add(
         "GET",
         "/api/internal/v1-import/runs/:run/orgs/:organization",
