@@ -234,7 +234,7 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           // The registry's dist-tags and the Node range each release declares.
           let published: Record<string, string> = {};
           let nodeRange = ">=24.14.0";
-          // Release downloads by tag, as the public release serves them.
+          // Release downloads by tag. As on GitHub, each download redirects to the file's asset URL.
           const downloads = new Map<string, Uint8Array>();
           const services = yield* Layer.build(
             HttpRouter.serve(
@@ -261,6 +261,18 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                 HttpRouter.add(
                   "GET",
                   "/download/:tag/:file",
+                  Effect.gen(function* () {
+                    const { tag, file } = yield* HttpRouter.schemaPathParams(
+                      Schema.Struct({ tag: Schema.String, file: Schema.String }),
+                    );
+                    return downloads.has(`${decodeURIComponent(tag)}/${file}`)
+                      ? HttpServerResponse.redirect(`/assets/${tag}/${file}`, { status: 302 })
+                      : HttpServerResponse.empty({ status: 404 });
+                  }).pipe(Effect.orDie),
+                ),
+                HttpRouter.add(
+                  "GET",
+                  "/assets/:tag/:file",
                   Effect.gen(function* () {
                     const { tag, file } = yield* HttpRouter.schemaPathParams(
                       Schema.Struct({ tag: Schema.String, file: Schema.String }),

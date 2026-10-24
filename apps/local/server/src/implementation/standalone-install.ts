@@ -169,9 +169,11 @@ export const installVersion = (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      // GitHub answers each release download with a redirect to the file, so the status is
+      // checked on the response the redirects end at.
       const client = (yield* HttpClient.HttpClient).pipe(
-        HttpClient.filterStatusOk,
         HttpClient.followRedirects(5),
+        HttpClient.filterStatusOk,
       );
       const base = `${yield* downloadBase}/executor@${version}`;
       const file = releaseArchive(version, platform, arch);
