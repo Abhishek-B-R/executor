@@ -114,7 +114,7 @@ import {
   registrationGrantTypes,
   type OAuthProtocolFailed,
 } from "./oauth-protocol.ts";
-import { defaultLabel, ownedAccount } from "./accounts.ts";
+import { defaultLabel, ownedAccount, resumeWaitingSources } from "./accounts.ts";
 import type { OAuthCallbackField, OAuthFailureDetail } from "./oauth-diagnostics.ts";
 
 /**
@@ -1630,7 +1630,7 @@ export const makeOAuth = (
             if (stored === undefined) {
               yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
               if (lifecycle) yield* lifecycle.accountCreated(saved);
-            } else
+            } else {
               // Connecting an existing account again starts a new credential generation.
               yield* query(() =>
                 tx.updateMany("accounts", {
@@ -1641,6 +1641,8 @@ export const makeOAuth = (
                   },
                 }),
               );
+              yield* resumeWaitingSources(tx, stored.id);
+            }
             const state = {
               encrypted: encryptedGrant,
               status: ready,
@@ -2204,6 +2206,7 @@ export const makeOAuth = (
                 set: { encryptedCredentials, credentialGeneration: generation },
               }),
             );
+            yield* resumeWaitingSources(tx, target.id);
           } else {
             yield* query(() =>
               tx.create("accounts", { ...saved, encryptedCredentials, credentialGeneration: 0 }),

@@ -6988,6 +6988,18 @@ export const scenarios = plan({
       cloud: na("Advances the wall clock and reads stored rows of a runner-owned product process."),
     },
   },
+  webhookSourceReconnectWait: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "webhook-source-retry-backoff.spec.ts",
+    title:
+      "a webhook source whose account must reconnect checks it again after twice as long each time it still waits, and reconnecting the account resumes it at once",
+    targets: {
+      local: na("Hosted link and webhook source routes."),
+      "self-host": scheduled,
+      cloud: na("Advances the wall clock and reads stored rows of a runner-owned product process."),
+    },
+  },
   webhookSourceEditors: {
     fixtures: "actors",
     file: "webhook-source-status.spec.ts",
