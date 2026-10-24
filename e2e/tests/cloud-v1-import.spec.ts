@@ -1192,6 +1192,12 @@ const seedToolkits = (organization: string, user: string, slug: string) =>
         organization,
         `${hosted}.*.*.purge_items`,
       ),
+      // The workspace never asks before listing, but v1 ignored that inside the toolkit.
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'approve', 'a1')",
+        organization,
+        `${hosted}.*.*.list_items`,
+      ),
       toolkitRow("user", "toolkits", { id: "tk_support", name: "Support", slug: "support" }),
       toolkitRow("user", "toolkitConnections", {
         id: "tkconn_1",
@@ -3410,6 +3416,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         const rules = source.files.find((file) => file.path === "tools.ts")?.content ?? "";
         expect(rules).toContain('"create_item": "always"');
         expect(rules).not.toContain('"delete_item"');
+        // The toolkit granted listing without a rule of its own, so v1 used the tool's default there;
+        // the workspace's approval does not become `never`, and the app keeps the default.
+        expect(rules).not.toContain('"list_items"');
 
         // Artifacts become apps with source and no version, and say what needs repair.
         const dashboard = results.get("Dashboard");

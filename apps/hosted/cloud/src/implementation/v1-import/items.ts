@@ -487,10 +487,12 @@ const rank = { approve: 1, default: 1.5, require_approval: 2, block: 3 } as cons
  * restrictive, where a connection without a matching policy keeps the tool's own default.
  * `aliases` maps a dropped v1 name to the name the tool keeps.
  *
- * A toolkit's own policies applied only to calls through the toolkit, but v2 keeps approvals in
- * the app for every caller. A toolkit that asks before a tool it grants therefore makes the app
- * ask; its `approve` never lowers the workspace's result, and its `block` only leaves the tool out
- * of the toolkit's connection.
+ * A toolkit's own policies applied only to calls through the toolkit, and v1 ignored the
+ * workspace's policies there, but v2 keeps approvals in the app for every caller. A toolkit that
+ * asks before a tool it grants therefore makes the app ask. One that grants it without a rule of its
+ * own left it to the tool's default, so the workspace's `approve` cannot lower it below that
+ * default either. The toolkit's `approve` never lowers the workspace's result, and its `block` only
+ * leaves the tool out of the toolkit's connection.
  */
 export const toolActions = (
   snapshot: V1Snapshot,
@@ -503,11 +505,13 @@ export const toolActions = (
   for (const tool of tools) {
     const id = `${integration.slug}.${tool.owner}.${tool.connection}.${tool.name}`;
     const own = resolvePolicy(id, snapshot.policies, snapshot.multiMember) ?? "default";
-    const action =
-      rank[own] < rank.require_approval &&
-      toolkits.some((toolkit) => toolkitAction(toolkit, id) === "require_approval")
-        ? "require_approval"
-        : own;
+    // The least the app may do for each toolkit that grants the tool: ask when the toolkit asks,
+    // keep the tool's default when the toolkit left it to the default.
+    const action = toolkits.reduce<PolicyAction | "default">((current, toolkit) => {
+      const granted = toolkitAction(toolkit, id);
+      const floor = granted === "require_approval" || granted === "default" ? granted : undefined;
+      return floor !== undefined && rank[floor] > rank[current] ? floor : current;
+    }, own);
     const name = Object.hasOwn(aliases, tool.name) ? (aliases[tool.name] ?? tool.name) : tool.name;
     const current = actions.get(name);
     if (current === undefined || rank[action] > rank[current]) actions.set(name, action);
