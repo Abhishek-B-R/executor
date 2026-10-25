@@ -165,15 +165,27 @@ export type ApprovalUnavailable = typeof ApprovalUnavailable.Type;
 
 /**
  * Why a resume found no request it could answer. Executor's own record of the request decides it;
- * a request issued to another caller is indistinguishable from an unknown one.
+ * a request issued to another caller is indistinguishable from an unknown one. `answered`,
+ * `expired` and `ended` are recorded ends. `lost`: Executor recorded issuing it to this caller and
+ * it is no longer waiting, but no end is recorded. Most often the host holding its program
+ * restarted, but a failed write can also leave the end out, so `lost` never shows that the request
+ * went unanswered or what its program did. `malformed`: the ID is not in the
+ * form Executor issues. `not-found`: Executor keeps no record of it for this caller, which does not
+ * show that it was never issued: a record can be missing after a restart, pruning or a storage
+ * failure.
  */
 export const ResumeUnavailableReason = Schema.Literals([
   "answered",
   "expired",
   "ended",
+  "lost",
+  "malformed",
   "not-found",
 ]);
 export type ResumeUnavailableReason = typeof ResumeUnavailableReason.Type;
+/** The IDs Executor issues: SDK approvals and live tool questions, each a prefix and a UUID. */
+export const issuedInteractionId =
+  /^(apr|elc)_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 /** The guidance a resume returns with each reason. */
 export const resumeUnavailableMessage = (reason: ResumeUnavailableReason): string => {
   const check =
@@ -185,10 +197,43 @@ export const resumeUnavailableMessage = (reason: ResumeUnavailableReason): strin
       return `This request expired before it was answered, so Executor will not resume its program. ${check}`;
     case "ended":
       return `The program that asked this ended before it was answered: it was cancelled, timed out, or stopped. Executor will not resume it. ${check}`;
+    case "lost":
+      return "Executor recorded issuing this request to this caller, but it is no longer waiting for an answer and Executor has no retained record of an answer or of how it ended, so it cannot continue and resuming again will not help. Most often the Executor host holding its program restarted, which loses the program; a record of how it ended can also be missing when Executor failed to store it. Executor cannot confirm what happened: the request may have been answered, and an earlier approved call, or code a tool ran before asking, may have completed and made changes. Never repeat the call or program automatically. Check current state with a safe read, tell the user what you found, and repeat a call that may change something only if the user explicitly decides to.";
+    case "malformed":
+      return `This requestId is not one Executor issues: request IDs are apr_ or elc_ followed by a UUID, so it was probably shortened, redacted or mistyped. Resume with the exact requestId from the approval-required or input-required result; pending lists this caller's open requests. ${check}`;
     case "not-found":
-      return `Executor has no pending request with this ID for this caller. It may belong to another grant, scoped connection or approval mode; it may have ended or been answered long enough ago that Executor no longer remembers it; or it was lost when Executor restarted. In model mode, a new MCP session on the same grant can still answer its requests. ${check}`;
+      return `Executor has no retained record of this request for this caller, so it cannot say whether it was issued or what became of it. It may belong to another user, grant, scoped connection or approval mode, or the ID may be mistyped. A record can also be missing after Executor restarted, after it pruned old requests, or when its storage was unavailable. pending lists this caller's open requests. In model mode, a new MCP session on the same grant can still answer its requests. ${check}`;
   }
 };
+/** One of the caller's open requests, listed when a resume names one it cannot answer. */
+export const OpenInteraction = Schema.Struct({
+  requestId: InteractionId,
+  status: Schema.Literals(["approval-required", "input-required"]),
+  app: Schema.String,
+  tool: Schema.String,
+  expiresAt: Schema.Number,
+});
+export type OpenInteraction = typeof OpenInteraction.Type;
+/** Why an issued request stopped being pending without the program losing it. */
+export type InteractionEnd = Extract<ResumeUnavailableReason, "answered" | "expired" | "ended">;
+/** What a host remembers of a request it issued. */
+export interface IssuedInteraction {
+  readonly caller: string;
+  readonly expiresAt: number;
+  readonly end?: InteractionEnd;
+}
+/**
+ * The host's record of the requests it issued, kept beyond its memory. Programs live in memory,
+ * so after a restart only this record tells a late resume that its request expired, was answered,
+ * or was lost with its program. Calls are synchronous: each is one step that no other request can
+ * interleave. A failure to record an issue leaves it unknown (`not-found`), as without a store; a
+ * failure to record an end leaves the issue without one (`lost`).
+ */
+export interface InteractionRecords {
+  readonly issued: (id: InteractionId, caller: string, expiresAt: number) => void;
+  readonly ended: (id: InteractionId, end: InteractionEnd) => void;
+  readonly read: (id: InteractionId) => IssuedInteraction | undefined;
+}
 
 /** Generated code is bounded before it reaches the parser. */
 export const ExecuteInput = Schema.Struct({
@@ -253,6 +298,8 @@ export const ExecutionOutcome = Schema.Union([
     requestId: InteractionId,
     reason: ResumeUnavailableReason,
     message: Schema.String,
+    /** The caller's other open requests, which it can still resume. */
+    pending: Schema.Array(OpenInteraction),
   }),
   Schema.Struct({ status: Schema.Literal("busy"), requestId: InteractionId }),
   Schema.Struct({ status: Schema.Literal("capacity-exceeded") }),
@@ -275,7 +322,7 @@ export const ExecutionResultMeta = { "anthropic/maxResultSizeChars": 500_000 };
 /** Continue an existing program after the agent has obtained the user's decision. Never restarts source. */
 export const ResumeTool = McpTool.make("resume", {
   description:
-    "Continue a paused execute program using its pending requestId and the user's MCP elicitation response: {action: 'accept', content: {...}}, {action: 'decline'}, or {action: 'cancel'}. Ask the user before approving. Return the user's form fields in content on accept. Returns the next pending interaction or the completed program result. An approved call that fails reports its own error. Unavailable carries a reason (answered, expired, ended or not-found) and what to do; do not rerun the whole program because earlier calls may have completed. Busy means another resume is advancing this program; wait for that response. Results are not replayed.",
+    "Continue a paused execute program using its pending requestId and the user's MCP elicitation response: {action: 'accept', content: {...}}, {action: 'decline'}, or {action: 'cancel'}. Ask the user before approving. Return the user's form fields in content on accept. Returns the next pending interaction or the completed program result. An approved call that fails reports its own error. Unavailable carries a reason (answered, expired, ended, lost, malformed or not-found), what to do and the caller's open requests in pending; do not rerun the whole program because earlier calls may have completed. Busy means another resume is advancing this program; wait for that response. Results are not replayed.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ResumeInput,
   success: McpExecutionResult,

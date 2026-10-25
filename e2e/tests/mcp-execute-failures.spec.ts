@@ -907,6 +907,16 @@ const Unavailable = Schema.Struct({
   requestId: Schema.String,
   reason: Schema.String,
   message: Schema.String,
+  /** The caller's open requests, which it can still resume. */
+  pending: Schema.Array(
+    Schema.Struct({
+      requestId: Schema.String,
+      status: Schema.String,
+      app: Schema.String,
+      tool: Schema.String,
+      expiresAt: Schema.Number,
+    }),
+  ),
 });
 
 /** Answer one pending request and return the structured result. */
@@ -1166,6 +1176,43 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
         );
         expect(foreign).toMatchObject({ requestId: pending, reason: "not-found" });
         expect(foreign.message).not.toContain("already answered");
+        // Nor does it list the first grant's open request among its own.
+        expect(foreign.pending).toEqual([]);
+
+        // An ID cut short, as a redacted transcript shows it, is named as not one Executor issues,
+        // and the grant's open requests are listed so it can resume the right one.
+        for (const [label, requestId] of [
+          ["shortened", pending.slice(0, 12)],
+          ["redacted", "apr_…"],
+        ] as const) {
+          const malformed = yield* Schema.decodeUnknownEffect(Unavailable)(
+            yield* resumeOnce(
+              client,
+              `Answer with a ${label} request ID`,
+              requestId,
+              `resume-${label}.json`,
+            ),
+          );
+          expect(malformed).toMatchObject({ requestId, reason: "malformed" });
+          expect(malformed.message).toContain("not one Executor issues");
+          expect(malformed.pending).toEqual([
+            expect.objectContaining({ requestId: pending, status: "approval-required" }),
+          ]);
+        }
+        // A well-formed ID Executor never issued is not found; the open request is still listed.
+        const unknown = yield* Schema.decodeUnknownEffect(Unavailable)(
+          yield* resumeOnce(
+            client,
+            "Answer with an ID Executor never issued",
+            `apr_${randomUUID()}`,
+            "resume-never-issued.json",
+          ),
+        );
+        expect(unknown.reason).toBe("not-found");
+        // A missing record does not prove the request was never issued, so the copy claims neither.
+        expect(unknown.message).toContain("no retained record of this request");
+        expect(unknown.message).not.toMatch(/issued no request|never issued/i);
+        expect(unknown.pending.map((open) => open.requestId)).toEqual([pending]);
         const owned = yield* Schema.decodeUnknownEffect(Completed)(
           yield* resumeOnce(
             client,

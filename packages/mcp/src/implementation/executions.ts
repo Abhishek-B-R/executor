@@ -36,8 +36,12 @@ import {
   defaultMcpRuntimeLimits,
   ElicitationRequestId,
   ElicitationResponseInvalid,
+  issuedInteractionId,
   ResumeInput,
+  type InteractionEnd,
   type InteractionId,
+  type InteractionRecords,
+  type OpenInteraction,
   type InteractionTool,
   type ToolInputPending,
   type ExecuteResult,
@@ -66,7 +70,7 @@ class McpExecutionFailed extends Schema.TaggedError<McpExecutionFailed>()(
 ) {}
 
 /** Why a request stopped being pending before or without a resume answering it. */
-type Ended = Exclude<ResumeUnavailableReason, "not-found">;
+type Ended = InteractionEnd;
 /** Ended requests are remembered as long as an answer to them can plausibly still arrive. */
 const endedRetentionMs = 30 * 60 * 1000;
 /** Bounds that memory however many requests a host issues. */
@@ -166,6 +170,7 @@ export const runningPrograms = () => live.programs;
 export const makeExecutions = (
   limits: McpLimits,
   beforeExecute: Effect.Effect<void, ExecutionRejected> = Effect.void,
+  records?: InteractionRecords,
 ) =>
   Effect.gen(function* () {
     const clock = yield* Clock.Clock;
@@ -186,18 +191,54 @@ export const makeExecutions = (
       InteractionId,
       { readonly caller: string; readonly reason: Ended; readonly until: number }
     >();
+    /**
+     * Why the caller cannot answer this ID, from Executor's own records only: the ID's form, this
+     * store's memory of ended requests, then the host's record of issued ones. A request the host
+     * recorded for this caller with no end, that memory no longer holds, is `lost`. That is most
+     * often a restart that cleared its program, but a failed write can also leave its end out,
+     * so it never shows that the request went unanswered or expired, whatever its deadline.
+     */
+    const reasonFor = (caller: string, requestId: InteractionId) => {
+      if (!issuedInteractionId.test(requestId)) return "malformed" as const;
+      const known = ended.get(requestId);
+      if (known !== undefined) return known.caller === caller ? known.reason : "not-found";
+      const issued = records?.read(requestId);
+      if (issued === undefined || issued.caller !== caller) return "not-found";
+      return issued.end ?? "lost";
+    };
+    /** The caller's requests that a resume can still answer. */
+    const open = (caller: string, now: number): OpenInteraction[] =>
+      [...requests.values()]
+        .filter((pending) => pending.run.caller === caller && pending.request.expiresAt > now)
+        .map(({ request }) =>
+          request.status === "approval-required"
+            ? {
+                requestId: request.requestId,
+                status: request.status,
+                app: request.invocation.app,
+                tool: request.invocation.tool,
+                expiresAt: request.expiresAt,
+              }
+            : {
+                requestId: request.requestId,
+                status: request.status,
+                app: request.tool.app,
+                tool: request.tool.tool,
+                expiresAt: request.expiresAt,
+              },
+        );
     const unavailable = (
       caller: string,
       requestId: InteractionId,
     ): Extract<McpExecutionResult, { status: "unavailable" }> => {
-      const known = ended.get(requestId);
-      const reason: ResumeUnavailableReason =
-        known === undefined || known.caller !== caller ? "not-found" : known.reason;
+      const now = clock.currentTimeMillisUnsafe();
+      const reason: ResumeUnavailableReason = reasonFor(caller, requestId);
       return {
         status: "unavailable",
         requestId,
         reason,
         message: resumeUnavailableMessage(reason),
+        pending: open(caller, now),
       };
     };
     const failure = (
@@ -238,6 +279,7 @@ export const makeExecutions = (
           if (ended.size <= maxEnded) break;
           ended.delete(oldest);
         }
+        records?.ended(id, reason);
       }
       requests.delete(id);
       pending.run.pending.delete(pending.request.requestId);
@@ -307,6 +349,7 @@ export const makeExecutions = (
           return yield* new ApprovalUnavailable({ reason: "ended" });
         pending.run.pending.set(pending.request.requestId, pending);
         requests.set(pending.request.requestId, pending);
+        records?.issued(pending.request.requestId, pending.run.caller, pending.request.expiresAt);
         yield* wake(pending.run);
       });
 
@@ -644,6 +687,8 @@ export const makeExecutions = (
         return pending;
       });
     return {
+      /** Programs this store holds, running or waiting for an answer. */
+      live: () => runs.size,
       /** Why the caller has no such request to answer. */
       unavailable: (caller: string, id: InteractionId) =>
         Effect.sync(() => unavailable(caller, id)),

@@ -150,7 +150,11 @@ const withLink = (
 /** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
 export const makeMcp = (options: McpOptions) =>
   Effect.gen(function* () {
-    const executions = yield* makeExecutions(options.limits, options.beforeExecute);
+    const executions = yield* makeExecutions(
+      options.limits,
+      options.beforeExecute,
+      options.interactions,
+    );
     const handler = (mode: ElicitationMode) =>
       Effect.gen(function* () {
         const delivery = options.browser;
@@ -389,7 +393,7 @@ export const makeMcp = (options: McpOptions) =>
           response,
         ),
     };
-    return { http, approvals };
+    return { http, approvals, programs: executions.live };
   });
 
 /** Mount MCP alone when a host does not need direct browser accessors. */

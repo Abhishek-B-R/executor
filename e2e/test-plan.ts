@@ -2404,7 +2404,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-mcp-session-restore.spec.ts",
     title:
-      "Cloud MCP sessions continue after their session object is evicted, restored from its storage only for a bearer that names the object",
+      "Cloud MCP sessions continue after their session object is evicted, restored from its storage only for a bearer that names the object, a program waiting for approval keeps its object, and a later resume says only what the object recorded",
     targets: {
       cloud: managedCloud,
       "self-host": na(
@@ -7529,6 +7529,28 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAccountWebhookDependencies: {
+    fixtures: "actors",
+    file: "account-webhook-dependencies.spec.ts",
+    title:
+      "deleting an account a live webhook registration ran with is refused naming that subscription, over REST and through the Executor app, while a disabled registration holds only its source account",
+    targets: {
+      local: na("Local has no organization members to depart."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAccountWebhookHiddenDependents: {
+    fixtures: "actors",
+    file: "account-webhook-dependencies.spec.ts",
+    title:
+      "a member deleting their account refused for webhook subscriptions they can't see is told how many, never which apps or subscriptions, and can delete it once those are removed",
+    targets: {
+      local: na("Local has one user, who sees every app and subscription."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppSchedules: {
     fixtures: "actors",
     file: "app-schedules.spec.ts",
@@ -7979,6 +8001,31 @@ export const scenarios = plan({
       cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
       local: na(
         "Local uses the same registry client; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  idlePollTraces: {
+    file: "idle-poll-traces.spec.ts",
+    title:
+      "An idle server's checks for due runs, queued jobs and event deliveries export no traces",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud dispatches on alarms and requests, not by polling."),
+      local: na(
+        "Local runs the same scheduler and event loops; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  failedPollTraces: {
+    legacyStorage: true,
+    file: "idle-poll-traces.spec.ts",
+    title:
+      "A failing check for due runs, queued jobs or event deliveries exports which statement failed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud dispatches on alarms and requests, not by polling."),
+      local: na(
+        "Local runs the same scheduler and event loops; only self-host starts a scenario-owned server.",
       ),
     },
   },

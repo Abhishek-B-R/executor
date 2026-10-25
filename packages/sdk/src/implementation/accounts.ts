@@ -1,5 +1,5 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
-import { AccountWebhooksActive } from "../contracts/account.ts";
+import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
 import { Clock, type Crypto, Effect, Option, Redacted, Schema } from "effect";
 import {
@@ -60,6 +60,44 @@ export const resumeWaitingSources = (tx: Query, account: AccountId) =>
       set: { leaseUntil: new Date(0), retries: 0 },
     }),
   );
+
+/**
+ * The subscriptions that still use an account, oldest ID first. A live one uses its source and
+ * every account its registration ran with, which removing it at the provider needs. A disabled
+ * one waits for a person to remove it at the provider, which runs no app code, so it keeps only its
+ * source: confirming the removal in the dashboard needs access to that account. A stopped one uses
+ * none, and neither does a dependency row whose subscription has gone.
+ */
+const webhookDependents = (tx: Query, account: AccountId) =>
+  Effect.gen(function* () {
+    const links = yield* query(() =>
+      tx.findMany("webhookAccounts", {
+        select: ["subscription"],
+        where: (b) => b("account", "=", account),
+      }),
+    );
+    if (links.length === 0) return [];
+    const rows = yield* query(() =>
+      tx.findMany("webhooks", {
+        select: ["id", "app", "status", "sourceAccount"],
+        where: (b) =>
+          b.and(
+            b(
+              "id",
+              "in",
+              links.map((link) => link.subscription),
+            ),
+            b("status", "!=", "stopped"),
+          ),
+        orderBy: ["id", "asc"],
+      }),
+    );
+    return yield* Schema.decodeUnknownEffect(Schema.Array(AccountWebhookDependent))(
+      rows
+        .filter((row) => row.status !== "disabled" || row.sourceAccount === account)
+        .map((row) => ({ app: row.app, subscription: row.id, status: row.status })),
+    ).pipe(Effect.mapError(() => new StorageError()));
+  });
 
 /**
  * An account created without a name starts with the owner's first free "Default" label for its
@@ -222,10 +260,13 @@ export const makeAccounts = (
                 set: { createdAt: row.createdAt },
               }),
             );
-            const linked = yield* query(() =>
-              tx.findFirst("webhookAccounts", { where: (b) => b("account", "=", row.id) }),
-            );
-            if (linked !== null) return yield* new AccountWebhooksActive({ account: row.id });
+            // Every holder refuses the deletion; products narrow only which ones the refusal names.
+            const dependents = yield* webhookDependents(tx, row.id);
+            if (dependents.length > 0)
+              return yield* new AccountWebhooksActive({
+                account: row.id,
+                dependents: { visible: dependents, hidden: 0 },
+              });
             const workflow = yield* query(() =>
               tx.findFirst("workflowAccounts", { where: (b) => b("account", "=", row.id) }),
             );
@@ -236,9 +277,13 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
-            // A source whose subscriptions have all stopped goes with its account.
+            // A source whose subscriptions have all stopped goes with its account, as do the
+            // dependency rows of subscriptions that no longer use it.
             yield* query(() =>
               tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
+            );
+            yield* query(() =>
+              tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
             );
             const grant = yield* query(() =>
               tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
