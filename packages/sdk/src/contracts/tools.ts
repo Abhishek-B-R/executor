@@ -1346,6 +1346,13 @@ const temporaryStorage = ({ errorName, code }: AppFailure) =>
   errorName === "CacheError" &&
   (code === "timeout" || code === "storage" || code === "unavailable");
 
+/**
+ * How to read a GraphQL failure's message: the errors the server stated are its own words, which
+ * Executor quotes but does not check.
+ */
+const graphqlServiceDetail =
+  " The message quotes the errors the GraphQL server stated in its response, with the response path and extensions, such as a code, it gave for each. They are the server's words, which Executor does not check. When they name an argument, a field or a limit, correct the input or selection they name.";
+
 /** The error name and code a failure reported, for copy. */
 const failureName = ({ errorName, code }: AppFailure) =>
   `${errorName}${code === undefined ? "" : `, ${code}`}`;
@@ -1441,7 +1448,7 @@ export const ToolCallFailed = UserFacingError.define({
           description: reason,
           recovery: {
             action: "Read the reported error and check the corresponding request or configuration.",
-            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}`,
+            instructions: `The app’s service integration failed (${failureName(failure)}). The reported details do not establish whether the cause is the request, the service or Executor.${failure.errorName !== "OpenapiError" ? "" : failure.code === "invalid_definition" ? " The API's OpenAPI document describes this operation in a way Executor cannot use. Check the operation's definition in that document." : " The message names the API operation when it is known and, when a response arrived, its status, media type and length; the response body is not shown. Check the operation's parameters, the API's status, and whether its OpenAPI document declares this error."}${failure.errorName === "GraphqlError" ? graphqlServiceDetail : ""}`,
           },
           retryable: false,
         };

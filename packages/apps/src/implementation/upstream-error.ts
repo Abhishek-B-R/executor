@@ -25,16 +25,20 @@ const OAuthError = Schema.Struct({
 /**
  * A stated message is bounded where it is read, before the invocation's account secrets are known,
  * so a cut can split a secret. Leaving the bundle replaces the part of one a shortened message
- * ends with; see `isShortenedUpstream`.
+ * ends with; see `isShortenedStated`.
  */
-const bounded = (message: string) =>
-  message.length <= maxUpstreamMessageLength
-    ? message
-    : `${message.slice(0, maxUpstreamMessageLength - 1)}…`;
+export const boundStated = (text: string, maximum: number) =>
+  text.length <= maximum ? text : `${text.slice(0, maximum - 1)}…`;
 
-/** Whether `bounded` shortened this message, so it may end partway through a secret. */
+/** Whether `boundStated` shortened this text, so it may end partway through a secret. */
+export const isShortenedStated = (text: string, maximum: number) =>
+  text.length === maximum && text.endsWith("…");
+
+const bounded = (message: string) => boundStated(message, maxUpstreamMessageLength);
+
+/** Whether a stated message was shortened where it was read. */
 export const isShortenedUpstream = (message: string) =>
-  message.length === maxUpstreamMessageLength && message.endsWith("…");
+  isShortenedStated(message, maxUpstreamMessageLength);
 
 const stated = (code: number | string, message: string | undefined): UpstreamError => ({
   code,

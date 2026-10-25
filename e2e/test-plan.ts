@@ -551,6 +551,16 @@ export const scenarios = plan({
       local: na("Hosted app version scenario"),
     },
   },
+  graphqlStatedErrors: {
+    fixtures: "actors",
+    file: "graphql-errors.spec.ts",
+    title: "GraphQL failures carry the errors the server stated, bounded and with secrets replaced",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback GraphQL fixture"),
+      local: na("Hosted app version scenario"),
+    },
+  },
   mcpCatalogCache: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",
