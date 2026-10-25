@@ -191,8 +191,8 @@ export const makeMcp = (options: McpOptions) =>
             ),
           );
         // Search and describe read the catalog directly; call runs as an execution so it can pause.
-        const search = (input: Parameters<typeof searchCatalog>[2]) =>
-          searchCatalog(options.backend, options.limits, input).pipe(Effect.withSpan("mcp.search"));
+        const search = (input: Parameters<typeof searchCatalog>[1]) =>
+          searchCatalog(options.backend, input).pipe(Effect.withSpan("mcp.search"));
         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
           describeCatalog(options.backend, input).pipe(Effect.withSpan("mcp.describe"));
         const toolkit =

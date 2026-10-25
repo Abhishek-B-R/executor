@@ -64,9 +64,6 @@ export const config = Config.all({
     maxToolCalls: Config.Number("EXECUTOR_MCP_MAX_TOOL_CALLS").pipe(
       Config.withDefault(defaultMcpLimits.maxToolCalls),
     ),
-    maxOutputBytes: Config.Number("EXECUTOR_MCP_MAX_OUTPUT_BYTES").pipe(
-      Config.withDefault(defaultMcpLimits.maxOutputBytes),
-    ),
   }),
 }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.toType(ServerConfig))));
 

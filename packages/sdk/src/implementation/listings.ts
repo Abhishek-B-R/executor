@@ -542,6 +542,55 @@ export const makeListings = (options: {
     read: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
       readAt(state, evaluate, read).pipe(Effect.map(({ listing }) => listing)),
     /**
+     * The listing a reader that does not refresh would be served without evaluating, in two steps:
+     * the one kept in this process is read now, and the returned lookup answers with it, or, only
+     * when run and none was kept here, with the one kept beyond this process. Neither evaluates the
+     * app nor waits for an evaluation that is running, so neither runs the app's code. A call reads
+     * the first step before it hands over its work: an app cache change it makes forgets the app's
+     * kept listings. Nothing is served to a caller, so access is not checked here.
+     */
+    kept: (state: InvocationSnapshot) =>
+      Effect.gen(function* () {
+        if (policy.maxStaleMillis <= 0) return Effect.succeed<ToolListing | undefined>(undefined);
+        const id = yield* options.declarations.key("tools.list", state);
+        const fresh = (at: number) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.map(
+              (now) => now - at < policy.maxStaleMillis && !cache.outdated(state.app.id, at),
+            ),
+          );
+        const memory = yield* cache.get(id);
+        if (memory?.kind === "value" && memory.value instanceof Listed && (yield* fresh(memory.at)))
+          return Effect.succeed<ToolListing | undefined>(memory.value.listing);
+        const beyond: Effect.Effect<ToolListing | undefined> = options.declarations
+          .recall(state.app.id, id)
+          .pipe(
+            Effect.flatMap((recalled) =>
+              recalled === undefined
+                ? Effect.succeed(undefined)
+                : Effect.flatMap(fresh(recalled.at), (servable) =>
+                    servable
+                      ? decodeListing(recalled.json).pipe(
+                          Effect.option,
+                          Effect.map(Option.getOrUndefined),
+                        )
+                      : Effect.succeed(undefined),
+                  ),
+            ),
+            Effect.tap((listing) =>
+              Effect.annotateCurrentSpan("executor.declarations.recalled", listing !== undefined),
+            ),
+            Effect.withSpan("sdk.tools.listing.recall", {
+              attributes: { "executor.app.id": state.app.id },
+            }),
+          );
+        return beyond;
+      }).pipe(
+        Effect.withSpan("sdk.tools.listing.kept", {
+          attributes: { "executor.app.id": state.app.id },
+        }),
+      ),
+    /**
      * Keep the listing `read` would serve as search rows, and name them. Rows are current when an
      * evaluation started within `maxStaleMillis`, as a kept listing a reader that does not refresh
      * is served, no app cache change since, and no newer listing is kept here. Current rows are

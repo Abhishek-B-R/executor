@@ -706,11 +706,53 @@ export const scenarios = plan({
   mcpSearchConcise: {
     file: "mcp-search-concise.spec.ts",
     title:
-      "A broad MCP tool search returns concise pages within the execute output budget and describe returns full signatures",
+      "A broad MCP tool search returns concise pages within their byte budget and describe returns full signatures",
     targets: {
       local: scheduled,
       "self-host": na("Shared MCP search; covered on local"),
       cloud: na("Shared MCP search; covered on local"),
+    },
+  },
+  mcpLargeResult: {
+    file: "mcp-large-result.spec.ts",
+    title:
+      "MCP execute and call return a result far over 100,000 bytes whole, as a success that parses, with every log line",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted scenario covers self-host"),
+      cloud: na("Hosted scenario covers Cloud"),
+    },
+  },
+  mcpRpcLimitForged: {
+    file: "mcp-large-result.spec.ts",
+    title:
+      "A tool failure that only imitates the runtime's 32 MiB RPC limit is a likely cause a read may retry, and the unchanged retry succeeds",
+    targets: {
+      local: scheduled,
+      "self-host": na("Shared runtime classification; covered on local"),
+      cloud: na("Shared runtime classification; covered on local"),
+    },
+  },
+  mcpLargeResultHosted: {
+    fixtures: "actors",
+    file: "mcp-large-result.spec.ts",
+    title:
+      "Self-host and Cloud return an MCP result far over 100,000 bytes whole from execute and call, as a success that parses",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local scenario covers local"),
+    },
+  },
+  mcpLargeResultMemoryLimit: {
+    fixtures: "actors",
+    file: "mcp-large-result.spec.ts",
+    title:
+      "A Cloud MCP result too large for the session object's 128 MB memory gets an error naming that limit at once, and the session keeps working",
+    targets: {
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("Cloud's Durable Object memory limit; self-host returns the value whole"),
+      local: na("Cloud's Durable Object memory limit; local returns the value whole"),
     },
   },
   mcpExecuteConcurrency: {
@@ -3588,6 +3630,17 @@ export const scenarios = plan({
     file: "oauth-refresh-resilience.spec.ts",
     title:
       "OAuth renews a grant without a stated lifetime when the service refuses its token, repeats only queries, and reconnects when renewal is refused",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer and resource with controlled token expiry."),
+      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
+    },
+  },
+  oauthUnconfirmedReadRenewal: {
+    fixtures: "actors",
+    file: "oauth-refresh-resilience.spec.ts",
+    title:
+      "A refused query no kept listing confirms, unlisted or built on apps beta.95, renews the grant without repeating the call, and the next call uses the renewed token",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback issuer and resource with controlled token expiry."),
@@ -6641,7 +6694,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
     title:
-      "MCP approvals show exact arguments wherever they fit, shorten the saved prompt, run once approved and refuse requests too large to return with their size",
+      "MCP approvals show exact arguments wherever they fit, shorten the saved prompt, offer requests far over 100,000 bytes whole and run once approved",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -6707,6 +6760,17 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("The dropping MCP server is a loopback listener."),
+      local: na("Hosted self-host covers the shared app runtime error mapping."),
+    },
+  },
+  mcpExecuteHintedReadTimedOut: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title:
+      "MCP tools only their server labels read-only are not offered as retries after they time out",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The silent MCP server is a loopback listener."),
       local: na("Hosted self-host covers the shared app runtime error mapping."),
     },
   },
@@ -6781,6 +6845,17 @@ export const scenarios = plan({
     file: "mcp-execute-failures.spec.ts",
     title:
       "A call that names no kind keeps the write warning after the catalog names its tool a query, when it fails or its approval policy asks for approval, and is not repeated",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The recording service is a loopback listener."),
+      local: na("Hosted self-host covers the shared tool call path."),
+    },
+  },
+  mcpExecuteColdQueryNotReevaluated: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title:
+      "A query that fails before its app's tools were listed is reported as possibly written without evaluating the app again",
     targets: {
       "self-host": scheduled,
       cloud: na("The recording service is a loopback listener."),
