@@ -3622,6 +3622,17 @@ export const scenarios = plan({
       local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
     },
   },
+  oauthRenewalEndedGrantCodes: {
+    fixtures: "actors",
+    file: "oauth-refresh-resilience.spec.ts",
+    title:
+      "OAuth renewal refused with a service's own code for a dead refresh token, at any HTTP status, asks to reconnect, stops renewing, and traces the code",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback issuer with controlled token endpoint failures."),
+      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
+    },
+  },
   oauthRenewalAheadOfExpiry: {
     fixtures: "actors",
     file: "oauth-refresh-resilience.spec.ts",

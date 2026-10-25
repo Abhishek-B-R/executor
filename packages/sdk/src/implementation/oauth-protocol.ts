@@ -392,19 +392,27 @@ const isClientRejection = (error: string) =>
   error.startsWith("invalid_client:");
 
 /**
- * Supabase Auth's codes for a refresh token that can never be used again, its RFC 6749
- * `invalid_grant`: it was already used outside the reuse interval, which also revokes every token
- * of its session, or it or its session no longer exists or has expired.
+ * Services' own codes for a refresh token that can never be used again, their RFC 6749
+ * `invalid_grant`:
+ *
+ * - Supabase Auth: the token was already used outside the reuse interval, which also revokes every
+ *   token of its session, or it or its session no longer exists or has expired.
+ * - GitHub (`bad_refresh_token`, with HTTP 200): the token is invalid or expired.
+ * - Slack (with HTTP 200): `invalid_refresh_token`, or `token_revoked` for a deleted user or
+ *   workspace or a removed app.
  */
-const isEndedSupabaseGrant = (error: string) =>
+const isEndedGrant = (error: string) =>
   error === "refresh_token_already_used" ||
   error === "refresh_token_not_found" ||
   error === "session_expired" ||
-  error === "session_not_found";
+  error === "session_not_found" ||
+  error === "bad_refresh_token" ||
+  error === "invalid_refresh_token" ||
+  error === "token_revoked";
 
 /** The reason an RFC 6749 §5.2 error code gives for a failed token request. */
 const errorReason = (error: string) =>
-  error === "invalid_grant" || isEndedSupabaseGrant(error)
+  error === "invalid_grant" || isEndedGrant(error)
     ? ("invalid_grant" as const)
     : isClientRejection(error)
       ? ("invalid_client" as const)

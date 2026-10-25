@@ -95,6 +95,18 @@ const refreshFailures = {
     status: 400,
     body: { code: 400, error_code: "refresh_token_already_used", msg: "PRIVATE_PROVIDER_ERROR" },
   },
+  // GitHub answers an invalid or expired refresh token with HTTP 200 and its own code. Slack
+  // answers HTTP 200 with `ok: false` and its own codes for an invalid refresh token and for a
+  // deleted user or workspace or a removed app.
+  github_bad_refresh_token: { status: 200, body: { error: "bad_refresh_token", ...privateError } },
+  slack_invalid_refresh_token: {
+    status: 200,
+    body: { ok: false, error: "invalid_refresh_token", ...privateError },
+  },
+  slack_token_revoked: {
+    status: 200,
+    body: { ok: false, error: "token_revoked", ...privateError },
+  },
 } satisfies Record<string, TokenError>;
 type RefreshFailure = keyof typeof refreshFailures;
 /** Seconds a token lasts when a scenario needs it to expire before the next call. */
@@ -529,24 +541,71 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const again = yield* read();
         expect(again.status, JSON.stringify(again.body)).toBe(409);
         expect(yield* refreshes).toBe(beforeRefusal + 1);
-
-        // Supabase Auth's own code for a refresh token used again ends the grant too, so the
-        // account asks to reconnect instead of renewing on every use.
-        const reused = yield* connect("Synthetic reused account");
-        yield* issuer.configure({ tokenError: refreshFailures.supabase_already_used });
-        const beforeReuse = yield* refreshes;
-        const ended = yield* read();
-        expect(ended.status, JSON.stringify(ended.body)).toBe(409);
-        expect(yield* body(Failure, ended)).toMatchObject({
-          _tag: "OAuthReconnectRequired",
-          account: reused,
-          cause: { stage: "refresh", status: 400 },
-        });
-        assertPrivate(ended.body);
-        yield* issuer.configure({ tokenError: null });
-        const stillEnded = yield* read();
-        expect(stillEnded.status, JSON.stringify(stillEnded.body)).toBe(409);
-        expect(yield* refreshes).toBe(beforeReuse + 1);
+      }),
+    ),
+  );
+  it.effect(scenarios.oauthRenewalEndedGrantCodes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { issuer, provider, connect, read, refreshes, assertPrivate, spans, evidence } =
+          yield* renewalFixture;
+        // A service's own code for a refresh token that can never be used again ends the grant
+        // as `invalid_grant` does, at any HTTP status, so the account asks to reconnect instead of
+        // renewing on every use: Supabase Auth's for a token used again, GitHub's for an invalid
+        // or expired one, and Slack's for an invalid one or a removed installation. The trace
+        // names the code.
+        const ended: ReadonlyArray<{
+          readonly failure: RefreshFailure;
+          readonly status: number;
+          readonly code: string;
+        }> = [
+          { failure: "supabase_already_used", status: 400, code: "refresh_token_already_used" },
+          { failure: "github_bad_refresh_token", status: 200, code: "bad_refresh_token" },
+          { failure: "slack_invalid_refresh_token", status: 200, code: "invalid_refresh_token" },
+          { failure: "slack_token_revoked", status: 200, code: "token_revoked" },
+        ];
+        for (const scenario of ended) {
+          const account = yield* connect(`Synthetic ${scenario.failure} account`);
+          yield* issuer.configure({ tokenError: refreshFailures[scenario.failure] });
+          const before = yield* refreshes;
+          const refusedRead = yield* read();
+          expect(
+            refusedRead.status,
+            `${scenario.failure}: ${JSON.stringify(refusedRead.body)}`,
+          ).toBe(409);
+          expect(yield* body(Failure, refusedRead), scenario.failure).toMatchObject({
+            _tag: "OAuthReconnectRequired",
+            account,
+            cause: { stage: "refresh", status: scenario.status },
+          });
+          assertPrivate(refusedRead.body);
+          const trace = yield* spans;
+          expect(
+            trace.data.find(
+              ({ span }) =>
+                span.operationName === "oauth.resolve" &&
+                span.tags["oauth.renewal.outcome"] !== undefined,
+            )?.span.tags,
+            scenario.failure,
+          ).toMatchObject({
+            "oauth.provider.id": provider,
+            "oauth.renewal.outcome": "reconnect",
+            "oauth.reconnect.reason": "renewal_refused",
+          });
+          expect(
+            trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
+            scenario.failure,
+          ).toMatchObject({ "oauth.error.known_provider_code": scenario.code });
+          assertPrivate(trace);
+          yield* evidence.json(`refresh-${scenario.failure}-trace.json`, trace);
+          yield* issuer.configure({ tokenError: null });
+          const stillEnded = yield* read();
+          expect(stillEnded.status, `${scenario.failure}: ${JSON.stringify(stillEnded.body)}`).toBe(
+            409,
+          );
+          expect(yield* refreshes, scenario.failure).toBe(before + 1);
+        }
       }),
     ),
   );
