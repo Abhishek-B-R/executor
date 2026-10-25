@@ -1685,10 +1685,22 @@ export interface OAuthGrantImport {
    */
   readonly credentialsReadable: (account: AccountId) => Effect.Effect<boolean, StorageError>;
   /**
-   * Replace an imported account's tokens with those the issuing product holds now, when its grant
-   * needs reconnecting or the product renewed the grant after this account did: a service that
-   * rotates refresh tokens keeps only the last renewal's. Keeps the grant's client and renewal
-   * settings, and keeps a grant reconnected since the import or being renewed. Makes no token
+   * Move an imported account to another provider, under `method`, when that method's definition is
+   * the one the account was saved for, so its credentials fit unchanged. An importer that
+   * generates an app again uses it for the accounts an earlier run saved: the app's provider
+   * changes with any method it gains or loses, or a new name. Returns whether it moved.
+   */
+  readonly moveImportedAccount: (input: {
+    readonly account: AccountId;
+    readonly provider: ProviderId;
+    readonly method: string;
+  }) => Effect.Effect<boolean, StorageError>;
+  /**
+   * Replace an imported account's tokens with those the issuing product holds now, when the
+   * product holds another refresh token and the grant needs reconnecting or the product renewed
+   * the grant after this account did: a service that rotates refresh tokens keeps only the last
+   * renewal's. Keeps the grant's client and renewal settings, and keeps a grant reconnected since
+   * the import. A grant being renewed is decided once its renewal saved the result. Makes no token
    * request.
    */
   readonly refreshImportedGrant: (

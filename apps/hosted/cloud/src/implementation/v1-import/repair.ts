@@ -484,32 +484,23 @@ export const planStampedApps = (
   });
 
 /**
- * Repair one moved organization, or plan its repair without writing (`apply` false). The members
- * are the imported v2 members whose user the import mapped, as the import read them.
+ * The importer's context for a moved organization, as an import reads it: its v2 organization,
+ * its imported members as the owner and subjects, and v1's rows for them. Undefined when it was
+ * not imported; without a context when its v2 organization or owner is gone.
  */
-export const repairOrganization = (organization: string, apply: boolean) =>
+export const movedOrganizationContext = (organization: string) =>
   Effect.gen(function* () {
     const environment = yield* V1ImportEnvironment;
     const sql = yield* Effect.flatten(V1ImportDatabase);
     const store = makeImportStore(sql);
     const recorded = yield* store.find("organization", organization);
-    const empty = { organization, applied: false, apps: [] };
-    if (recorded?.status !== "imported" || recorded.v2_id === null)
-      return {
-        ...empty,
-        v2Organization: null,
-        status: "not_imported",
-      } satisfies OrganizationRepair;
+    if (recorded?.status !== "imported" || recorded.v2_id === null) return undefined;
     const target = yield* store.target(recorded.v2_id);
     const members = target === undefined ? [] : yield* importedMembers(sql, target.id);
     const owner = members.find((member) => member.role === "owner")?.v2;
     const [first, ...rest] = members.map((member) => member.v1);
     if (target === undefined || owner === undefined || first === undefined)
-      return {
-        ...empty,
-        v2Organization: recorded.v2_id,
-        status: "not_imported",
-      } satisfies OrganizationRepair;
+      return { v2Organization: recorded.v2_id, context: undefined };
     const subjects = [first, ...rest] as const;
     const source = yield* environment.source;
     const snapshot = yield* source.snapshot(
@@ -531,6 +522,25 @@ export const repairOrganization = (organization: string, apply: boolean) =>
       users: new Map(members.map((member) => [member.v1, member.v2])),
       firstParty: firstPartyClients(executor, environment.v1FirstPartyClients).lookup,
     };
+    return { v2Organization: recorded.v2_id, context };
+  });
+
+/**
+ * Repair one moved organization, or plan its repair without writing (`apply` false). The members
+ * are the imported v2 members whose user the import mapped, as the import read them.
+ */
+export const repairOrganization = (organization: string, apply: boolean) =>
+  Effect.gen(function* () {
+    const empty = { organization, applied: false, apps: [] };
+    const moved = yield* movedOrganizationContext(organization);
+    if (moved?.context === undefined)
+      return {
+        ...empty,
+        v2Organization: moved?.v2Organization ?? null,
+        status: "not_imported",
+      } satisfies OrganizationRepair;
+    const { context } = moved;
+    const { snapshot, source, store, target, executor } = context;
 
     // v1's stamps and its rules for tools it did not list become the app's own.
     const apps: AppRepair[] = [];

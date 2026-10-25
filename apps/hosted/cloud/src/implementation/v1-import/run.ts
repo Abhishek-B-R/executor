@@ -69,6 +69,7 @@ import {
   refused,
   toolkitCopyKey,
   toolkitMembers,
+  updateCopiedAccount,
   toolkitPolicy,
   type AppAccountRequirements,
   type DroppedFixed,
@@ -116,6 +117,32 @@ const integrationNotImported = "Its integration was not imported.";
 const removedInV2 = "Its users removed it in v2 after an earlier run imported it.";
 /** The note on an item an earlier run imported that its users changed in v2 since. */
 const keptInV2 = "Kept as its users changed it in v2 after an earlier run imported it.";
+/** The note on a copied account that took v1's final tokens (`refreshCopiedGrants`). */
+const tookV1Note = "Took v1's newer sign-in.";
+/** The note on a copied account that moved to its regenerated app's provider (`followAppProvider`). */
+const followedNote = "Moved to its app's new sign-in methods.";
+
+/**
+ * Before the import deploys anything, each account an earlier run saved takes v1's final tokens
+ * if they are newer (`refreshCopiedGrant`). A deployment starts work that uses the app's accounts,
+ * such as reconciling its webhook sources, and an account still holding the copy's tokens would
+ * renew with a refresh token v1 has rotated since: a service that ends the grant when an old
+ * refresh token comes back then refuses v1's tokens too. Returns the connections whose account
+ * took v1's tokens.
+ */
+const refreshCopiedGrants = (context: ImportContext, ids: readonly string[]) =>
+  Effect.gen(function* () {
+    const took: string[] = [];
+    for (const id of ids) {
+      const row = context.snapshot.connections.find((candidate) => candidate.row_id === id);
+      const saved = yield* context.store.find("connection", id);
+      if (row === undefined || saved?.status !== "imported" || saved.v2_id === null) continue;
+      if ((yield* context.store.sinceImported("connection", id)) === "removed") continue;
+      if ((yield* refreshCopiedGrant(context, row, AccountId.make(saved.v2_id))) === "replaced")
+        took.push(id);
+    }
+    return took;
+  });
 
 /** The v2 kind of an app imported as source without a version, which needs repair. */
 const undeployedApp = "undeployed_app";
@@ -182,7 +209,8 @@ export type V1ImportStep<S> = <A, R>(
 
 /**
  * Storage and transport failures retry the step, as do builds that ran out of memory or whose
- * compiler did not answer, which say nothing about the source. Anything v2 refuses fails the item.
+ * compiler did not answer, and source operations Git storage could not complete, which say nothing
+ * about the source. Anything v2 refuses fails the item.
  */
 const transient = (error: unknown) =>
   Predicate.isTagged(error, "StorageError") ||
@@ -190,7 +218,11 @@ const transient = (error: unknown) =>
   Predicate.isTagged(error, "CredentialsError") ||
   Predicate.isTagged(error, "V1ImportUnavailable") ||
   Predicate.isTagged(error, "BuildMemoryExceeded") ||
-  Predicate.isTagged(error, "BuildUnanswered");
+  Predicate.isTagged(error, "BuildUnanswered") ||
+  // Git storage that could not complete an operation says nothing about the source either.
+  (Predicate.isTagged(error, "SourceError") &&
+    Predicate.hasProperty(error, "reason") &&
+    (error.reason === "git" || error.reason === "storage"));
 
 const refusal = (error: unknown) =>
   error instanceof ItemFailed
@@ -1291,7 +1323,12 @@ const withFixedAccount = (
  * A connection is imported once its account is saved and linked to its app, which its `profile`
  * row records (see `mapLookup`).
  */
-const importConnectionItem = (context: ImportContext, id: string, stale: StaleIntegrations) =>
+const importConnectionItem = (
+  context: ImportContext,
+  id: string,
+  stale: StaleIntegrations,
+  tookV1: ReadonlySet<string>,
+) =>
   Effect.gen(function* () {
     const { snapshot, store, executor, firstParty } = context;
     const row = snapshot.connections.find((candidate) => candidate.row_id === id);
@@ -1334,16 +1371,21 @@ const importConnectionItem = (context: ImportContext, id: string, stale: StaleIn
       // An account its users removed in v2 since stays removed; verification leaves it out.
       if (account !== undefined && (yield* store.sinceImported("connection", id)) === "removed")
         return { ...base, status: "skipped", reason: removedInV2, v2Id: account } satisfies Outcome;
-      // An account an earlier run saved takes v1's tokens if they are newer (`refreshCopiedGrant`).
-      const refreshed =
+      // An account an earlier run saved took v1's tokens before anything deployed, if they were
+      // newer (`refreshCopiedGrants`), and follows its app's provider (`updateCopiedAccount`).
+      const updated =
         account === undefined
-          ? "kept"
-          : yield* refreshCopiedGrant(context, row, AccountId.make(account));
+          ? { tokens: "kept" as const, followed: false }
+          : yield* updateCopiedAccount(context, row, AccountId.make(account));
+      const notes = [
+        ...(updated.tokens === "replaced" || tookV1.has(id) ? [tookV1Note] : []),
+        ...(updated.followed ? [followedNote] : []),
+      ];
       return outcomeOf(base, {
         status: "imported",
         v2Kind: "account",
         v2Id: linked.v2_kind === "profile" && account !== undefined ? account : linked.v2_id,
-        ...(refreshed === "replaced" ? { note: "Took v1's newer sign-in." } : {}),
+        ...(notes.length === 0 ? {} : { note: notes.join(" ") }),
       });
     }
     return yield* Effect.gen(function* () {
@@ -1631,11 +1673,21 @@ const verify = (
         outcome.reason === removedInV2 && outcome.v2Id !== undefined ? [outcome.v2Id] : [],
       ),
     );
-    const accounts = new Set(
-      (yield* context.store.rows(organization))
-        .filter((row) => row.status === "imported" && row.v2_kind === "account")
-        .flatMap((row) => (row.v2_id === null || removed.has(row.v2_id) ? [] : [row.v2_id])),
-    );
+    // A connection v1 no longer has is not planned; its account is left out too when its users
+    // removed it in v2 since an earlier run imported it.
+    const plannedConnections = new Set(items.connections);
+    const accounts = new Set<string>();
+    for (const row of yield* context.store.rows(organization)) {
+      if (row.status !== "imported" || row.v2_kind !== "account" || row.v2_id === null) continue;
+      if (removed.has(row.v2_id)) continue;
+      if (
+        (row.v1_kind === "connection" || row.v1_kind === "profile") &&
+        !plannedConnections.has(row.v1_id) &&
+        (yield* context.store.sinceImported("connection", row.v1_id)) === "removed"
+      )
+        continue;
+      accounts.add(row.v2_id);
+    }
     let unreadable = 0;
     for (const account of accounts)
       if (!(yield* context.executor[OAuthGrantImport].credentialsReadable(AccountId.make(account))))
@@ -2333,6 +2385,14 @@ export const runV1Import = <S>(
           Effect.succeed(ids.map((id) => unavailableOutcome(kind, id, error))),
         ),
       );
+    // Copied accounts take v1's final tokens before any deployment can renew their own.
+    const tookV1 = new Set<string>();
+    for (const [index, batch] of chunks(items.connections, connectionBatch).entries())
+      for (const id of yield* step(
+        `grants ${index}`,
+        Effect.flatMap(context, (ctx) => refreshCopiedGrants(ctx, batch)),
+      ).pipe(Effect.catchTag("V1ImportStepFailed", () => Effect.succeed([]))))
+        tookV1.add(id);
     for (const id of items.integrations)
       outcomes.push(
         yield* one("integration", `integration ${id}`, id, (ctx) => importIntegrationItem(ctx, id)),
@@ -2342,7 +2402,7 @@ export const runV1Import = <S>(
     for (const [index, batch] of chunks(items.connections, connectionBatch).entries())
       outcomes.push(
         ...(yield* many("connection", `connections ${index}`, batch, (ctx, id) =>
-          importConnectionItem(ctx, id, skippedIntegrations),
+          importConnectionItem(ctx, id, skippedIntegrations, tookV1),
         )),
       );
     const dropped = droppedTools(outcomes);

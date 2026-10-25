@@ -1671,6 +1671,70 @@ export const refreshCopiedGrant = (context: ItemContext, row: ConnectionRow, acc
   }).pipe(Effect.catchTag("ItemFailed", () => Effect.succeed("kept" as const)));
 
 /**
+ * Keep the account of a connection an earlier run imported fitting its app once the app is
+ * generated again. The app declares one provider for every sign-in method its connections use, so
+ * a connection v1 gained or lost since, or a new name, makes it another provider, which the saved
+ * account does not fit. The account moves to it, under the method its connection signs in with
+ * now, when that method is the one it was saved for (`moveImportedAccount`); otherwise it is left
+ * as it is. Returns whether it moved.
+ */
+export const followAppProvider = (
+  context: ItemContext,
+  row: ConnectionRow,
+  accounts: AppAccountRequirements,
+  account: AccountId,
+) =>
+  Effect.gen(function* () {
+    const requirement = accounts[connectionRequirement(row)];
+    const plan = connectionPlan(context.snapshot, context.firstParty, row);
+    if (requirement === undefined || !plan.ok) return false;
+    const planned = appMethods(
+      context.snapshot,
+      context.firstParty,
+      plan.value.integration,
+      yield* redundantFixed(context, plan.value.integration),
+    );
+    const method = planned.methodOf.get(row.row_id);
+    if (method === undefined) return false;
+    return yield* context.executor[OAuthGrantImport].moveImportedAccount({
+      account,
+      provider: requirement.provider,
+      method,
+    });
+  }).pipe(Effect.catchTag("ItemFailed", () => Effect.succeed(false)));
+
+/** The app an earlier run imported the connection's integration as, unless its users removed it. */
+const importedAppOf = (context: ItemContext, row: ConnectionRow) =>
+  Effect.gen(function* () {
+    const integration = context.snapshot.integrations.find(
+      (candidate) => candidate.slug === row.integration,
+    );
+    const found =
+      integration === undefined
+        ? undefined
+        : yield* context.store.find("integration", integration.row_id);
+    if (found?.status !== "imported" || found.v2_id === null) return undefined;
+    return yield* context.executor.apps
+      .get({ owner: organizationOwner(context.target.id), app: AppId.make(found.v2_id) })
+      .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
+  });
+
+/**
+ * Bring the account of a connection an earlier run imported up to date with v1 and its app: it
+ * takes v1's final tokens if they are newer (`refreshCopiedGrant`), and follows its app's provider
+ * (`followAppProvider`).
+ */
+export const updateCopiedAccount = (context: ItemContext, row: ConnectionRow, account: AccountId) =>
+  Effect.gen(function* () {
+    const tokens = yield* refreshCopiedGrant(context, row, account);
+    const app = yield* importedAppOf(context, row);
+    const followed =
+      app !== undefined &&
+      (yield* followAppProvider(context, row, app.requirements.accounts, account));
+    return { tokens, followed };
+  });
+
+/**
  * Check the connection's account as `importAccount` would save it, against the requirements its
  * app's build declares, and save nothing: the dry run's check that every account moves. Its
  * refusals are the import's, with the same reasons. `secret` reads what the import would read

@@ -565,6 +565,11 @@ export default Api.make(
         "/api/internal/v1-import/orgs/:organization/repair",
         v1Import.repair,
       ).pipe(HttpRouter.provideRequest(Layer.merge(executor, auth.mcpIdentity))),
+      HttpRouter.add(
+        "POST",
+        "/api/internal/v1-import/orgs/:organization/accounts",
+        v1Import.accounts,
+      ).pipe(HttpRouter.provideRequest(Layer.merge(executor, auth.mcpIdentity))),
       jobs.route((job) => backgroundJobs[job]),
       authoringRoutes,
       ...(["login", "login/sso", "create"] as const).map((page) =>

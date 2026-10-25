@@ -40,6 +40,7 @@ import {
   type V1ImportReports,
   type V1ImportStep,
 } from "../implementation/v1-import/run.ts";
+import { repairCopiedAccounts } from "../implementation/v1-import/copied-accounts.ts";
 import { repairOrganization } from "../implementation/v1-import/repair.ts";
 import { makeV1Source } from "../implementation/v1-import/source.ts";
 import { V1MovedState } from "../implementation/v1-import/moved-flag.ts";
@@ -275,6 +276,9 @@ const aggregationId = /^[0-9a-f]{32}$/u;
  *   after its v2 organization was deleted (see `rollback`).
  * - `POST /api/internal/v1-import/orgs/:organization/repair` deploys a moved organization's MCP
  *   apps with v1's approval stamps as rules, or with `{"apply": false}` plans it (see `repair`).
+ * - `POST /api/internal/v1-import/orgs/:organization/accounts` brings the accounts of an
+ *   organization the opt-in import copied before it moved up to date with v1's final tokens and
+ *   their apps' providers (see `accounts`).
  * - `POST /api/internal/v1-import/runs/:run/aggregate[?cursor=…][&limit=…]` combines a page of a
  *   run's reports (at most 200, or `limit`) into the aggregate so far and returns the cursor of the next page; the last page
  *   writes `v1-import/runs/<run>/aggregate.json` and returns it. `complete` is false while any
@@ -710,5 +714,44 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       ),
     );
 
-    return { start, report, aggregate, rollback, repair };
+    /**
+     * Repair the copied accounts of one organization that cut over as `repairCopiedAccounts` says.
+     * It needs the deployment's write switch, and is refused while the organization's import
+     * instance runs. The answer lists each copied account and what changed.
+     */
+    const accounts = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const { settings, reports } = found.value;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const refused = writesRefused(settings.writes);
+      if (refused !== undefined) return yield* json(409, { error: refused });
+      const state = yield* status(decoded.value);
+      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+        return yield* json(409, {
+          error: `Its import instance is ${state}; repair it once it has stopped.`,
+        });
+      const connections = (yield* McpAuthentication).connections;
+      const result = yield* repairCopiedAccounts(decoded.value).pipe(
+        Effect.scoped,
+        Effect.provideService(
+          V1ImportEnvironment,
+          importEnvironment(settings, reports, connections),
+        ),
+      );
+      return yield* json(200, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import account repair failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    return { start, report, aggregate, rollback, repair, accounts };
   });

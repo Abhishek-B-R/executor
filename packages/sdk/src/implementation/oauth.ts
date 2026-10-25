@@ -3356,29 +3356,46 @@ export const makeOAuth = (
   /**
    * Bring an imported account's grant up to date with the tokens the issuing product holds now
    * (`OAuthGrantImport.refreshImportedGrant`). The grant keeps its client and renewal settings;
-   * only its tokens are replaced, and only when the grant needs reconnecting, or when the product
-   * holds another refresh token with an access token that expires later, so it renewed after this
-   * grant did. A grant reconnected since the import, one without a refresh token to compare, and
-   * one being renewed are kept, as is a grant that changes while this runs.
+   * only its tokens are replaced, and only when the product holds another refresh token than the
+   * grant and the grant needs reconnecting, or the product's access token expires later, so it
+   * renewed after this grant did. A grant that needs reconnecting with the product's own refresh
+   * token already used it, and the service refused it. A grant being renewed is decided once that
+   * renewal has saved its result. A grant reconnected since the import, one without a refresh token
+   * to compare, and one that changes while this runs are kept.
    */
   const refreshImportedGrant = (account: AccountId, tokens: ImportedGrantTokens) =>
     Effect.gen(function* () {
       const stored = yield* query(() =>
         db.findFirst("accounts", { where: (b) => b("id", "=", account) }),
       );
-      const row = yield* query(() =>
+      if (stored === null || stored.credentialGeneration > 0) return "kept";
+      let row = yield* query(() =>
         db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
       );
-      if (stored === null || row === null || stored.credentialGeneration > 0) return "kept";
-      const reconnect = row.status === "reconnect";
-      if (!reconnect && !row.status.startsWith("ready_")) return "kept";
-      const grant = yield* decrypt(account, row.encrypted, OAuthGrant);
+      // A renewal holds the grant: wait for its result, which decides whether v2's tokens still
+      // work. A claim unconfirmed for the renewal lease was abandoned, and its row still holds the
+      // grant it started from.
+      while (
+        row !== null &&
+        row.status !== "reconnect" &&
+        !row.status.startsWith("ready_") &&
+        (heldClaims.has(row.status) ||
+          (yield* Clock.currentTimeMillis) - row.updatedAt.getTime() <= renewalLease)
+      ) {
+        yield* Effect.sleep("100 millis");
+        row = yield* query(() =>
+          db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+        );
+      }
+      if (row === null) return "kept";
+      const read = row;
+      const reconnect = read.status === "reconnect";
+      const grant = yield* decrypt(account, read.encrypted, OAuthGrant);
       if (grant.grant === "client_credentials" || (grant.generation ?? 0) > 0) return "kept";
       const refreshToken =
         tokens.refreshToken === undefined ? undefined : Redacted.value(tokens.refreshToken);
+      if (refreshToken === undefined || refreshToken === grant.refreshToken) return "kept";
       const renewedLater =
-        refreshToken !== undefined &&
-        refreshToken !== grant.refreshToken &&
         tokens.expiresAt !== undefined &&
         grant.expiresAt !== undefined &&
         tokens.expiresAt > grant.expiresAt;
@@ -3406,8 +3423,8 @@ export const makeOAuth = (
               where: (b) =>
                 b.and(
                   b("id", "=", account),
-                  b("status", "=", row.status),
-                  b("encrypted", "=", row.encrypted),
+                  b("status", "=", read.status),
+                  b("encrypted", "=", read.encrypted),
                 ),
               set: { status: ready, encrypted, updatedAt },
             }),

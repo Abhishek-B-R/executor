@@ -21,7 +21,12 @@ import { AppId, CredentialsError, NotImplemented, StorageError } from "../contra
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
+import {
+  credentialsReadable,
+  makeAccounts,
+  moveImportedAccount,
+  storedAccount,
+} from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
@@ -231,6 +236,7 @@ export const createExecutor = (
           ),
         firstPartyClient: oauth.firstPartyClient,
         credentialsReadable: credentialsReadable(db, credentials),
+        moveImportedAccount: moveImportedAccount(db),
         refreshImportedGrant: oauth.refreshImportedGrant,
       },
       [StorageHost]: {

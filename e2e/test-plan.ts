@@ -8465,7 +8465,7 @@ export const scenarios = plan({
   v1ImportCopiedMove: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import moves an organization already copied to v2 into that copy: its dry run reports the copy's slug, an account v1 renewed later takes v1's newer tokens while one v2 renewed keeps its own, and an app its members deployed in v2 since keeps their version, while what they removed in v2 stays removed and a teammate they added stays",
+      "Cloud v1 import moves an organization already copied to v2 into that copy: its dry run reports the copy's slug, an account v1 renewed later takes v1's newer tokens while one v2 renewed keeps its own, both keep fitting their app after v1 renamed its integration, and an app its members deployed in v2 since keeps their version, while what they removed in v2 stays removed, also when v1 removed it too, and a teammate they added stays",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   // The operator clients it moves grants to are the ones every managed local Cloud starts with.

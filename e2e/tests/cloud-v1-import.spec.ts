@@ -4821,6 +4821,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           const copySlug = `v1-${randomUUID().slice(0, 8)}`;
           const names = randomUUID().slice(0, 6);
           yield* seedRenewal(twin.organization, twin.user, copySlug, service.origin, names);
+          // The copy also got a connection its v1 organization no longer has when it moves.
+          yield* writeRows("v1-database.json", [
+            {
+              sql: `insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner, refresh_item_id, expires_at, oauth_scope, oauth_token_url)
+                select tenant, owner, subject, integration, 'spare', template, item_ids, oauth_client, oauth_client_owner, refresh_item_id, expires_at, oauth_scope, oauth_token_url
+                from connection where tenant = $1 and name = 'second'`,
+              params: [twin.organization],
+            },
+          ]);
           yield* orderConnections(twin.organization);
           yield* googleSignIn(identity.email);
           const target = (yield* importOnServer(twin.organization)).target;
@@ -4926,11 +4935,18 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
               sql: "delete from connection where tenant = $1 and name = 'untrusted'",
               params: [own.organization],
             },
+            // They rename the mail integration, which gives its app another provider.
+            {
+              sql: "update integration set name = 'Team mail' where tenant = $1 and name = 'Mail'",
+              params: [own.organization],
+            },
           ]);
-          // In v2 they remove an app and an account, and add a teammate.
+          // In v2 they remove an app and two accounts, and add a teammate.
+          expect(accountOf("spare")).toBeDefined();
           for (const [step, path] of [
             ["Remove the pasted app in v2", `apps/${appOf("Pasted mail")}`],
             ["Remove the pasted account in v2", `accounts/${accountOf("pasted")}`],
+            ["Remove the spare account in v2", `accounts/${accountOf("spare")}`],
           ] as const) {
             const removed = yield* call(step, "DELETE", `/api/organizations/${target.id}/${path}`);
             expect(removed.status, JSON.stringify(removed.body)).toBeLessThan(300);
@@ -4971,12 +4987,16 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           };
           expect(moved.results.get("Pasted mail")).toEqual(removedInV2);
           expect(moved.results.get("pasted")).toMatchObject(removedInV2);
-          // The second account takes v1's newer tokens; the renewed one keeps v2's own renewal.
+          // The second account takes v1's newer tokens; the renewed one keeps v2's own renewal. Both
+          // move to the renamed app's provider, so calls can still select them.
+          const followed = "Moved to its app's new sign-in methods.";
           expect(moved.results.get("second")).toMatchObject({
             status: "imported",
-            note: "Took v1's newer sign-in.",
+            note: `Took v1's newer sign-in. ${followed}`,
           });
-          expect(moved.results.get("renewed")?.note).toBeUndefined();
+          expect(moved.results.get("renewed")?.note).toBe(followed);
+          // The spare account, removed in v2 and its connection in v1, is neither moved nor verified.
+          expect(moved.results.has("spare")).toBe(false);
           yield* expectMail("Call the mail API as the second account", "second");
           yield* expectMail("Call the mail API as the renewed account again", "renewed");
           expect((yield* service.calls).slice(-2)).toEqual([

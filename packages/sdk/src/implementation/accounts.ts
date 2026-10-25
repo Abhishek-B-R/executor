@@ -11,10 +11,16 @@ import {
 import { OAuthGrant } from "../contracts/oauth.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
-import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+import {
+  AccountId,
+  JsonObject,
+  StorageError,
+  type OwnerId,
+  type ProviderId,
+} from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { validateFields } from "./provider.ts";
+import { canonical, validateFields } from "./provider.ts";
 
 /** A stable digest of stored ciphertext; any credential write changes it. */
 const fingerprint = (bytes: Uint8Array) =>
@@ -431,3 +437,59 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
     );
     return Option.isSome(decoded);
   }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
+
+/**
+ * Move an imported account to another provider, under `method`, when that method's definition is
+ * the one the account's method has in its own provider, so its credentials fit it unchanged. A
+ * provider is one definition of all its methods, so an app generated again with a method more or
+ * less, or another name, declares a new provider that its accounts no longer fit. Returns whether
+ * the account moved; one changed meanwhile is left as it is.
+ */
+export const moveImportedAccount =
+  (db: Query) =>
+  (input: {
+    readonly account: AccountId;
+    readonly provider: ProviderId;
+    readonly method: string;
+  }) =>
+    Effect.gen(function* () {
+      const stored = yield* storedAccount(db, input.account).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(Option.none<StoredAccount>())),
+      );
+      if (Option.isNone(stored) || stored.value.provider === input.provider) return false;
+      const account = stored.value;
+      const methodOf = (provider: ProviderId, method: string) =>
+        Effect.gen(function* () {
+          const row = yield* query(() =>
+            db.findFirst("providers", { where: (b) => b("id", "=", provider) }),
+          );
+          if (row === null) return undefined;
+          const { definition } = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          if (!Object.hasOwn(definition.auth, method)) return undefined;
+          const json = yield* Schema.decodeUnknownEffect(JsonObject)(definition.auth[method]).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          return canonical(json);
+        });
+      const from = yield* methodOf(account.provider, account.method);
+      const to = yield* methodOf(input.provider, input.method);
+      if (from === undefined || from !== to) return false;
+      yield* query(() =>
+        db.updateMany("accounts", {
+          where: (b) =>
+            b.and(
+              b("id", "=", input.account),
+              b("provider", "=", account.provider),
+              b("method", "=", account.method),
+            ),
+          set: { provider: input.provider, method: input.method },
+        }),
+      );
+      return yield* storedAccount(db, input.account).pipe(
+        Effect.map((moved) => moved.provider === input.provider && moved.method === input.method),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(false)),
+      );
+    }).pipe(Effect.withSpan("sdk.accounts.moveImportedAccount"));
