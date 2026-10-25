@@ -1816,6 +1816,25 @@ export const scenarios = plan({
       "self-host": na("Local CLI background service"),
     },
   },
+  localServeStalledOutput: {
+    file: "local-serve-shutdown.spec.ts",
+    title: "serve stops promptly on SIGTERM while nothing reads its output",
+    targets: {
+      local: scheduled,
+      cloud: na("Local process shutdown"),
+      "self-host": na("Local process shutdown"),
+    },
+  },
+  localServeClosedOutput: {
+    file: "local-serve-shutdown.spec.ts",
+    title:
+      "the local server keeps serving after the reader of its stdout or stderr closes the pipe",
+    targets: {
+      local: scheduled,
+      cloud: na("Local process output"),
+      "self-host": na("Local process output"),
+    },
+  },
   localStartupObservability: {
     file: "local-startup-observability.spec.ts",
     title: "local startup failures retain their resource phase and safe system code",
@@ -8362,6 +8381,16 @@ export const scenarios = plan({
     file: "local-apps-cli.spec.ts",
     title:
       "apps CLI reports the host's error code, status and fields as text and JSON, says when the CLI is out of date, refuses source over the limits or not UTF-8 before uploading, and reads EXECUTOR_HOST",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+    },
+  },
+  localAppsCliPipedOutput: {
+    file: "local-apps-cli.spec.ts",
+    title:
+      "apps CLI prints source larger than a pipe holds in full to a slow reader, and stops quietly for one that closes early",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
