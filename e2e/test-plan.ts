@@ -8500,6 +8500,18 @@ export const scenarios = plan({
       "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportPaidBilling: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import carries a paid v1 Team subscription over to v2's Team plan on the same Stripe subscription with its renewal: per member with its seats and a cancellation at the end of its period, a flat price kept with unlimited members, and a grandfathered Hobby organization moved to v2's Free plan with its v1 customer untouched",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportBillingReturn: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import keeps a paid workspace whose subscription did not carry over frozen with its billing held, offering no v2 billing or checkout, gives the subscription back to v1 on the same Stripe subscription with its seats, past a free customer v1 made meanwhile, and then deleting the v2 organization cancels nothing and the workspace rolls back",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportRequests: {
     file: "cloud-v1-import.spec.ts",
     title:

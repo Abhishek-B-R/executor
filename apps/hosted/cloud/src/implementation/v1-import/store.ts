@@ -232,9 +232,16 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
   /**
    * A new organization owned by the user, named after the v1 organization, at the first of
    * `candidates` no organization has, or none when every one is taken. Creating it queues the usual team, billing and default-app
-   * jobs. The user's first organization also completes onboarding.
+   * jobs. The user's first organization also completes onboarding. With `hold`, the same
+   * statement records the paid v1 subscription the organization's billing carries over from
+   * (`billing.ts`), so v2's billing never finds the organization without it.
    */
-  const createOrganization = (userId: string, name: string, candidates: readonly string[]) =>
+  const createOrganization = (
+    userId: string,
+    name: string,
+    candidates: readonly string[],
+    hold: { readonly v1Organization: string; readonly subscription: string } | null,
+  ) =>
     Effect.gen(function* () {
       for (const candidate of candidates) {
         const id = yield* Effect.sync(() => crypto.randomUUID());
@@ -252,6 +259,10 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
           insert into cloud_organization_setup (user_id, organization_id, domain, applied)
             select ${userId}, owner."organizationId", null, true from owner
             on conflict (user_id) do nothing
+        ), hold as (
+          insert into private_v1_import_billing (organization_id, v1_org_id, state, subscription)
+            select created.id, ${hold?.v1Organization ?? null}, 'held', ${hold?.subscription ?? null}::jsonb
+            from created where ${hold !== null}
         ) select created.id, created.name, created.slug from created join owner
           on owner."organizationId" = created.id
         `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Owned)));
@@ -259,6 +270,19 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
       }
       return undefined;
     }).pipe(unavailable);
+  /**
+   * Hold the billing of an organization an earlier run made, which may have none: one the
+   * opt-in import copied before its v1 subscription could carry over. A hold already there stays.
+   */
+  const holdBilling = (
+    organization: string,
+    hold: { readonly v1Organization: string; readonly subscription: string },
+  ) =>
+    sql`
+      insert into private_v1_import_billing (organization_id, v1_org_id, state, subscription)
+      values (${organization}, ${hold.v1Organization}, 'held', ${hold.subscription}::jsonb)
+      on conflict (organization_id) do nothing
+    `.pipe(Effect.asVoid, unavailable);
   return {
     rows,
     find,
@@ -269,6 +293,7 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
     deployedSince,
     target,
     createOrganization,
+    holdBilling,
   };
 };
 export type ImportStore = ReturnType<typeof makeImportStore>;

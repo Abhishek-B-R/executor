@@ -621,6 +621,294 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
     ),
   );
 
+  it.effect(scenarios.v1ImportPaidBilling.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const operator = yield* v1ImportOperator;
+        const identity = yield* emulators.identity("google");
+        const workspace = (label: string, email: string) =>
+          Effect.gen(function* () {
+            const created = yield* emulators.v1Workspace([email]);
+            yield* writeRows("v1-database.json", [
+              row(
+                "insert into organizations (id, name, slug) values ($1, $2, $3)",
+                created.organization,
+                `Synthetic ${label} workspace`,
+                `v1-${randomUUID().slice(0, 8)}`,
+              ),
+            ]);
+            return created.organization;
+          });
+        const seats = yield* workspace("per-member", identity.email);
+        const flat = yield* workspace("flat", `flat-${randomUUID().slice(0, 8)}@example.test`);
+        const hobby = yield* workspace("hobby", `hobby-${randomUUID().slice(0, 8)}@example.test`);
+        // v1's Team version 3 per member, cancelled at the end of its period; version 1 at a flat
+        // USD 49 with executions metered on top; and grandfathered Hobby, which moves to Free.
+        const perMember = yield* emulators.v1TeamSubscription(seats, {
+          version: 3,
+          seats: 1,
+          cancelled: true,
+        });
+        const flatPrice = yield* emulators.v1TeamSubscription(flat, { version: 1 });
+        yield* emulators.v1Plan(hobby, "hobby");
+        yield* signInOnV1(identity.email);
+
+        yield* allowV1Import(seats, flat, hobby);
+        const run = v1RunId("paid");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [seats, flat, hobby],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+
+        const carried = (organization: string) =>
+          Effect.gen(function* () {
+            const report = yield* operator.waitForReport(run, organization);
+            expect(report.status, report.reason ?? "").toBe("imported");
+            expect(report.cutover).toBe(true);
+            const target = report.v2Organization;
+            if (target === undefined) return yield* Effect.die("The import named no organization");
+            // v1's customer became the v2 organization's: v1's id has none left.
+            expect(yield* emulators.autumnCustomer(organization)).toBeNull();
+            const customerId = yield* emulators.v2BillingCustomer(target.id);
+            const namespace = customerId.slice(0, customerId.indexOf(":organization:"));
+            const customer = yield* emulators.autumnCustomer(customerId);
+            if (customer === null) return yield* Effect.die("The v2 organization has no customer");
+            return { report, target, customerId, namespace, customer };
+          });
+
+        const moved = yield* carried(seats);
+        expect(moved.report.billing).toEqual({
+          subscription: {
+            plan: "team",
+            version: 3,
+            pricing: "per_member",
+            v2Pricing: "per_member",
+            trialing: false,
+            cancelling: true,
+          },
+          problem: null,
+          carried: true,
+        });
+        // v2's Team plan alone bills it, on v1's Stripe subscription, renewing when v1's did and
+        // still cancelled then. v1's free plan stays scheduled after it, which v2 ignores.
+        const team = moved.customer.subscriptions.filter((sub) => sub.status !== "scheduled");
+        expect(team).toMatchObject([
+          {
+            plan_id: `${moved.namespace}-team`,
+            current_period_end: perMember.periodEnd,
+            expires_at: perMember.periodEnd,
+          },
+        ]);
+        expect(team[0]?.canceled_at).not.toBeNull();
+        expect(yield* emulators.autumnStripeSubscriptions(moved.customerId)).toEqual([
+          perMember.stripeSubscription,
+        ]);
+        // Its seats synced once the subscription was v2's.
+        expect(moved.customer.balances[`${moved.namespace}-members`]?.usage).toBe(1);
+        expect(
+          yield* cloudRows(
+            Schema.Struct({ state: Schema.String, stripe_subscription_id: Schema.String }),
+            "select state, stripe_subscription_id from private_v1_import_billing where organization_id = $1",
+            moved.target.id,
+          ),
+        ).toEqual([{ state: "carried", stripe_subscription_id: perMember.stripeSubscription }]);
+        const overview = yield* call(
+          "Read the moved organization's billing",
+          `/api/organizations/${moved.target.id}/billing`,
+        );
+        expect(overview.status).toBe(200);
+        expect(overview.body).toMatchObject({
+          subscriptions: [{ planId: `${moved.namespace}-team` }],
+        });
+
+        // A flat price stays the price, with unlimited members, on its Stripe subscription.
+        const kept = yield* carried(flat);
+        expect(kept.report.billing).toMatchObject({
+          subscription: { version: 1, pricing: "flat", v2Pricing: "flat", cancelling: false },
+          carried: true,
+        });
+        expect(kept.customer.subscriptions).toMatchObject([
+          {
+            plan_id: `${kept.namespace}-team`,
+            current_period_end: flatPrice.periodEnd,
+            canceled_at: null,
+            plan: { price: { amount: 49, interval: "month" } },
+          },
+        ]);
+        expect(kept.customer.balances[`${kept.namespace}-members`]?.unlimited).toBe(true);
+        expect(yield* emulators.autumnStripeSubscriptions(kept.customerId)).toEqual([
+          flatPrice.stripeSubscription,
+        ]);
+
+        // Hobby moves as a free organization does: nothing carries over and v1's customer is
+        // left as it was, while v2's billing puts the organization on its Free plan.
+        const free = yield* operator.waitForReport(run, hobby);
+        expect(free.status, free.reason ?? "").toBe("imported");
+        expect(free.cutover).toBe(true);
+        expect(free.billing).toBeUndefined();
+        expect(free.flags).toMatchObject({ paidPlans: ["hobby"] });
+        const freeTarget = free.v2Organization;
+        if (freeTarget === undefined) return yield* Effect.die("The import named no organization");
+        expect(yield* movedFlag(hobby)).toEqual([
+          { state: "moved", v2_org_id: freeTarget.id, v2_org_slug: freeTarget.slug },
+        ]);
+        expect(
+          yield* cloudRows(
+            Schema.Struct({ state: Schema.String }),
+            "select state from private_v1_import_billing where organization_id = $1",
+            freeTarget.id,
+          ),
+        ).toEqual([]);
+        expect((yield* emulators.autumnCustomer(hobby))?.subscriptions).toMatchObject([
+          { plan_id: "hobby" },
+        ]);
+        const freeCustomerId = yield* emulators.v2BillingCustomer(freeTarget.id);
+        const freePlan = `${freeCustomerId.slice(0, freeCustomerId.indexOf(":organization:"))}-free`;
+        const onFree = yield* emulators.autumnCustomer(freeCustomerId).pipe(
+          Effect.flatMap((customer) =>
+            customer === null
+              ? Effect.fail(new Error("v2 has not made the organization's customer yet"))
+              : Effect.succeed(customer),
+          ),
+          Effect.retry(Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "50 seconds" }))),
+        );
+        expect(onFree.subscriptions.map((sub) => sub.plan_id)).toEqual([freePlan]);
+        expect(yield* emulators.autumnStripeSubscriptions(freeCustomerId)).toEqual([]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportBillingReturn.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          browser = yield* Browser;
+        const operator = yield* v1ImportOperator;
+        const identity = yield* emulators.identity("google");
+        const workspace = yield* emulators.v1Workspace([identity.email]);
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            workspace.organization,
+            "Synthetic returned workspace",
+            `v1-${randomUUID().slice(0, 8)}`,
+          ),
+        ]);
+        const v1 = yield* emulators.v1TeamSubscription(workspace.organization, {
+          version: 3,
+          seats: 1,
+        });
+        yield* signInOnV1(identity.email);
+        yield* allowV1Import(workspace.organization);
+
+        // Autumn refuses the attach once, after the customer took v2's id.
+        const fault = yield* emulators.failAutumnReads("billing.attach", { status: 400, times: 1 });
+        yield* Effect.addFinalizer(() => emulators.clearAutumnFault(fault).pipe(Effect.orDie));
+        const run = v1RunId("billing-return");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [workspace.organization],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        const report = yield* operator.waitForReport(run, workspace.organization);
+        expect(report.status).toBe("failed");
+        expect(report.reason).toContain("Its subscription did not carry over");
+        expect(report.cutover).toBe(false);
+        expect(report.billing).toMatchObject({ carried: false });
+        const target = report.v2Organization;
+        if (target === undefined) return yield* Effect.die("The import named no organization");
+        // It stays frozen in v1, charged nothing, and its billing stays held.
+        expect((yield* movedFlag(workspace.organization))[0]?.state).toBe("moving");
+        const customerId = yield* emulators.v2BillingCustomer(target.id);
+        const halfway = yield* emulators.autumnCustomer(customerId);
+        expect(halfway?.subscriptions).toMatchObject([{ plan_id: "team" }]);
+        expect(
+          yield* cloudRows(
+            Schema.Struct({ state: Schema.String }),
+            "select state from private_v1_import_billing where organization_id = $1",
+            target.id,
+          ),
+        ).toEqual([{ state: "held" }]);
+        // While held, v2's billing makes no customer and offers no checkout.
+        const overview = yield* call(
+          "Read the held organization's billing",
+          `/api/organizations/${target.id}/billing`,
+        );
+        expect(overview.status).toBe(503);
+        const checkout = yield* browser.use("Try a checkout for the held organization", (page) =>
+          page.evaluate(
+            (id) =>
+              fetch(`/api/organizations/${id}/billing/checkout`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ plan: "team" }),
+              }).then((response) => response.status),
+            target.id,
+          ),
+        );
+        expect(checkout).toBe(503);
+        // v1 meters an execution meanwhile and makes itself a free customer under its id.
+        yield* emulators.v1MeteredCustomer(workspace.organization);
+
+        const returned = yield* operator.returnBilling(workspace.organization);
+        expect(returned).toEqual({
+          status: 200,
+          body: { organization: workspace.organization, billing: "returned" },
+        });
+        // v1's Team plan bills it again, on the same Stripe subscription, with v1's seats.
+        expect(yield* emulators.autumnCustomer(customerId)).toBeNull();
+        const back = yield* emulators.autumnCustomer(workspace.organization);
+        expect(back?.subscriptions).toMatchObject([
+          {
+            plan_id: "team",
+            current_period_end: v1.periodEnd,
+            canceled_at: null,
+            plan: { version: 3 },
+          },
+        ]);
+        expect(back?.balances.members?.usage).toBe(1);
+        expect(yield* emulators.autumnStripeSubscriptions(workspace.organization)).toEqual([
+          v1.stripeSubscription,
+        ]);
+        // A second return changes nothing.
+        expect((yield* operator.returnBilling(workspace.organization)).status).toBe(200);
+
+        // Deleting the v2 organization now cancels nothing, and the organization rolls back.
+        const deleted = yield* browser.use("Delete the imported v2 organization", (page) =>
+          page.evaluate(
+            (id) => fetch(`/api/organizations/${id}`, { method: "DELETE" }).then((r) => r.status),
+            target.id,
+          ),
+        );
+        expect(deleted).toBeLessThan(300);
+        const rolledBack = yield* operator.rollback(workspace.organization).pipe(
+          Effect.flatMap((response) =>
+            response.status === 200
+              ? Effect.succeed(response)
+              : Effect.fail(new Error(JSON.stringify(response.body))),
+          ),
+          Effect.retry(Schedule.spaced("1 second").pipe(Schedule.upTo({ duration: "50 seconds" }))),
+        );
+        expect(rolledBack.body).toEqual({
+          organization: workspace.organization,
+          state: "rolled_back",
+        });
+        expect(
+          (yield* emulators.autumnCustomer(workspace.organization))?.subscriptions,
+        ).toMatchObject([{ plan_id: "team", canceled_at: null }]);
+        expect(yield* emulators.autumnStripeSubscriptions(workspace.organization)).toEqual([
+          v1.stripeSubscription,
+        ]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
   it.effect(scenarios.v1ImportAllowed.title, (context) =>
     withCase(
       context,

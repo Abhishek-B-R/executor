@@ -253,13 +253,22 @@ export const importOrganization = (
     readonly slug: string;
     /** The slugs to try, in order (`slugCandidates`). */
     readonly candidates: readonly string[];
+    /** The paid v1 subscription its billing carries over from, as JSON, if any. */
+    readonly billingHold: string | null;
   },
 ) =>
   Effect.gen(function* () {
     const recorded = yield* store.find("organization", input.organization);
     if (recorded?.status === "imported" && recorded.v2_id !== null) {
       const target = yield* store.target(recorded.v2_id);
-      if (target !== undefined) return target;
+      if (target !== undefined) {
+        if (input.billingHold !== null)
+          yield* store.holdBilling(target.id, {
+            v1Organization: input.organization,
+            subscription: input.billingHold,
+          });
+        return target;
+      }
       return yield* new ItemFailed({ reason: "Its imported organization was removed in v2." });
     }
     const candidates = input.candidates;
@@ -267,7 +276,14 @@ export const importOrganization = (
     const created = yield* sql
       .withTransaction(
         Effect.gen(function* () {
-          const target = yield* store.createOrganization(input.owner, input.name, candidates);
+          const target = yield* store.createOrganization(
+            input.owner,
+            input.name,
+            candidates,
+            input.billingHold === null
+              ? null
+              : { v1Organization: input.organization, subscription: input.billingHold },
+          );
           if (target === undefined) return undefined;
           yield* store.record({
             organization: input.organization,

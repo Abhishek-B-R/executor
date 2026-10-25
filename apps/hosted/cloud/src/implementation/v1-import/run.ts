@@ -19,8 +19,17 @@ import {
   type OrganizationId,
 } from "@executor-js/hosted-server";
 import { AccountId, AppId, OAuthGrantImport, OwnerId, type Executor } from "@executor-js/sdk/core";
-import { Context, Effect, Option, Predicate, type Redacted, Schema, type Scope } from "effect";
-import { freeMembers } from "../../contracts/billing-catalog.ts";
+import {
+  Clock,
+  Context,
+  Effect,
+  Option,
+  Predicate,
+  type Redacted,
+  Schema,
+  type Scope,
+} from "effect";
+import { billingCustomerId, freeMembers } from "../../contracts/billing-catalog.ts";
 import { V1ImportDatabase, V1ImportUnavailable } from "../../contracts/v1-import.ts";
 import {
   V1OrgReport,
@@ -100,6 +109,18 @@ import {
   type V1SnapshotTable,
   type V1Source,
 } from "./source.ts";
+import {
+  CarryOverRefused,
+  carriedAttach,
+  carryOver,
+  decideCarryOver,
+  paysInV2,
+  previewProblem,
+  v1TeamPlan,
+  v2Pricing,
+  type V1ImportBilling,
+  type V1Subscription,
+} from "./billing.ts";
 import { makeImportStore, sourceHash, type MapKind, type MapResult } from "./store.ts";
 import { V1MovedState } from "./moved-flag.ts";
 import { importRefusal, movedFlag, type V1ImportWrites } from "./writes.ts";
@@ -186,6 +207,12 @@ export class V1ImportEnvironment extends Context.Service<
     readonly v1FirstPartyClients: Readonly<Record<string, string>>;
     /** The deployment secret slug suffixes are derived with (`slugCandidates`). */
     readonly slugKey: Effect.Effect<Redacted.Redacted<string>>;
+    /**
+     * v2's billing, which a paid organization's v1 subscription carries over to (`billing.ts`).
+     * None where v1 bills in another Autumn account than this Cloud: there a dry run decides
+     * whether a subscription maps, without Autumn's preview, and no import carries one over.
+     */
+    readonly billing: Option.Option<Effect.Effect<V1ImportBilling, V1ImportUnavailable>>;
   }
 >()("cloud/V1ImportEnvironment") {}
 
@@ -308,6 +335,14 @@ interface Assessment {
   readonly status: "ready" | "held_back" | "failed";
   readonly reason: string | null;
   readonly billing: V1Billing | null;
+  /**
+   * A paid organization's v1 subscription and whether it can carry over: the subscription when
+   * it maps, and the problem, from the mapping or the attach's preview, when it cannot.
+   */
+  readonly carryOver: {
+    readonly subscription: V1Subscription | null;
+    readonly problem: string | null;
+  } | null;
   readonly members: readonly PlannedMember[];
   readonly skippedMembers: readonly SkippedMember[];
   readonly organization: { readonly name: string; readonly slug: string } | null;
@@ -343,6 +378,7 @@ const failedAssessment = (reason: string): Assessment => ({
   status: "failed",
   reason,
   billing: null,
+  carryOver: null,
   members: [],
   skippedMembers: [],
   organization: null,
@@ -392,9 +428,70 @@ const slugPlan = (source: V1Source, organization: string, slug: string) =>
   });
 
 /**
+ * Whether a paid organization's v1 subscription can carry over, decided before anything is
+ * copied: it must map (`decideCarryOver`), and Autumn's preview of the attach on v1's own
+ * customer must show no charge, no other plan changing and the same renewal date. A preview reads
+ * only, so dry runs make it too.
+ */
+const assessCarryOver = (
+  source: V1Source,
+  organization: string,
+  copy: OrganizationId | undefined,
+) =>
+  Effect.gen(function* () {
+    const environment = yield* V1ImportEnvironment;
+    const decided = decideCarryOver(
+      yield* source.customerPlans(organization),
+      v1TeamPlan,
+      yield* Clock.currentTimeMillis,
+    );
+    if (!decided.ok) return { subscription: null, problem: decided.reason };
+    const subscription = decided.subscription;
+    if (Option.isNone(environment.billing))
+      return {
+        subscription,
+        problem:
+          "This deployment bills in another Autumn account than v1, so it cannot carry it over.",
+      };
+    const billing = yield* environment.billing.value;
+    // A copy the opt-in import made has its own customer; one that pays is reconciled by a person.
+    if (copy !== undefined) {
+      const own = yield* billing.autumn
+        .getCustomerPlans({
+          customerId: billingCustomerId(billing.catalog, copy),
+          expand: ["subscriptions.plan"],
+        })
+        .pipe(Effect.mapError(() => new V1ImportUnavailable()));
+      if (paysInV2(billing.catalog, own))
+        return {
+          subscription,
+          problem:
+            "Its v2 copy already pays for its own subscription, so it would be billed twice; a person reconciles it first.",
+        };
+    }
+    const problem = yield* billing.autumn
+      .previewAttach(carriedAttach(billing, subscription, organization))
+      .pipe(
+        Effect.map((preview) =>
+          previewProblem(preview, {
+            add: billing.catalog.team,
+            remove: subscription.planId,
+            renews: subscription.periodEnd,
+          }),
+        ),
+        Effect.mapError(() => new V1ImportUnavailable()),
+      );
+    return {
+      subscription,
+      problem: problem === undefined ? null : `Autumn's preview of the change: ${problem}`,
+    };
+  });
+
+/**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
- * organizations move by hand (decision 15). An import also holds back paid organizations, which
- * move with their subscription once the billing mapping exists (decision 5).
+ * organizations move by hand (decision 15). A paid organization moves with its v1 subscription
+ * (decision 5) when it can carry over (`assessCarryOver`); an import holds it back otherwise. One
+ * on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a free one does.
  */
 const assess = (params: V1ImportParams) =>
   Effect.gen(function* () {
@@ -417,6 +514,7 @@ const assess = (params: V1ImportParams) =>
     const planned = planMembers(memberships, users);
     const base = {
       billing,
+      carryOver: null,
       sso,
       skippedMembers: planned.skipped,
       apiKeys: { read: false } as const,
@@ -472,14 +570,17 @@ const assess = (params: V1ImportParams) =>
             snapshot.organization.slug,
           )
         : { slug: copy.slug, changed: copy.slug !== snapshot.organization.slug };
+    const carry =
+      billing.kind === "paid" ? yield* assessCarryOver(source, organization, copy?.id) : null;
     const held =
       billing.kind === "enterprise"
         ? "Enterprise organizations move by hand, after their v2 SSO is set up."
-        : billing.kind === "paid" && params.mode === "import"
-          ? "Paid organizations move with their subscription once the billing mapping is built."
+        : carry !== null && carry.problem !== null && params.mode === "import"
+          ? `Its v1 subscription cannot carry over: ${carry.problem}`
           : null;
     return {
       ...base,
+      carryOver: carry,
       status: held === null ? "ready" : "held_back",
       reason: held,
       members,
@@ -1114,6 +1215,10 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
       name: assessment.organization.name,
       slug: assessment.organization.slug,
       candidates: yield* slugPlan(source, organization, assessment.organization.slug),
+      billingHold:
+        assessment.carryOver === null || assessment.carryOver.subscription === null
+          ? null
+          : JSON.stringify(assessment.carryOver.subscription),
     });
     for (const [index, member] of others.entries()) {
       const user = users[index + 1]?.[1];
@@ -1790,7 +1895,33 @@ interface Imported {
   readonly target: Identity["target"];
   readonly verification?: V1ImportVerification | undefined;
   readonly cutover?: boolean | undefined;
+  /** Whether a paid organization's subscription carried over, once the import tried. */
+  readonly billingCarried?: boolean | undefined;
 }
+
+/** The report's view of a paid organization's carry-over. */
+const billingReport = (assessment: Assessment, imported: Imported | undefined) => {
+  const carry = assessment.carryOver;
+  if (carry === null) return {};
+  const subscription = carry.subscription;
+  return {
+    billing: {
+      subscription:
+        subscription === null
+          ? null
+          : {
+              plan: subscription.planId,
+              version: subscription.version,
+              pricing: subscription.pricing.kind,
+              v2Pricing: v2Pricing(subscription),
+              trialing: subscription.trialEndsAt !== null,
+              cancelling: subscription.expiresAt !== null,
+            },
+      problem: carry.problem,
+      ...(imported?.billingCarried === undefined ? {} : { carried: imported.billingCarried }),
+    },
+  };
+};
 
 const reportOf = (
   params: V1ImportParams,
@@ -1949,7 +2080,9 @@ const reportOf = (
     ),
     flags: {
       sso: assessment.sso,
-      overFreeMemberLimit: assessment.billing?.kind === "free" && members > freeMembers,
+      overFreeMemberLimit:
+        (assessment.billing?.kind === "free" || assessment.billing?.kind === "grandfathered") &&
+        members > freeMembers,
       paidPlans:
         assessment.billing === null || assessment.billing.kind === "free"
           ? []
@@ -1967,6 +2100,7 @@ const reportOf = (
             },
           ],
     ),
+    ...billingReport(assessment, imported),
     ...(imported === undefined ? {} : { v2Organization: imported.target }),
     ...(imported?.verification === undefined ? {} : { verification: imported.verification }),
     ...(imported?.cutover === undefined ? {} : { cutover: imported.cutover }),
@@ -2116,6 +2250,47 @@ const cutOverInV1 = (organization: string, target: Identity["target"]) =>
   Effect.flatMap(flagWriter, (flag) =>
     flag.set(organization, V1MovedState.Moved({ v2Organization: target.id, v2Slug: target.slug })),
   );
+
+/**
+ * v2's billing for a carry-over. A deployment without it never assesses a subscription as one that
+ * carries over (`assessCarryOver`), so a run there never asks.
+ */
+const importBilling = Effect.gen(function* () {
+  const environment = yield* V1ImportEnvironment;
+  if (Option.isNone(environment.billing))
+    return yield* Effect.die(new Error("This deployment cannot carry v1 billing over."));
+  return yield* environment.billing.value;
+});
+
+/**
+ * Carry the organization's v1 subscription over to its v2 organization (`carryOver`). Returns why
+ * it was refused, which no retry changes and which keeps the organization frozen; a transient
+ * failure retries the step, which reads Autumn back before it writes again.
+ */
+const carryOverStep = (params: V1ImportParams, identity: Identity, subscription: V1Subscription) =>
+  Effect.gen(function* () {
+    return yield* carryOver({
+      billing: yield* importBilling,
+      sql: yield* Effect.flatten(V1ImportDatabase),
+      v1Organization: params.v1OrgId,
+      organization: identity.target.id as OrganizationId,
+      subscription,
+    }).pipe(
+      Effect.as(undefined),
+      Effect.catchTag("CarryOverRefused", (error: CarryOverRefused) =>
+        Effect.succeed(`Its subscription did not carry over: ${error.reason}`),
+      ),
+    );
+  });
+
+/** v2's seat sync, now that the organization's billing is its own. */
+const syncCarriedSeats = (identity: Identity) =>
+  Effect.gen(function* () {
+    const billing = yield* importBilling;
+    yield* billing
+      .syncSeats(identity.target.id as OrganizationId)
+      .pipe(Effect.mapError(() => new V1ImportUnavailable()));
+  });
 
 /** What a person must do with an organization that could not be cut over. */
 export const notCutOver =
@@ -2449,7 +2624,30 @@ export const runV1Import = <S>(
         }),
       ),
     );
-    const problems = checked.problems;
+    const problems = [...checked.problems];
+    // A paid organization's subscription carries over last, once everything else verified, so v1
+    // bills it until the move is all but done. Its seats sync once it is v2's.
+    const subscription = assessment.carryOver?.subscription ?? null;
+    let billingCarried: boolean | undefined;
+    if (problems.length === 0 && subscription !== null) {
+      const refused = yield* step("billing", carryOverStep(params, identity, subscription)).pipe(
+        Effect.catchTag("V1ImportStepFailed", (error) =>
+          Effect.succeed(
+            `Its subscription could not be carried over: Autumn or v2 kept failing (${error.failure}).`,
+          ),
+        ),
+      );
+      billingCarried = refused === undefined;
+      if (refused !== undefined) problems.push(refused);
+      else
+        yield* step("billing seats", syncCarriedSeats(identity)).pipe(
+          Effect.catchTag("V1ImportStepFailed", () =>
+            Effect.sync(() => {
+              problems.push("Its seats could not be synced with its carried-over subscription.");
+            }),
+          ),
+        );
+    }
     // Cutover step 5, only once verification passed. Step 6 sends no email (decision 13).
     const cutOver =
       problems.length === 0 &&
@@ -2465,6 +2663,7 @@ export const runV1Import = <S>(
         target: identity.target,
         verification: checked.verification,
         cutover: cutOver,
+        billingCarried,
       },
       identity,
       cutOver ? "cutover" : "failed",

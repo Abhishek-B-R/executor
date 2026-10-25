@@ -94,6 +94,22 @@ export const V1Report = Schema.Struct({
       reason: Schema.String,
     }),
   ),
+  billing: Schema.optionalKey(
+    Schema.Struct({
+      subscription: Schema.NullOr(
+        Schema.Struct({
+          plan: Schema.String,
+          version: Schema.Number,
+          pricing: Schema.String,
+          v2Pricing: Schema.String,
+          trialing: Schema.Boolean,
+          cancelling: Schema.Boolean,
+        }),
+      ),
+      problem: Schema.NullOr(Schema.String),
+      carried: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
   v2Organization: Schema.optionalKey(Schema.Struct({ id: Schema.String, slug: Schema.String })),
   verification: Schema.optionalKey(
     Schema.Struct({
@@ -259,6 +275,11 @@ export const v1ImportOperator = Effect.gen(function* () {
         ),
         Effect.retry(Schedule.spaced("500 millis").pipe(Schedule.upTo({ duration: "50 seconds" }))),
       ),
+    /** Give a paid organization's subscription back to v1, as the operator command does. */
+    returnBilling: (organization: string) =>
+      send("POST", `/api/internal/v1-import/orgs/${organization}/return-billing`, {
+        authorization: operator,
+      }),
     /** Give an organization back to v1, as the operator command's `rollback` does. */
     rollback: (organization: string) =>
       send("POST", `/api/internal/v1-import/orgs/${organization}/rollback`, {
