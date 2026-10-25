@@ -1,7 +1,8 @@
 /**
  * One-off repair of the v1 organizations moved before the importer took v1's approval stamps
  * (`notes/v1-import.md`, "Repair of moved organizations"): MCP tools v1 asked before only from its
- * stamp, which v2 asks before only while the server still marks them destructive.
+ * stamp, which v2 asks before only while the server still marks them destructive. It also lists
+ * each app deployed again since the import, whose users may have changed its rules.
  *
  *   (default)  Dry run. Reads v1 and v2 directly, every statement in a read-only transaction over
  *              TLS on sessions that default to read-only, and writes nothing. Prints, per moved
@@ -82,6 +83,8 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
     const v2Read = reading(v2);
     const store = makeImportStore(v2);
     const find: typeof store.find = (kind, id) => v2Read(store.find(kind, id));
+    const deployedSince: typeof store.deployedSince = (organization) =>
+      v2Read(store.deployedSince(organization));
     const moved = (yield* v1Read(
       v1`select org_id from org_moved_to_v2 where state = 'moved' order by org_id`.pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Moved))),
@@ -127,7 +130,7 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
             openApiOperations: (tenant: string, integration: string) =>
               v1Read(readOpenApiOperations(tenant, integration)),
           };
-          const apps = yield* planStampedApps(snapshot, source, { find });
+          const apps = yield* planStampedApps(snapshot, source, { find, deployedSince });
           if (apps.length === 0) return out;
           out.push(`${organization} -> v2 ${target.id} (${target.slug})`);
           let live = 0;
@@ -149,8 +152,9 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
               app.unlisted === null
                 ? ""
                 : `; tools v1 did not list: left out ${app.unlisted.omitted.join(", ") || "none"}, always ${app.unlisted.always.join(", ") || "none"}${app.unlisted.otherwise === null ? "" : `, any other ${app.unlisted.otherwise === "always" ? "asks always" : "left out"}`}`;
+            const since = app.deployedSince ? " (deployed since the import)" : "";
             out.push(
-              `  app ${app.app} (${app.integration.name ?? app.integration.slug})${state}: always ${app.always.join(", ") || "none"}${unlisted}`,
+              `  app ${app.app} (${app.integration.name ?? app.integration.slug})${state}${since}: always ${app.always.join(", ") || "none"}${unlisted}`,
             );
           }
           if (live > 0) {

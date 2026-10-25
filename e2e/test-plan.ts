@@ -8441,7 +8441,7 @@ export const scenarios = plan({
   v1ImportRepair: {
     file: "cloud-v1-import.spec.ts",
     title:
-      "Cloud v1 import repairs an MCP app moved before v1's approval stamps became rules: it plans without writing, leaves an app edited since the import, deploys the earlier importer's app with the stamp as its own rule, and finds nothing left on a second run",
+      "Cloud v1 import repairs an MCP app moved before v1's approval stamps became rules: it plans without writing, deploys the earlier importer's app with the stamp as its own rule, gives an app an earlier import deployed the importer's source now, keeps the code of an app its users changed in v2 to stop asking and adds v1's approvals beneath it, and finds nothing left on a second run",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportRollback: {

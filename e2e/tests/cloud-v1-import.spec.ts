@@ -4173,6 +4173,28 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
             file.path === "tools.ts" ? { ...file, content: edit(file.content) } : file,
           );
 
+        const withIndex = (files: readonly SourceFile[], edit: (content: string) => string) =>
+          files.map((file) =>
+            file.path === "index.ts" ? { ...file, content: edit(file.content) } : file,
+          );
+        const asks = (tool: string) =>
+          callTool(tool).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                expect(result.status, `${tool} runs: ${JSON.stringify(result.body)}`).toBe(409);
+                expect(result.body).toMatchObject({ _tag: "ToolApprovalRequired" });
+              }),
+            ),
+          );
+        const runs = (tool: string) =>
+          callTool(tool).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() =>
+                expect(result.status, `${tool} asks: ${JSON.stringify(result.body)}`).toBe(200),
+              ),
+            ),
+          );
+
         // Make the app what an import before the fix left: no rule for the tool v1 stamped, so it
         // runs because the server no longer marks it destructive.
         const files = yield* deployed;
@@ -4181,32 +4203,26 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         );
         expect(earlier).not.toEqual(files);
         yield* deploy("Deploy the earlier importer's source", earlier);
-        expect((yield* callTool("unhinted")).status).toBe(200);
-
-        // An app edited since the import is reported and left alone, even when applying.
-        const edited = withTools(earlier, (content) => `${content}\n// Edited in v2.\n`);
-        yield* deploy("Edit the app in v2", edited);
-        for (const apply of [false, true]) {
-          const response = yield* operator.repair(own.organization, apply);
-          expect(response.status, JSON.stringify(response.body)).toBe(200);
-          expect(response.body).toMatchObject({
-            apps: [{ app, always: ["unhinted"], decision: "edited", files: ["tools.ts"] }],
-          });
-        }
-        expect(yield* deployed).toEqual(edited);
-        expect((yield* callTool("unhinted")).status).toBe(200);
+        yield* runs("unhinted");
 
         // Planning the earlier importer's app names the change and writes nothing.
-        yield* deploy("Deploy the earlier importer's source again", earlier);
         const planned = yield* operator.repair(own.organization, false);
         expect(planned.status, JSON.stringify(planned.body)).toBe(200);
         expect(planned.body).toMatchObject({
           status: "planned",
           applied: false,
-          apps: [{ app, always: ["unhinted"], decision: "deploy", files: ["tools.ts"] }],
+          apps: [
+            {
+              app,
+              always: ["unhinted"],
+              decision: "deploy",
+              source: "generated",
+              files: ["tools.ts"],
+            },
+          ],
         });
         expect(yield* deployed).toEqual(earlier);
-        expect((yield* callTool("unhinted")).status).toBe(200);
+        yield* runs("unhinted");
 
         // Applying deploys the app with v1's stamp as its rule: the import's own source again.
         const applied = yield* operator.repair(own.organization, true);
@@ -4217,10 +4233,119 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           apps: [{ app, decision: "deploy", files: ["tools.ts"] }],
         });
         expect(yield* deployed).toEqual(files);
-        const asked = yield* callTool("unhinted");
-        expect(asked.status, JSON.stringify(asked.body)).toBe(409);
-        expect(asked.body).toMatchObject({ _tag: "ToolApprovalRequired" });
-        expect((yield* callTool("safe")).status).toBe(200);
+        yield* asks("unhinted");
+        yield* runs("safe");
+
+        // An app an earlier importer wrote, whose files the importer no longer generates, is
+        // still the import's own: it gets the importer's source now.
+        const older = withIndex(earlier, (content) => `// An earlier importer.\n${content}`);
+        yield* deploy("Deploy an earlier importer's source", older);
+        yield* writeRows("sso-database.json", [
+          {
+            sql: "update private_v1_import_map set updated_at = now() where v1_kind = 'integration' and v2_id = $1",
+            params: [app ?? ""],
+          },
+        ]);
+        yield* runs("unhinted");
+        const regenerated = yield* operator.repair(own.organization, true);
+        expect(regenerated.body).toMatchObject({
+          apps: [
+            {
+              app,
+              decision: "deploy",
+              source: "generated",
+              files: ["index.ts", "tools.ts"],
+            },
+          ],
+        });
+        expect(yield* deployed).toEqual(files);
+        yield* asks("unhinted");
+
+        // An app its users changed in v2 keeps their code, and gets v1's approvals beneath it:
+        // here they turned every approval off.
+        const relaxed = withIndex(files, (content) =>
+          content
+            .replace(
+              'import { always } from "apps/operations/approval"',
+              'import { always, never } from "apps/operations/approval"',
+            )
+            .replace(
+              "(tool, name) => approval(name) ?? (toolAnnotations(tool)?.destructiveHint === true ? always() : undefined)",
+              "() => never()",
+            ),
+        );
+        expect(relaxed.find((file) => file.path === "index.ts")?.content).toContain(
+          "() => never()",
+        );
+        expect(relaxed).not.toEqual(files);
+        yield* deploy("Turn every approval off in v2", relaxed);
+        for (const tool of ["unhinted", "erase", "safe"]) yield* runs(tool);
+        const plannedEdit = yield* operator.repair(own.organization, false);
+        expect(plannedEdit.body).toMatchObject({
+          apps: [
+            {
+              app,
+              always: ["unhinted"],
+              decision: "deploy",
+              source: "edited",
+              files: ["index.ts", "v1-approvals.ts"],
+            },
+          ],
+        });
+        expect(yield* deployed).toEqual(relaxed);
+        const merged = yield* operator.repair(own.organization, true);
+        expect(merged.body).toMatchObject({
+          status: "repaired",
+          apps: [{ app, decision: "deploy", source: "edited" }],
+        });
+        const after = yield* deployed;
+        const index = after.find((file) => file.path === "index.ts");
+        expect(index?.content).toContain('import { withApprovals } from "./v1-approvals.ts"');
+        expect(index?.content).toContain("() => never()");
+        expect(
+          after.filter((file) => file.path !== "index.ts" && file.path !== "v1-approvals.ts"),
+        ).toEqual(relaxed.filter((file) => file.path !== "index.ts"));
+        // v1 asked before the tool it stamped, and would have stamped the destructive tool it
+        // never listed; the tool it ran without asking still runs as the users chose.
+        yield* asks("unhinted");
+        yield* asks("erase");
+        yield* runs("safe");
+        const unchanged = yield* operator.repair(own.organization, false);
+        expect(unchanged.body).toMatchObject({
+          apps: [{ app, decision: "unchanged", source: "edited", files: [] }],
+        });
+
+        // Code that sets no approvals of its own gets v1's over every tool it defines.
+        const bare = withIndex(files, (content) =>
+          content
+            .replace("withApprovals(renameTools(", "renameTools(")
+            .replace(
+              ", (tool, name) => approval(name) ?? (toolAnnotations(tool)?.destructiveHint === true ? always() : undefined))",
+              "",
+            ),
+        );
+        expect(bare.find((file) => file.path === "index.ts")?.content).not.toContain(
+          "withApprovals(",
+        );
+        yield* deploy("Drop the app's approvals in v2", bare);
+        for (const tool of ["unhinted", "erase", "safe"]) yield* runs(tool);
+        const covered = yield* operator.repair(own.organization, true);
+        expect(covered.body).toMatchObject({
+          apps: [
+            {
+              app,
+              decision: "deploy",
+              source: "edited",
+              files: ["index.ts", "v1-approvals.ts"],
+            },
+          ],
+        });
+        expect((yield* deployed).find((file) => file.path === "index.ts")?.content).toContain(
+          'import { defineApp } from "./v1-approvals.ts"',
+        );
+        yield* asks("unhinted");
+        yield* asks("erase");
+        yield* runs("safe");
 
         // A second repair finds nothing left to change.
         const again = yield* operator.repair(own.organization, false);

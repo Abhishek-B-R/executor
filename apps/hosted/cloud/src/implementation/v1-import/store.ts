@@ -61,6 +61,7 @@ const Target = Schema.Struct({
 });
 const Owned = Schema.Array(Target);
 const Since = Schema.Array(Schema.Struct({ removed: Schema.Boolean, changed: Schema.Boolean }));
+const Ids = Schema.Array(Schema.Struct({ id: Schema.String }));
 
 /** SHA-256 of the v1 rows an item was imported from, to skip it while they stay unchanged. */
 export const sourceHash = (value: unknown) =>
@@ -149,6 +150,40 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
       ),
       unavailable,
     );
+  /**
+   * The versions of an integration's app that the import deployed itself, oldest first: those
+   * made before its map row was last written, since the import records an app after deploying it.
+   */
+  const importedVersions = (integration: string) =>
+    sql`
+      select d.id from private_v1_import_map m
+      join executor_apps a on a.id = m.v2_id
+      join executor_deployments d on d.code = a.code
+      where m.v1_kind = 'integration' and m.v1_id = ${integration}
+        and d.created_at <= (m.updated_at at time zone 'UTC')
+      order by d.created_at, d.id
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Ids)),
+      Effect.map((found) => found.map((row) => row.id)),
+      unavailable,
+    );
+  /**
+   * The integrations of an organization whose imported app runs a version deployed after the
+   * import recorded it: by its users, or by a repair.
+   */
+  const deployedSince = (organization: string) =>
+    sql`
+      select m.v1_id as id from private_v1_import_map m
+      join executor_apps a on a.id = m.v2_id
+      join executor_deployments d on d.id = a.active_deployment
+      where m.v1_org_id = ${organization} and m.v1_kind = 'integration' and m.status = 'imported'
+        and d.created_at > (m.updated_at at time zone 'UTC')
+      order by m.v1_id
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Ids)),
+      Effect.map((found) => new Set(found.map((row) => row.id))),
+      unavailable,
+    );
   const target = (id: string) =>
     sql`select id, name, slug from organization where id = ${id}`.pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Owned)),
@@ -185,6 +220,15 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
       }
       return undefined;
     }).pipe(unavailable);
-  return { rows, find, record, sinceImported, target, createOrganization };
+  return {
+    rows,
+    find,
+    record,
+    sinceImported,
+    importedVersions,
+    deployedSince,
+    target,
+    createOrganization,
+  };
 };
 export type ImportStore = ReturnType<typeof makeImportStore>;

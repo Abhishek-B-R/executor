@@ -603,6 +603,36 @@ const ruleNames = (snapshot: V1Snapshot, integration: Pick<IntegrationRow, "slug
 };
 
 /**
+ * v1's result for each name `v1ToolRules` decides, and, on a server that lists tools as it runs
+ * (no `exposed`), the result v1's rules give a name none of them spells out (`unnamed`).
+ */
+export const v1ToolDecisions = (
+  snapshot: V1Snapshot,
+  integration: IntegrationRow,
+  tools: readonly ToolRow[],
+  aliases: Readonly<Record<string, string>> = {},
+  exposed?: readonly string[],
+) => {
+  const listed = toolActions(snapshot, integration, tools, aliases);
+  const unlisted = new Set(
+    [...ruleNames(snapshot, integration), ...(exposed ?? [])].filter(
+      (name) => !listed.has(name) && !Object.hasOwn(aliases, name),
+    ),
+  );
+  const actions: ReadonlyMap<string, PolicyAction | "default"> = new Map([
+    ...listed,
+    ...toolActions(snapshot, integration, unlistedRows(snapshot, integration, unlisted)),
+  ]);
+  const unnamed =
+    exposed === undefined
+      ? toolActions(snapshot, integration, unlistedRows(snapshot, integration, [unlistedName])).get(
+          unlistedName,
+        )
+      : undefined;
+  return { actions, unnamed };
+};
+
+/**
  * The app's rules from v1's policies: each tool v1 listed (`toolActions`), each tool a rule names
  * that v1 did not list, such as one the server stopped listing, and each name in `exposed`. v1
  * decided a tool it listed later by the same rules, so none of these runs with less than v1 gave
@@ -617,23 +647,9 @@ export const v1ToolRules = (
   aliases: Readonly<Record<string, string>> = {},
   exposed?: readonly string[],
 ): Pick<GeneratedToolRules, "approvals" | "omitted" | "otherwise"> => {
-  const listed = toolActions(snapshot, integration, tools, aliases);
-  const unlisted = new Set(
-    [...ruleNames(snapshot, integration), ...(exposed ?? [])].filter(
-      (name) => !listed.has(name) && !Object.hasOwn(aliases, name),
-    ),
-  );
-  const actions = new Map([
-    ...listed,
-    ...toolActions(snapshot, integration, unlistedRows(snapshot, integration, unlisted)),
-  ]);
+  const { actions, unnamed } = v1ToolDecisions(snapshot, integration, tools, aliases, exposed);
   const rules = approvalRules(actions);
   if (exposed !== undefined) return rules;
-  const unnamed = toolActions(
-    snapshot,
-    integration,
-    unlistedRows(snapshot, integration, [unlistedName]),
-  ).get(unlistedName);
   const rule =
     unnamed === "block" ? "omitted" : unnamed === "require_approval" ? "always" : undefined;
   return rule === undefined
