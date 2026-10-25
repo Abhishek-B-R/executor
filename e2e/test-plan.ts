@@ -8057,6 +8057,23 @@ export const scenarios = plan({
       "Cloud onboarding experiment serves accounts first without an exposure when its flag is unavailable",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  onboardingRequiredAccountsFirst: {
+    file: "cloud-onboarding-skip-experiment.spec.ts",
+    title:
+      "Cloud onboarding skip experiment required keeps accounts_first setup until both steps are done",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  onboardingRequiredAssistantFirst: {
+    file: "cloud-onboarding-skip-experiment.spec.ts",
+    title:
+      "Cloud onboarding skip experiment required keeps assistant_first setup until both steps are done",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  onboardingSkippable: {
+    file: "cloud-onboarding-skip-experiment.spec.ts",
+    title: "Cloud onboarding skip experiment skippable still skips both steps to the dashboard",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   // The v1 check reads the emulated v1 database only a managed local Cloud has, and its
   // scenarios write that database; deployed stages leave the check off.
   v1SignInStop: {

@@ -212,6 +212,25 @@ export const migrateSetupAssignments = Effect.gen(function* () {
   )`;
 }).pipe(Effect.mapError(migrationFailed("product")));
 
+/**
+ * The onboarding skip experiment's assignments (`notes/posthog.md#onboarding-skip-experiment`): one
+ * row per member who created their first team through team setup and was assigned a variant, when
+ * they first saw it, and when a `required` member finished both setup steps. Kept apart from
+ * `cloud_setup_assignment` because each flag can be unavailable on its own. Additive: the running
+ * server never reads it. Drop it in a later release once the experiment is retired.
+ */
+export const migrateSetupSkipAssignments = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists cloud_setup_skip_assignment (
+    user_id text primary key,
+    organization_id text not null,
+    variant text not null check (variant in ('skippable', 'required')),
+    assigned_at timestamptz not null default now(),
+    exposed_at timestamptz,
+    completed_at timestamptz
+  )`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
 /** Apply Better Auth and product migrations, then close both database pools. */
 export const migrateCloudDatabase = Effect.scoped(
   Effect.gen(function* () {
@@ -236,6 +255,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "7_v1_import_orgs": migrateV1ImportOrgs,
         "8_v1_session_handoffs": migrateV1SessionHandoffs,
         "9_v1_import_allowed": migrateV1ImportAllowed,
+        "10_setup_skip_assignments": migrateSetupSkipAssignments,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(
