@@ -106,7 +106,8 @@ arguments or source, and never search their files for tokens. The Executor app
   it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
-  `accounts.oauthSetup` lists the scopes it will request; tell the user.
+  `accounts.oauthSetup` lists the scopes it will request and the resource
+  indicator it will send; tell the user.
 
 Search for these tools and read their input types first; the connect tools
 require `body`, so pass `body: {}` when it has nothing. Give the user the

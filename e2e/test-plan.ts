@@ -4548,6 +4548,63 @@ export const scenarios = plan({
       local: na("Exercises shared OAuth registration through the hosted API."),
     },
   },
+  oauthResourceRefused: {
+    fixtures: "actors",
+    file: "oauth-resource-indicator.spec.ts",
+    title:
+      "OAuth setup reports the resource indicator it will send, and a refused one fails sign-in naming that value and its source",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth discovery and exchange through the hosted API."),
+    },
+  },
+  oauthResourceAudience: {
+    fixtures: "actors",
+    file: "oauth-resource-indicator.spec.ts",
+    title:
+      "A token issued for the metadata's resource and refused by the API is renewed with the same resource, and a declared resource fixes it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth discovery, exchange and renewal through the hosted API."),
+    },
+  },
+  oauthResourceOmitted: {
+    fixtures: "actors",
+    file: "oauth-resource-indicator.spec.ts",
+    title:
+      "OAuth setup and a refused sign-in say why no resource indicator was sent, and the app's settings can change it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses scoped loopback OAuth issuers."),
+      local: na("Exercises shared OAuth discovery and exchange through the hosted API."),
+    },
+  },
+  oauthResourceOperator: {
+    fixtures: "actors",
+    file: "oauth-resource-indicator.spec.ts",
+    title:
+      "A refused resource indicator from the operator's OAuth client, or its absence, sends recovery to the instance administrator",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  oauthResourceTransient: {
+    fixtures: "actors",
+    file: "oauth-resource-indicator.spec.ts",
+    title:
+      "A rate-limited or unavailable token endpoint that answers invalid_target keeps its own failure and Retry-After",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth exchange through the hosted API."),
+    },
+  },
   oauthAhrefs: {
     fixtures: "actors",
     file: "oauth-interop.spec.ts",

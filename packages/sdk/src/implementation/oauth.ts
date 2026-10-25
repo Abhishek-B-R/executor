@@ -42,6 +42,8 @@ import {
   type OAuthClientSetup,
   OAuthCompletionFailed,
   type OAuthCompletionReason,
+  OAuthResourceIndicator,
+  type OAuthResourceSource,
   OAuthAttempt,
   OAuthAttemptId,
   OAuthAttemptRecord,
@@ -479,8 +481,43 @@ const clientCredentialsFailed = (error: OAuthProtocolFailed) => {
   });
 };
 
+/**
+ * The resource indicator a sign-in sent and where it came from, or why it sent none. Undefined for
+ * an attempt started before its source was kept, which leaves a refusal unnamed.
+ */
+const sentResource = (
+  value: typeof HttpUrl.Type | undefined,
+  source: OAuthResourceSource | undefined,
+): OAuthResourceIndicator | undefined => {
+  if (source === undefined) return undefined;
+  const indicator = { value: value ?? null, source };
+  return Schema.is(OAuthResourceIndicator)(indicator) ? indicator : undefined;
+};
+
+/**
+ * RFC 8707 §2: the service refused the resource indicator the sign-in sent, or its absence. Only
+ * a refusal is: a 429 or an outage answered with `invalid_target` keeps its own classification and
+ * Retry-After.
+ */
+const resourceRefused = (
+  stage: "authorize" | "exchange",
+  error: OAuthProtocolFailed,
+  sent: OAuthResourceIndicator | undefined,
+) =>
+  error.diagnostics?.providerCode === "invalid_target" && sent !== undefined
+    ? new OAuthCompletionFailed({
+        cause: causeOf(stage, error),
+        ...serviceErrorOf(error),
+        reason: "resource_rejected",
+        resource: sent,
+      })
+    : undefined;
+
 /** A failed token exchange. Callback validation runs first, so every failure here reached the token endpoint or failed before sending. */
-const exchangeFailed = (error: OAuthProtocolFailed) => {
+const exchangeFailed = (error: OAuthProtocolFailed, sent: OAuthResourceIndicator | undefined) => {
+  const refused =
+    outcome(error) === "rejected" ? resourceRefused("exchange", error, sent) : undefined;
+  if (refused !== undefined) return refused;
   const reason =
     error.reason === "invalid_client" || error.reason === "unsupported"
       ? error.reason
@@ -532,7 +569,10 @@ const secretMethod = (supported: readonly string[] | undefined) =>
  * A failed authorization response: its RFC 9207 issuer, then an RFC 6749 §4.1.2.1 error code.
  * Codes outside the recorded vocabulary are still authorization errors, never a cancellation.
  */
-const callbackFailed = (error: OAuthProtocolFailed) =>
+const callbackFailed = (error: OAuthProtocolFailed, sent: OAuthResourceIndicator | undefined) =>
+  (error.code === "OAUTH_AUTHORIZATION_RESPONSE_ERROR"
+    ? resourceRefused("authorize", error, sent)
+    : undefined) ??
   new OAuthCompletionFailed({
     cause: causeOf("authorize", error),
     ...serviceErrorOf(error),
@@ -1109,12 +1149,20 @@ export const makeOAuth = (
         existing === undefined && firstParty === undefined && registration === "manual"
           ? ("client-required" as const)
           : ("automatic" as const);
+      const resource =
+        firstParty !== undefined
+          ? sentResource(firstParty.client.server.resource, "operator")
+          : sentResource(discovered.resource, discovered.resourceSource);
+      // Discovery records a source with every resource it chooses, or with its absence.
+      if (resource === undefined)
+        return yield* Effect.die(new Error("OAuth discovery recorded no resource source"));
       if (method.grant === "client_credentials")
         return {
           mode,
           scopes: discovered.scopes,
           grant: method.grant,
           tokenEndpointAuthMethod: method.tokenEndpointAuthMethod,
+          resource,
         } satisfies OAuthClientSetup;
       const operator =
         firstParty === undefined ? {} : { firstParty: { label: firstParty.client.label } };
@@ -1139,6 +1187,7 @@ export const makeOAuth = (
           ? {}
           : { tokenEndpointAuthMethod: discovered.tokenEndpointAuthMethod }),
         ...(user.length === 0 ? {} : { userScopes: user }),
+        resource,
       } satisfies OAuthClientSetup;
     }).pipe(Effect.withSpan("oauth.setup"));
 
@@ -2025,11 +2074,15 @@ export const makeOAuth = (
       const holding = holder?.kind === "held" ? holder.row : undefined;
       if (holding !== undefined && !(yield* clientAuthorized(holding)))
         return yield* failed("client_unavailable");
+      const sent = sentResource(
+        operating.resource,
+        isFirstPartyAttempt(attempt) ? "operator" : attempt.resourceSource,
+      );
       const parameters = yield* protocol
         .callback(operating, callback)
-        .pipe(Effect.mapError(callbackFailed));
+        .pipe(Effect.mapError((error) => callbackFailed(error, sent)));
       const tokens = yield* protocol.exchange(operating, parameters).pipe(
-        Effect.mapError(exchangeFailed),
+        Effect.mapError((error) => exchangeFailed(error, sent)),
         Effect.catchIf(
           (error) => error.reason === "invalid_client" && storedRef?.source === "registered",
           (error) =>
