@@ -16,7 +16,12 @@ import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { Onboarding } from "../support/onboarding.ts";
-import { allowV1Import, v1ImportOperator, v1RunId } from "../support/v1-import.ts";
+import {
+  allowV1Import,
+  listV1SlugDisplacement,
+  v1ImportOperator,
+  v1RunId,
+} from "../support/v1-import.ts";
 import { scenarios } from "../test-plan.ts";
 
 const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
@@ -905,6 +910,186 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         expect(yield* emulators.autumnStripeSubscriptions(workspace.organization)).toEqual([
           v1.stripeSubscription,
         ]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportSlugDisplacement.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          onboarding = yield* Onboarding,
+          browser = yield* Browser;
+        const operator = yield* v1ImportOperator;
+        // Someone else's v2 team, with its Executor app, holds the slug a v1 workspace has.
+        yield* onboarding.socialSignIn("google");
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+        const slug = team.slug;
+        const SlugRow = Schema.Struct({ slug: Schema.String });
+        const slugOf = (organization: string) =>
+          cloudRows(SlugRow, "select slug from organization where id = $1", organization).pipe(
+            Effect.map((rows) => rows[0]?.slug),
+          );
+        const MemberRow = Schema.Struct({ userId: Schema.String, role: Schema.String });
+        const membersOf = (organization: string) =>
+          cloudRows(
+            MemberRow,
+            `select "userId", role from member where "organizationId" = $1 order by "userId"`,
+            organization,
+          );
+        const teamMembers = yield* membersOf(team.id);
+        const domainJobs = (organization: string) =>
+          cloudRows(
+            Schema.Struct({ jobs: Schema.Number }),
+            "select count(*)::int as jobs from hosted_provisioning where kind = 'domain' and organization_id = $1",
+            organization,
+          ).pipe(Effect.map((rows) => rows[0]?.jobs ?? 0));
+        const jobsBefore = yield* domainJobs(team.id);
+        const workspace = (label: string, workspaceSlug: string) =>
+          Effect.gen(function* () {
+            const created = yield* emulators.v1Workspace([
+              `${label}-${randomUUID().slice(0, 8)}@example.test`,
+            ]);
+            yield* writeRows("v1-database.json", [
+              row(
+                "insert into organizations (id, name, slug) values ($1, $2, $3)",
+                created.organization,
+                `Synthetic ${label} workspace`,
+                workspaceSlug,
+              ),
+            ]);
+            yield* allowV1Import(created.organization);
+            return created.organization;
+          });
+        const listed = yield* workspace("listed", slug);
+        yield* listV1SlugDisplacement(listed, team.id);
+        // Listed, but the team does not hold this workspace's slug.
+        const freeSlug = `v1-${randomUUID().slice(0, 8)}`;
+        const mislisted = yield* workspace("mislisted", freeSlug);
+        yield* listV1SlugDisplacement(mislisted, team.id);
+        // Another v2 organization holds this one's slug, and nobody listed it.
+        const heldSlug = `v1-${randomUUID().slice(0, 8)}`;
+        const holder = randomUUID();
+        yield* writeRows("sso-database.json", [
+          row(
+            `insert into organization (id, name, slug, "createdAt") values ($1, 'Synthetic holder', $2, now())`,
+            holder,
+            heldSlug,
+          ),
+        ]);
+        const unlisted = yield* workspace("unlisted", heldSlug);
+
+        const dry = v1RunId("displace-dry");
+        expect(
+          (yield* operator.start({
+            mode: "dry-run",
+            runId: dry,
+            organizations: [listed, mislisted, unlisted],
+          })).status,
+        ).toBe(200);
+        const planned = yield* operator.waitForReport(dry, listed);
+        expect(planned.status, planned.reason ?? "").toBe("planned");
+        const renamedTo = planned.slug?.displaced?.slug;
+        if (renamedTo === undefined || renamedTo === null)
+          return yield* Effect.die(
+            `The dry run planned no rename: ${JSON.stringify(planned.slug)}`,
+          );
+        // The team's new slug is its own slug with a suffix; the workspace keeps the slug as it is.
+        expect(renamedTo).toMatch(/^[a-z0-9-]+-[0-9a-f]{6}$/u);
+        expect(slug.startsWith(renamedTo.slice(0, -7))).toBe(true);
+        expect(planned.slug).toEqual({
+          v1: slug,
+          v2: slug,
+          changed: false,
+          displaced: { organization: team.id, slug: renamedTo },
+        });
+        expect((yield* operator.waitForReport(dry, mislisted)).slug).toEqual({
+          v1: freeSlug,
+          v2: freeSlug,
+          changed: false,
+          displaced: {
+            organization: team.id,
+            slug: null,
+            reason: `The listed v2 organization does not hold ${freeSlug}, which is free.`,
+          },
+        });
+        const unlistedPlan = yield* operator.waitForReport(dry, unlisted);
+        expect(unlistedPlan.slug?.changed).toBe(true);
+        expect(unlistedPlan.slug?.displaced).toBeUndefined();
+        expect(unlistedPlan.slug?.v2).toMatch(new RegExp(`^${heldSlug}-[0-9a-f]{6}$`, "u"));
+        // A dry run renames nothing.
+        expect(yield* slugOf(team.id)).toBe(slug);
+
+        const run = v1RunId("displace");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [listed, unlisted],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        const report = yield* operator.waitForReport(run, listed);
+        expect(report.status, report.reason ?? "").toBe("imported");
+        expect(report.cutover).toBe(true);
+        const target = report.v2Organization;
+        if (target === undefined) return yield* Effect.die("The import named no organization");
+        expect(target.slug).toBe(slug);
+        expect(report.slug).toEqual({
+          v1: slug,
+          v2: slug,
+          changed: false,
+          displaced: { organization: team.id, slug: renamedTo },
+        });
+        expect(yield* movedFlag(listed)).toEqual([
+          { state: "moved", v2_org_id: target.id, v2_org_slug: slug },
+        ]);
+        // The team is renamed as a rename in its settings is: its app domain is queued again.
+        expect(yield* slugOf(team.id)).toBe(renamedTo);
+        expect(yield* membersOf(team.id)).toEqual(teamMembers);
+        expect(yield* domainJobs(team.id)).toBeGreaterThan(jobsBefore);
+        expect(
+          yield* cloudRows(
+            Schema.Struct({ reason: Schema.NullOr(Schema.String) }),
+            "select reason from private_v1_import_map where v1_kind = 'organization' and v1_id = $1",
+            listed,
+          ),
+        ).toEqual([
+          {
+            reason: `Renamed v2 organization ${team.id} from ${slug} to ${renamedTo} to take its slug.`,
+          },
+        ]);
+
+        // The team's member keeps the team and its apps at the new slug; the old one is the
+        // workspace's now, which they are not a member of.
+        expect(
+          (yield* call(
+            "Read the team at its new slug",
+            `/api/organizations/${renamedTo}/inventory`,
+          )).status,
+        ).toBe(200);
+        expect(
+          (yield* call("Read the team by its id", `/api/organizations/${team.id}/inventory`))
+            .status,
+        ).toBe(200);
+        expect(
+          (yield* call("The old slug names the workspace", `/api/organizations/${slug}/inventory`))
+            .status,
+        ).toBe(403);
+        expect(yield* onboarding.organizations).toEqual([{ ...team, slug: renamedTo }]);
+        yield* browser.use("Open the team's apps at its new slug", (page) =>
+          page.goto(`/org/${renamedTo}/apps`),
+        );
+        yield* browser.use("The team's Executor app is still there", (page) =>
+          page
+            .getByRole("link", { name: "Open Executor", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+
+        // Without a listing, the holder keeps its slug and the workspace takes its suffix.
+        const suffixed = yield* operator.waitForReport(run, unlisted);
+        expect(suffixed.status, suffixed.reason ?? "").toBe("imported");
+        expect(suffixed.v2Organization?.slug).toBe(unlistedPlan.slug?.v2);
+        expect(yield* slugOf(holder)).toBe(heldSlug);
       }).pipe(Effect.provide(services)),
     ),
   );

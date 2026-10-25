@@ -8555,6 +8555,12 @@ export const scenarios = plan({
       "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportSlugDisplacement: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import gives a v1 workspace the slug a v2 team holds only when the operator listed that team in its allow table row: the dry run plans the team's new slug and writes nothing, the import renames the team and creates the workspace at the slug in one transaction, the team's member keeps it and its apps at the new slug while the old slug names the workspace, a listed team that does not hold the slug is reported and left alone, and an unlisted holder keeps its slug while the workspace takes a suffix",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportAllowed: {
     file: "cloud-v1-import-run.spec.ts",
     title:

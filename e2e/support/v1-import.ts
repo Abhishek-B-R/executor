@@ -47,7 +47,18 @@ export const V1Report = Schema.Struct({
   emailMatches: Schema.Array(Schema.Struct({ email: Schema.String, match: Schema.String })),
   skippedMembers: Schema.Array(Schema.Struct({ user: Schema.String, reason: Schema.String })),
   slug: Schema.NullOr(
-    Schema.Struct({ v1: Schema.String, v2: Schema.NullOr(Schema.String), changed: Schema.Boolean }),
+    Schema.Struct({
+      v1: Schema.String,
+      v2: Schema.NullOr(Schema.String),
+      changed: Schema.Boolean,
+      displaced: Schema.optionalKey(
+        Schema.Struct({
+          organization: Schema.String,
+          slug: Schema.NullOr(Schema.String),
+          reason: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    }),
   ),
   integrationFailures: Schema.Array(
     Schema.Struct({ id: Schema.String, label: Schema.String, error: Schema.String }),
@@ -198,6 +209,18 @@ export const allowV1Import = (...organizations: readonly string[]) =>
       params: [organization],
     })),
   ).pipe(Effect.asVoid);
+
+/**
+ * List the v2 organization an import of this v1 organization may rename to take its slug, as a
+ * person with database access does: the allow table row's `displace_v2_org_id`.
+ */
+export const listV1SlugDisplacement = (organization: string, holder: string) =>
+  writeRows("sso-database.json", [
+    {
+      sql: "update private_v1_import_allowed set displace_v2_org_id = $2 where v1_org_id = $1",
+      params: [organization, holder],
+    },
+  ]).pipe(Effect.asVoid);
 
 /** A run id no other scenario uses. */
 export const v1RunId = (prefix: string) => `${prefix}-${randomUUID().slice(0, 8)}`;

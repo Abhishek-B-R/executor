@@ -29,6 +29,7 @@ import {
   Schema,
   type Scope,
 } from "effect";
+import type { SqlClient } from "effect/sql";
 import { billingCustomerId, freeMembers } from "../../contracts/billing-catalog.ts";
 import { V1ImportDatabase, V1ImportUnavailable } from "../../contracts/v1-import.ts";
 import {
@@ -53,9 +54,12 @@ import {
   importOrganization,
   importUser,
   matchUser,
+  plannedDisplacement,
   plannedSlug,
   slugBase,
   slugCandidates,
+  type Displacement,
+  type DisplacementRefused,
   type UserMatch,
 } from "./identity.ts";
 import {
@@ -123,7 +127,7 @@ import {
 } from "./billing.ts";
 import { makeImportStore, sourceHash, type MapKind, type MapResult } from "./store.ts";
 import { V1MovedState } from "./moved-flag.ts";
-import { importRefusal, movedFlag, type V1ImportWrites } from "./writes.ts";
+import { importRefusal, listedDisplacement, movedFlag, type V1ImportWrites } from "./writes.ts";
 
 /** The note on an imported policy that matches none of the tools v1 last listed. */
 export const noToolMatches = "It matches no tool v1 last listed for its integration.";
@@ -416,15 +420,71 @@ const openStep = <T extends V1SnapshotTable>(
 /**
  * The v2 slugs the organization tries (`slugCandidates`). Its unsuffixed slug is left to another
  * live v1 organization whose slug is exactly that: one whose own slug differs from it, or the
- * older of two that both have it.
+ * older of two that both have it. A v2 organization the operator listed to give up the unsuffixed
+ * slug (`listedDisplacement`) is renamed when it holds it (`plannedDisplacement`).
  */
 const slugPlan = (source: V1Source, organization: string, slug: string) =>
   Effect.gen(function* () {
+    // Typed here: a ternary of object literals would widen each with the other's keys.
+    let displacement: Displacement | DisplacementRefused | undefined;
     const environment = yield* V1ImportEnvironment;
+    const sql = yield* Effect.flatten(V1ImportDatabase);
+    const key = yield* environment.slugKey;
     const base = slugBase(slug);
     const holders = yield* source.slugHolders(organization, base);
     const reserved = holders.some((holder) => slug !== base || holder < organization);
-    return yield* slugCandidates(yield* environment.slugKey, organization, slug, reserved);
+    const candidates = yield* slugCandidates(key, organization, slug, reserved);
+    const holder = yield* listedDisplacement(organization);
+    if (holder !== undefined)
+      displacement = reserved
+        ? {
+            kind: "refused",
+            holder,
+            refused: `Another v1 organization has ${base} exactly and takes it when it moves.`,
+          }
+        : yield* plannedDisplacement(
+            sql,
+            key,
+            (to) => Effect.map(source.slugHolders(organization, to), (found) => found.length > 0),
+            holder,
+            base,
+          );
+    return { candidates, displacement };
+  });
+
+/**
+ * The slug the report plans: the unsuffixed slug and the holder's new one when a listed
+ * displacement applies, otherwise the first free candidate and, for a listed one, why it does not.
+ */
+const plannedSlugReport = (
+  sql: SqlClient.SqlClient,
+  plan: Effect.Success<ReturnType<typeof slugPlan>>,
+  slug: string,
+): Effect.Effect<NonNullable<V1OrgReport["slug"]>, V1ImportUnavailable> =>
+  Effect.gen(function* () {
+    const displacement = plan.displacement;
+    if (displacement?.kind === "rename")
+      return {
+        v1: slug,
+        v2: displacement.from,
+        changed: displacement.from !== slug,
+        displaced: { organization: displacement.holder, slug: displacement.to },
+      } satisfies V1OrgReport["slug"];
+    const planned = yield* plannedSlug(sql, plan.candidates, slug);
+    return {
+      v1: slug,
+      v2: planned.slug,
+      changed: planned.changed,
+      ...(displacement === undefined
+        ? {}
+        : {
+            displaced: {
+              organization: displacement.holder,
+              slug: null,
+              reason: displacement.refused,
+            },
+          }),
+    } satisfies V1OrgReport["slug"];
   });
 
 /**
@@ -562,14 +622,18 @@ const assess = (params: V1ImportParams) =>
       recorded?.status === "imported" && recorded.v2_id !== null
         ? yield* store.target(recorded.v2_id)
         : undefined;
-    const slug =
+    const slug: V1OrgReport["slug"] =
       copy === undefined
-        ? yield* plannedSlug(
+        ? yield* plannedSlugReport(
             sql,
             yield* slugPlan(source, organization, snapshot.organization.slug),
             snapshot.organization.slug,
           )
-        : { slug: copy.slug, changed: copy.slug !== snapshot.organization.slug };
+        : {
+            v1: snapshot.organization.slug,
+            v2: copy.slug,
+            changed: copy.slug !== snapshot.organization.slug,
+          };
     const carry =
       billing.kind === "paid" ? yield* assessCarryOver(source, organization, copy?.id) : null;
     const held =
@@ -596,7 +660,7 @@ const assess = (params: V1ImportParams) =>
       emailMatches: matches.flatMap(({ user, match }) =>
         match.kind === "create" ? [] : [{ user, match: match.kind }],
       ),
-      slug: { v1: snapshot.organization.slug, v2: slug.slug, changed: slug.changed },
+      slug,
       v1Counts: {
         ...base.v1Counts,
         importedMembers: members.length,
@@ -1174,6 +1238,11 @@ const dryArtifacts = (assessment: Assessment, organization: string) =>
 
 interface Identity {
   readonly target: { readonly id: string; readonly slug: string };
+  /**
+   * The slug the organization took, and what became of a listed displacement. Absent from the
+   * identity steps recorded before displacements, whose report keeps the assessment's slug.
+   */
+  readonly slug?: V1OrgReport["slug"];
   readonly owner: string;
   /** WorkOS user id to v2 user id, for every imported member. */
   readonly users: ReadonlyArray<readonly [string, string]>;
@@ -1209,12 +1278,14 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
     }
     const ownerUser = users[0]?.[1];
     if (ownerUser === undefined) return yield* new V1ImportUnavailable();
-    const target = yield* importOrganization(sql, store, {
+    const plan = yield* slugPlan(source, organization, assessment.organization.slug);
+    const { target, displaced } = yield* importOrganization(sql, store, {
       organization,
       owner: ownerUser,
       name: assessment.organization.name,
       slug: assessment.organization.slug,
-      candidates: yield* slugPlan(source, organization, assessment.organization.slug),
+      candidates: plan.candidates,
+      displacement: plan.displacement,
       billingHold:
         assessment.carryOver === null || assessment.carryOver.subscription === null
           ? null
@@ -1227,6 +1298,12 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
     }
     return {
       target: { id: target.id, slug: target.slug },
+      slug: {
+        v1: assessment.organization.slug,
+        v2: target.slug,
+        changed: target.slug !== assessment.organization.slug,
+        ...(displaced === undefined ? {} : { displaced }),
+      },
       owner: ownerUser,
       users,
     } satisfies Identity;
@@ -2656,7 +2733,8 @@ export const runV1Import = <S>(
         Effect.catchTag("V1ImportStepFailed", () => Effect.succeed(false)),
       ));
     return yield* finish(
-      assessment,
+      // The slug the organization took, which a displacement that no longer applied changes.
+      identity.slug === undefined ? assessment : { ...assessment, slug: identity.slug },
       outcomes,
       {
         problems: problems.length === 0 && !cutOver ? [notCutOver] : problems,

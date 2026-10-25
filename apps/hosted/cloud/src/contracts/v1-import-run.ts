@@ -114,6 +114,17 @@ const Slug = Schema.Struct({
   v1: Schema.String,
   v2: Schema.NullOr(Schema.String),
   changed: Schema.Boolean,
+  /**
+   * The v2 organization the operator listed to give up the slug (`notes/v1-import.md`, "Slug
+   * displacement"), and its new slug; null, with why, when the displacement does not apply.
+   */
+  displaced: Schema.optionalKey(
+    Schema.Struct({
+      organization: Schema.String,
+      slug: Schema.NullOr(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+    }),
+  ),
 });
 const IntegrationFailure = Schema.Struct({
   id: Schema.String,

@@ -216,6 +216,17 @@ export const migrateV1ImportBilling = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The v2 organization an import of the row's v1 organization may rename to take its slug
+ * (`notes/v1-import.md`, "Slug displacement"), written by direct SQL like the rest of the table.
+ * Additive and nullable, without a default, so adding it rewrites nothing; the running server
+ * reads only `v1_org_id`.
+ */
+export const migrateV1ImportDisplacement = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists displace_v2_org_id text`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -277,6 +288,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "9_v1_import_allowed": migrateV1ImportAllowed,
         "10_setup_skip_assignments": migrateSetupSkipAssignments,
         "11_v1_import_billing": migrateV1ImportBilling,
+        "12_v1_import_displacement": migrateV1ImportDisplacement,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

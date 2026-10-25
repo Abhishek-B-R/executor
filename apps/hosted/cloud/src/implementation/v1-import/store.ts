@@ -283,6 +283,25 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
       values (${organization}, ${hold.v1Organization}, 'held', ${hold.subscription}::jsonb)
       on conflict (organization_id) do nothing
     `.pipe(Effect.asVoid, unavailable);
+  /**
+   * Rename a v2 organization from `from` to `to`, only while it still has `from`; whether it did.
+   * A plain update of the slug, as a rename in v2's settings is: the update queues the team's app
+   * domain again (`hosted_provision_team`).
+   */
+  const renameOrganization = (input: {
+    readonly holder: string;
+    readonly from: string;
+    readonly to: string;
+  }) =>
+    sql`
+      update organization set slug = ${input.to}
+      where id = ${input.holder} and slug = ${input.from}
+      returning id
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Ids)),
+      Effect.map((renamed) => renamed.length === 1),
+      unavailable,
+    );
   return {
     rows,
     find,
@@ -294,6 +313,7 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
     target,
     createOrganization,
     holdBilling,
+    renameOrganization,
   };
 };
 export type ImportStore = ReturnType<typeof makeImportStore>;
