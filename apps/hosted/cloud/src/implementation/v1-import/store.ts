@@ -33,6 +33,16 @@ export type MapKind =
  */
 export const toolkitCopyId = (toolkitRow: string, member: string) => `${toolkitRow}:${member}`;
 
+/**
+ * The id the import gives a member's copy of a toolkit in a v2 organization, which v1 computes too
+ * when it forwards the toolkit's URL. A copy the opt-in import made before copies were per member
+ * keeps the id it got then (`adoptToolkitCopy`).
+ */
+export const toolkitCopyConnectionId = (organization: string, toolkitRow: string, member: string) =>
+  sourceHash([organization, toolkitRow, member]).pipe(
+    Effect.map((hash) => `v1-${hash.slice(0, 40)}`),
+  );
+
 export const MapRow = Schema.Struct({
   v1_kind: Schema.String,
   v1_id: Schema.String,
@@ -126,8 +136,10 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
           where m.v1_kind = ${kind} and m.v1_id = ${id}
         `
       : kind === "toolkit"
-        ? sql`
-            select c.id is null as removed, coalesce(c."updatedAt" > m.updated_at, false) as changed
+        ? // Removing a connection in v2 revokes it and keeps its row.
+          sql`
+            select c.id is null or c.revoked as removed,
+              coalesce(c."updatedAt" > m.updated_at, false) as changed
             from private_v1_import_map m left join "mcpConnection" c on c.id = m.v2_id
             where m.v1_kind = ${kind} and m.v1_id = ${id}
           `
@@ -148,6 +160,33 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
             ? ("removed" as const)
             : ("changed" as const),
       ),
+      unavailable,
+    );
+  /**
+   * Record under a member's key the copy of a toolkit the opt-in import made for them, which it
+   * keyed by the toolkit alone (`toolkitCopyId`): its connection, result and the time it was
+   * written, so a later save in v2 still reads as theirs. Whether the member has such a copy.
+   */
+  const adoptToolkitCopy = (input: {
+    readonly organization: string;
+    readonly toolkit: string;
+    readonly member: string;
+    readonly user: string;
+  }) =>
+    sql`
+      insert into private_v1_import_map
+        (v1_org_id, v1_kind, v1_id, v2_kind, v2_id, status, reason, source_hash, updated_at)
+      select m.v1_org_id, m.v1_kind, ${toolkitCopyId(input.toolkit, input.member)}, m.v2_kind,
+        m.v2_id, m.status, m.reason, m.source_hash, m.updated_at
+      from private_v1_import_map m join "mcpConnection" c on c.id = m.v2_id
+      where m.v1_kind = 'toolkit' and m.v1_id = ${input.toolkit}
+        and m.v1_org_id = ${input.organization} and m.status = 'imported'
+        and c."userId" = ${input.user}
+      on conflict (v1_kind, v1_id) do nothing
+      returning v2_id as id
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Ids)),
+      Effect.map((adopted) => adopted.length > 0),
       unavailable,
     );
   /**
@@ -225,6 +264,7 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
     find,
     record,
     sinceImported,
+    adoptToolkitCopy,
     importedVersions,
     deployedSince,
     target,

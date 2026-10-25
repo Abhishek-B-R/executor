@@ -1517,7 +1517,21 @@ const importToolkitItem = (context: ItemContext, id: string) =>
     const copies = yield* Effect.forEach(members, (member) => {
       const key = toolkitCopyKey(toolkit, member);
       return Effect.gen(function* () {
-        const existing = yield* context.store.find("toolkit", key);
+        // The opt-in import keyed its one copy by the toolkit alone; a move into its organization
+        // records that copy under the member's key instead of making them another.
+        const user = context.users.get(member);
+        const found = yield* context.store.find("toolkit", key);
+        const existing =
+          found === undefined &&
+          user !== undefined &&
+          (yield* context.store.adoptToolkitCopy({
+            organization: context.snapshot.tenant,
+            toolkit: toolkit.row.row_id,
+            member,
+            user,
+          }))
+            ? yield* context.store.find("toolkit", key)
+            : found;
         const since =
           existing?.status === "imported" && existing.v2_id !== null
             ? yield* context.store.sinceImported("toolkit", key)
@@ -1534,7 +1548,8 @@ const importToolkitItem = (context: ItemContext, id: string) =>
           });
         // Otherwise its connection follows the apps and accounts imported since; saving it again
         // is safe.
-        return yield* importToolkit(context, toolkit, member).pipe(
+        const copy = existing?.status === "imported" ? existing.v2_id : null;
+        return yield* importToolkit(context, toolkit, member, copy ?? undefined).pipe(
           Effect.tap(recorded(context, "toolkit", key, hash)),
           Effect.map((result) => outcomeOf(base, result)),
           Effect.catch(failedItem(context, "toolkit", key, hash, base)),

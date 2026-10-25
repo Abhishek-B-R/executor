@@ -101,7 +101,13 @@ import {
   type Unsupported,
 } from "./plan.ts";
 import type { V1Snapshot, V1Source } from "./source.ts";
-import { sourceHash, toolkitCopyId, type ImportStore, type MapResult } from "./store.ts";
+import {
+  sourceHash,
+  toolkitCopyConnectionId,
+  toolkitCopyId,
+  type ImportStore,
+  type MapResult,
+} from "./store.ts";
 import { v1ToolPaths } from "./v1-tool-paths.ts";
 
 /** v1's OAuth callback; imported clients keep it, and v1's edge forwards it to v2. */
@@ -1972,8 +1978,8 @@ export const toolkitPolicy = (
  * updates it.
  */
 export const toolkitConnectionId = (organization: string, toolkit: V1Toolkit, member: string) =>
-  sourceHash([organization, toolkit.row.row_id, member]).pipe(
-    Effect.map((hash) => ConnectionId.make(`v1-${hash.slice(0, 40)}`)),
+  toolkitCopyConnectionId(organization, toolkit.row.row_id, member).pipe(
+    Effect.map((id) => ConnectionId.make(id)),
   );
 
 /** The members who get a copy of a toolkit: everyone for an org toolkit, else its owner. */
@@ -1986,8 +1992,17 @@ export const toolkitMembers = (toolkit: V1Toolkit, members: readonly string[]) =
 export const toolkitCopyKey = (toolkit: Pick<V1Toolkit, "row">, member: string) =>
   toolkitCopyId(toolkit.row.row_id, member);
 
-/** Create or update a member's copy of the toolkit: a scoped MCP connection they own. */
-export const importToolkit = (context: ItemContext, toolkit: V1Toolkit, member: string) =>
+/**
+ * Create or update a member's copy of the toolkit: a scoped MCP connection they own. `copy` is the
+ * connection the import map already records for it, which for a copy the opt-in import made is not
+ * the id an import gives a copy now.
+ */
+export const importToolkit = (
+  context: ItemContext,
+  toolkit: V1Toolkit,
+  member: string,
+  copy?: string,
+) =>
   Effect.gen(function* () {
     const user = context.users.get(member);
     if (user === undefined) return yield* fail("Its member is not imported.");
@@ -1998,7 +2013,10 @@ export const importToolkit = (context: ItemContext, toolkit: V1Toolkit, member: 
       member,
     );
     const owner = { userId: user, resource: context.target.id };
-    const id = yield* toolkitConnectionId(context.target.id, toolkit, member);
+    const id =
+      copy === undefined
+        ? yield* toolkitConnectionId(context.target.id, toolkit, member)
+        : ConnectionId.make(copy);
     const name = (toolkit.data.name.trim() === "" ? toolkit.data.slug : toolkit.data.name).slice(
       0,
       80,

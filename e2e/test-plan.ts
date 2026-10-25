@@ -8408,6 +8408,12 @@ export const scenarios = plan({
       "Cloud v1 import keeps a workspace that fails verification frozen in v1, and accepts MCP requests v1 forwards for an imported workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportOptInToolkits: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import moves an organization into the toolkit copies the opt-in import keyed by the toolkit alone, updating the copy its member kept and keeping the one they changed in v2 without making either a second copy, and runs v1's forwarded toolkit requests under those copies",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1HandoffSignIn: {
     file: "cloud-v1-session-handoff.spec.ts",
     title:

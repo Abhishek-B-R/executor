@@ -651,7 +651,12 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
   });
 
 /** Call Cloud's API from the signed-in page, as the dashboard does. */
-const call = (step: string, method: "GET" | "POST" | "DELETE", path: string, payload?: unknown) =>
+const call = (
+  step: string,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  payload?: unknown,
+) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     return yield* browser
@@ -3852,6 +3857,187 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(yield* initialize(sign(toolkit), toolkitQuery)).toBe(200);
       }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
     ),
+  );
+
+  it.effect(
+    scenarios.v1ImportOptInToolkits.title,
+    (context) =>
+      withCase(
+        context,
+        Effect.gen(function* () {
+          const emulators = yield* Emulators,
+            fs = yield* FileSystem.FileSystem,
+            target = yield* Target,
+            mcp = yield* McpClient;
+          const upstream = yield* credentialUpstream;
+          const { secret } = yield* fs
+            .readFileString(`${target.directory}/${v1McpForwardFile}`)
+            .pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(V1McpForwardSecret))),
+            );
+          const identity = yield* emulators.identity("google");
+          // The opt-in import copied the organization to v2 while v1 kept serving it. The copy is
+          // made by importing a twin organization and handing its import map to this one.
+          const twin = yield* emulators.v1Workspace([identity.email]);
+          yield* seedToolkitCalls(
+            twin.organization,
+            twin.user,
+            `v1-${randomUUID().slice(0, 8)}`,
+            upstream.origin,
+          );
+          yield* googleSignIn(identity.email);
+          const copied = yield* importOnServer(twin.organization);
+          const organization = copied.target.id;
+          const own = yield* emulators.v1Workspace([identity.email]);
+          yield* seedToolkitCalls(
+            own.organization,
+            own.user,
+            `v1-${randomUUID().slice(0, 8)}`,
+            upstream.origin,
+          );
+          const [pairs = []] = yield* writeRows("v1-database.json", [
+            {
+              sql: `select twin.row_id as twin, own.row_id as own, twin.key from (
+                  select row_id, 'integration:' || name as key from integration where tenant = $1
+                  union all select row_id, 'connection:' || name from connection where tenant = $1
+                  union all select row_id, 'toolkit:' || (data->>'name') from plugin_storage
+                    where tenant = $1 and plugin_id = 'toolkits' and collection = 'toolkits'
+                ) twin join (
+                  select row_id, 'integration:' || name as key from integration where tenant = $2
+                  union all select row_id, 'connection:' || name from connection where tenant = $2
+                  union all select row_id, 'toolkit:' || (data->>'name') from plugin_storage
+                    where tenant = $2 and plugin_id = 'toolkits' and collection = 'toolkits'
+                ) own using (key)`,
+              params: [twin.organization, own.organization],
+            },
+          ]);
+          const matched = yield* Schema.decodeUnknownEffect(
+            Schema.Array(
+              Schema.Struct({ twin: Schema.String, own: Schema.String, key: Schema.String }),
+            ),
+          )(pairs);
+          const rowOf = (name: string) =>
+            matched.find((pair) => pair.key === `toolkit:${name}`) ?? { twin: "", own: "" };
+          const team = rowOf("Team ledger");
+          const mine = rowOf("My ledger");
+          // The opt-in import keyed each toolkit's one copy by the toolkit alone, with an id from the
+          // toolkit and the organization.
+          const optInId = (row: string) =>
+            `v1-${createHash("sha256")
+              .update(JSON.stringify([organization, row]))
+              .digest("hex")
+              .slice(0, 40)}`;
+          yield* writeRows("sso-database.json", [
+            ...[team, mine].flatMap((row) => [
+              {
+                sql: `update "mcpConnection" set id = $2 where id = $1`,
+                params: [
+                  v1ToolkitConnectionId(organization, row.twin, twin.user),
+                  optInId(row.own),
+                ],
+              },
+              {
+                sql: "update private_v1_import_map set v1_id = $2, v2_id = $3 where v1_kind = 'toolkit' and v1_id = $1",
+                params: [`${row.twin}:${twin.user}`, row.own, optInId(row.own)],
+              },
+            ]),
+            ...[
+              ...matched.filter((pair) => !pair.key.startsWith("toolkit:")),
+              { twin: twin.organization, own: own.organization },
+            ].map((pair) => ({
+              sql: "update private_v1_import_map set v1_id = $2 where v1_org_id = $3 and v1_id = $1",
+              params: [pair.twin, pair.own, twin.organization],
+            })),
+            {
+              sql: "update private_v1_import_map set v1_org_id = $2 where v1_org_id = $1",
+              params: [twin.organization, own.organization],
+            },
+          ]);
+          const listConnections = (step: string) =>
+            call(step, "GET", `/api/organizations/${organization}/mcp-connections`).pipe(
+              Effect.flatMap((response) => decode(Connections, response)),
+            );
+          // The member renames their own toolkit's copy in v2.
+          const before = yield* listConnections("List the opt-in copies");
+          const renamed = yield* call(
+            "Rename a toolkit copy in v2",
+            "PUT",
+            `/api/organizations/${organization}/mcp-connections/${optInId(mine.own)}`,
+            {
+              name: "Renamed in v2",
+              apps: before.find((connection) => connection.id === optInId(mine.own))?.policy.apps,
+            },
+          );
+          expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+
+          // The move updates the copy the member kept and keeps the one they changed; neither gets
+          // a second copy.
+          const moved = yield* importOnServer(own.organization);
+          expect(moved.target).toEqual(copied.target);
+          expect(moved.report.cutover).toBe(true);
+          expect(moved.results.get("Team ledger")).toMatchObject({
+            status: "imported",
+            v2Id: optInId(team.own),
+          });
+          expect(moved.results.get("My ledger")).toMatchObject({
+            status: "imported",
+            v2Id: optInId(mine.own),
+            note: "Kept as its users changed it in v2 after an earlier run imported it.",
+          });
+          const after = yield* listConnections("List the moved copies");
+          expect(after.map((connection) => [connection.id, connection.name]).sort()).toEqual(
+            [
+              [optInId(team.own), "Team ledger"],
+              [optInId(mine.own), "Renamed in v2"],
+            ].sort(),
+          );
+
+          // v1 forwards each toolkit's URL with the id the import gives a copy now; the request runs
+          // under the member's own copy.
+          let minted = 0;
+          const sign = (claims: Partial<V1ForwardClaims>) =>
+            Redacted.make(
+              v1ForwardBearer(secret, {
+                account: own.user,
+                organization: own.organization,
+                exp: Math.floor(Date.now() / 1000) + 300 + minted++,
+                ...claims,
+              }),
+            );
+          for (const row of [team.own, mine.own]) {
+            const connection = v1ToolkitConnectionId(organization, row, own.user);
+            const client = yield* mcp.connect(
+              () => sign({ toolkit: row, connection }),
+              `opt-in-${row}`,
+              { connection },
+            );
+            const searched = yield* client
+              .use(`Search through the copy of ${row}`, (client, signal) =>
+                client.callTool(
+                  {
+                    name: "execute",
+                    arguments: { code: `return await tools.search({query: "entries", limit: 50})` },
+                  },
+                  undefined,
+                  { signal },
+                ),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                ),
+                Effect.flatMap((done) =>
+                  Schema.decodeUnknownEffect(
+                    Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+                  )(done.execution.value),
+                ),
+              );
+            expect(searched.items.map((item) => item.path)).toHaveLength(1);
+          }
+        }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
+      ),
+    // It copies a twin organization and moves this one: two runs of the import.
+    { timeout: 180_000 },
   );
 
   it.effect(scenarios.v1ImportToolkitCalls.title, (context) =>
