@@ -203,6 +203,28 @@ const refusalOutcome = (error: unknown): Pick<Outcome, "status" | "reason" | "st
     ? { status: "skipped", reason: clip(error.reason), stale: error.stale }
     : { status: "failed", reason: clip(refusal(error)) };
 
+/**
+ * A connection's result for a refusal. One that v2 cannot take as v1 kept it moves without its
+ * account, for its owner to connect again in v2 (`reconnect`), and does not block the
+ * organization. An outage, a Vault that did not answer, an integration that did not move and a
+ * first-party client this deployment does not hold as v1's (`firstParty`) are failures, which
+ * block it: trying again, or configuring the client, can move the connection with its account.
+ */
+const connectionRefusal = (
+  error: unknown,
+  firstParty: FirstPartyMismatch | undefined,
+): Pick<Outcome, "status" | "reason" | "stale" | "reconnect"> => {
+  const decided = refusalOutcome(error);
+  return decided.status === "failed" &&
+    firstParty === undefined &&
+    error instanceof ItemFailed &&
+    error.outage === undefined &&
+    error.vault !== "unavailable" &&
+    error.reason !== integrationNotImported
+    ? { status: "skipped", reason: decided.reason, reconnect: true }
+    : decided;
+};
+
 /** A rule that matches no tool v1 lists: it still moves, is reported, and does not block. */
 const unmatchedRule = (row: { readonly pattern: string; readonly action: string }) =>
   ({
@@ -481,6 +503,8 @@ interface Outcome {
   readonly vaultFailed?: "missing" | "unavailable" | undefined;
   /** A connection that signed in through a first-party client v2 does not offer as v1's. */
   readonly firstParty?: FirstPartyMismatch | undefined;
+  /** A connection that moves without its account, for its owner to connect again in v2. */
+  readonly reconnect?: true | undefined;
   readonly unmatched?: { readonly pattern: string; readonly action: string } | undefined;
   /**
    * Why v1 cannot run it either (decision 20): a skipped item, or a policy that matches no tool,
@@ -834,8 +858,7 @@ const dryConnections = (
           return plan.stale === null
             ? ({
                 ...base,
-                status: "failed",
-                reason: plan.reason,
+                ...connectionRefusal(new ItemFailed({ reason: plan.reason }), mismatchOf(row)),
                 firstParty: mismatchOf(row),
               } satisfies Outcome)
             : ({
@@ -868,7 +891,7 @@ const dryConnections = (
         if (refusedBy !== undefined)
           return {
             ...base,
-            ...refusalOutcome(refusedBy),
+            ...connectionRefusal(refusedBy, undefined),
             ...(refusedBy instanceof ItemFailed && refusedBy.vault !== undefined
               ? { vaultFailed: refusedBy.vault }
               : {}),
@@ -1119,7 +1142,8 @@ const failedItem =
   (error: unknown) =>
     Effect.gen(function* () {
       if (transient(error)) return yield* Effect.fail(error);
-      const decided = refusalOutcome(error);
+      const decided: Pick<Outcome, "status" | "reason" | "stale" | "reconnect"> =
+        kind === "profile" ? connectionRefusal(error, base.firstParty) : refusalOutcome(error);
       const result: MapResult =
         decided.status === "skipped"
           ? { status: "skipped", reason: decided.reason ?? "" }
@@ -1128,6 +1152,7 @@ const failedItem =
       return {
         ...outcomeOf(base, result),
         ...(decided.stale === undefined ? {} : { stale: decided.stale }),
+        ...(decided.reconnect === undefined ? {} : { reconnect: decided.reconnect }),
         ...(base.firstParty === undefined || decided.stale !== undefined
           ? {}
           : { firstParty: base.firstParty }),
@@ -1580,7 +1605,7 @@ const verify = (
  */
 const blocking = (report: Omit<V1OrgReport, "status">, assessment: Assessment) =>
   report.integrationFailures.length > 0 ||
-  report.connectionFailures.length > 0 ||
+  report.connectionFailures.some((failure) => failure.reconnect !== true) ||
   report.firstPartyMismatches.length > 0 ||
   assessment.emailMatches.some((match) => match.match === "conflict");
 
@@ -1626,12 +1651,20 @@ const reportOf = (
   imported: Imported | undefined,
   people: ReportPeople,
 ): V1OrgReport => {
+  // Connections that cannot move with their account: failed ones block, the rest move to reconnect.
   const failedConnections = outcomes.filter(
-    (outcome) => outcome.kind === "connection" && outcome.status === "failed",
+    (outcome) =>
+      outcome.kind === "connection" && (outcome.status === "failed" || outcome.reconnect === true),
   );
-  const reasons = new Map<string, Outcome[]>();
-  for (const outcome of failedConnections)
-    reasons.set(outcome.reason ?? "", [...(reasons.get(outcome.reason ?? "") ?? []), outcome]);
+  const reasons = new Map<string, { reconnect: boolean; outcomes: Outcome[] }>();
+  for (const outcome of failedConnections) {
+    const reconnect = outcome.reconnect === true;
+    const key = JSON.stringify([outcome.reason ?? "", reconnect]);
+    reasons.set(key, {
+      reconnect,
+      outcomes: [...(reasons.get(key)?.outcomes ?? []), outcome],
+    });
+  }
   const firstParty = new Map<string, { mismatch: FirstPartyMismatch; connections: number }>();
   for (const outcome of outcomes)
     if (outcome.firstParty !== undefined) {
@@ -1718,8 +1751,9 @@ const reportOf = (
         ? [{ integration: outcome.label, tools: outcome.traced }]
         : [],
     ),
-    connectionFailures: [...reasons].map(([reason, connections]) => ({
-      reason,
+    connectionFailures: [...reasons.values()].map(({ reconnect, outcomes: connections }) => ({
+      reason: connections[0]?.reason ?? "",
+      ...(reconnect ? { reconnect: true as const } : {}),
       connections: connections.map((outcome) => ({
         id: outcome.id,
         label: outcome.label,

@@ -8406,6 +8406,12 @@ export const scenarios = plan({
       "Cloud v1 import keeps asking before an MCP tool v1 stamped as needing approval after its server drops the destructive hint, and leaves the tools v1 allowed without a rule of their own",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportUnlistedRules: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import decides the tools v1 never listed by v1's rules: an MCP tool a rule blocks by name is left out, one no rule names asks as v1's catch-all rule says, an OpenAPI operation v1 compiled asks as its rule says, and the repair finds the import's own apps unchanged",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportRepair: {
     file: "cloud-v1-import.spec.ts",
     title:

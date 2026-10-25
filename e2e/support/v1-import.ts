@@ -58,6 +58,7 @@ export const V1Report = Schema.Struct({
   connectionFailures: Schema.Array(
     Schema.Struct({
       reason: Schema.String,
+      reconnect: Schema.optional(Schema.Literal(true)),
       connections: Schema.Array(
         Schema.Struct({ id: Schema.String, label: Schema.String, integration: Schema.String }),
       ),

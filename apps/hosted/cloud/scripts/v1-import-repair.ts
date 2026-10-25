@@ -35,6 +35,7 @@ import { importedMembers, planStampedApps } from "../src/implementation/v1-impor
 import {
   allSnapshotTables,
   readSnapshot,
+  readOpenApiOperations,
   readTools,
 } from "../src/implementation/v1-import/source.ts";
 import { makeImportStore } from "../src/implementation/v1-import/store.ts";
@@ -123,6 +124,8 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
           const source = {
             tools: (tenant: string, members: readonly [string, ...string[]], integration: string) =>
               v1Read(readTools(tenant, members, integration)),
+            openApiOperations: (tenant: string, integration: string) =>
+              v1Read(readOpenApiOperations(tenant, integration)),
           };
           const apps = yield* planStampedApps(snapshot, source, { find });
           if (apps.length === 0) return out;
@@ -142,8 +145,12 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
               totals.apps++;
               totals.tools += app.always.length;
             }
+            const unlisted =
+              app.unlisted === null
+                ? ""
+                : `; tools v1 did not list: left out ${app.unlisted.omitted.join(", ") || "none"}, always ${app.unlisted.always.join(", ") || "none"}${app.unlisted.otherwise === null ? "" : `, any other ${app.unlisted.otherwise === "always" ? "asks always" : "left out"}`}`;
             out.push(
-              `  app ${app.app} (${app.integration.name ?? app.integration.slug})${state}: always ${app.always.join(", ")}`,
+              `  app ${app.app} (${app.integration.name ?? app.integration.slug})${state}: always ${app.always.join(", ") || "none"}${unlisted}`,
             );
           }
           if (live > 0) {
@@ -159,7 +166,7 @@ const dryRun = (only: readonly string[], orgsOut: string | undefined) =>
     yield* Console.log(
       [
         "Summary",
-        `  MCP apps to deploy with always rules: ${totals.apps}, ${totals.tools} tools, in ${totals.appOrgs} organizations`,
+        `  apps to deploy: ${totals.apps}, ${totals.tools} stamped tools always, in ${totals.appOrgs} organizations`,
         `  apps removed or not deployed (skipped): ${totals.missingApps}`,
         `  organizations with a change: ${changed.length}`,
       ].join("\n"),

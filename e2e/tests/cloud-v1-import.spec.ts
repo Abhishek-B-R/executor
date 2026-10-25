@@ -1455,6 +1455,98 @@ const seedStampedApprovals = (organization: string, slug: string, origin: string
   });
 
 /**
+ * A workspace whose public MCP server lists tools v1 never listed: v1 last listed only `read`,
+ * which a rule approves. A rule blocks `unhinted` by name and a catch-all rule asks before every
+ * other tool, so once the server listed them v1 would have blocked `unhinted` and asked before
+ * `safe`, which the server does not mark destructive. A public API's one read operation, which v1
+ * compiled but never listed, is under a catch-all rule that asks before every tool.
+ */
+const seedUnlistedRules = (organization: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const server = `unlisted_${randomUUID().slice(0, 6)}`;
+    const api = `status_${randomUUID().slice(0, 6)}`;
+    const text = JSON.stringify({
+      openapi: "3.0.3",
+      info: { title: "Synthetic status", version: "1" },
+      servers: [{ url: `${origin}/public` }],
+      paths: {
+        "/health": {
+          get: {
+            operationId: "health",
+            tags: ["status"],
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    });
+    const hash = createHash("sha256").update(text).digest("hex");
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const rule = (pattern: string, action: string, position: string) =>
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, $3, $4)",
+        organization,
+        pattern,
+        action,
+        position,
+      );
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic unlisted tools workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Unlisted', $3::json)",
+        organization,
+        server,
+        JSON.stringify({
+          transport: "remote",
+          endpoint: `${origin}/mcp`,
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template) values ($1, 'org', '', $2, 'open', 'none')",
+        organization,
+        server,
+      ),
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'org', '', $2, 'open', 'mcp', 'read', $3::json)",
+        organization,
+        server,
+        JSON.stringify({ mcp: { toolName: "read" } }),
+      ),
+      rule(`${server}.*.*.read`, "approve", "a0"),
+      rule(`${server}.org.open.unhinted`, "block", "a1"),
+      rule(`${server}.*`, "require_approval", "a2"),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', 'Status', $3::json)",
+        organization,
+        api,
+        JSON.stringify({ specHash: hash, authenticationTemplate: [] }),
+      ),
+      row(
+        "insert into blob (namespace, key, value) values ($1, $2, $3)",
+        `o:${organization}/openapi`,
+        `spec/${hash}`,
+        text,
+      ),
+      row(
+        "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+        organization,
+        `op.${api}.status.health`,
+        JSON.stringify({
+          integration: api,
+          toolName: "status.health",
+          binding: { method: "get", pathTemplate: "/health" },
+        }),
+      ),
+      rule(`${api}.*`, "require_approval", "a3"),
+    ]);
+  });
+
+/**
  * Two host names of one synthetic service, under one registrable domain, for the loopback
  * service's port. `*.localhost` resolves to loopback.
  */
@@ -3943,6 +4035,90 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
     ),
   );
 
+  it.effect(scenarios.v1ImportUnlistedRules.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const operator = yield* v1ImportOperator;
+        const upstream = yield* approvalMcpUpstream;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedUnlistedRules(
+          own.organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+
+        const { target: imported, results } = yield* importOnServer(own.organization);
+        expect(results.get("Unlisted")?.status, results.get("Unlisted")?.reason).toBe("imported");
+        const app = results.get("Unlisted")?.v2Id;
+        const tools = (yield* appSource(imported.id, app)).find((file) => file.path === "tools.ts");
+        expect(tools?.content).toContain('"read": "never"');
+        expect(tools?.content).toMatch(/const omitted = new Set<string>\(\[\s*"unhinted"\s*\]\)/u);
+
+        // As the member: the tool v1 approved runs, the one its rule blocks by name is not there,
+        // and every tool no rule names waits for approval without reaching the server, even one
+        // the server does not mark destructive.
+        for (const [tool, kind, outcome] of [
+          ["read", "query", 200],
+          ["unhinted", "mutation", 404],
+          ["safe", "mutation", 409],
+          ["erase", "mutation", 409],
+        ] as const) {
+          const before = yield* upstream.calls;
+          const result = yield* call(
+            `Call ${tool}`,
+            "POST",
+            `/api/organizations/${imported.id}/apps/${app}/tools/call`,
+            { tool, kind, input: {} },
+          );
+          expect(result.status, `${tool}: ${JSON.stringify(result.body)}`).toBe(outcome);
+          if (outcome === 404) expect(result.body).toMatchObject({ _tag: "ToolNotFound" });
+          if (outcome === 409) expect(result.body).toMatchObject({ _tag: "ToolApprovalRequired" });
+          expect(yield* upstream.calls, tool).toEqual(outcome === 200 ? [...before, tool] : before);
+        }
+
+        // The API's read operation, which v1 compiled but never listed, asks as v1's rule says
+        // rather than running as a read.
+        expect(results.get("Status")?.status, results.get("Status")?.reason).toBe("imported");
+        const status = results.get("Status")?.v2Id;
+        const health = yield* call(
+          "Call status.health",
+          "POST",
+          `/api/organizations/${imported.id}/apps/${status}/tools/call`,
+          { tool: "status.health", kind: "query", input: {} },
+        );
+        expect(health.status, JSON.stringify(health.body)).toBe(409);
+        expect(health.body).toMatchObject({ _tag: "ToolApprovalRequired" });
+
+        // The repair names what the rules decide for tools v1 did not list, and finds the
+        // import's own apps already hold it.
+        const repaired = yield* operator.repair(own.organization, false);
+        expect(repaired.status, JSON.stringify(repaired.body)).toBe(200);
+        expect(repaired.body).toMatchObject({
+          apps: expect.arrayContaining([
+            expect.objectContaining({
+              app,
+              always: [],
+              unlisted: { omitted: ["unhinted"], always: [], otherwise: "always" },
+              decision: "unchanged",
+              files: [],
+            }),
+            expect.objectContaining({
+              app: status,
+              always: [],
+              unlisted: { omitted: [], always: ["status.health"], otherwise: null },
+              decision: "unchanged",
+              files: [],
+            }),
+          ]),
+        });
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
   it.effect(scenarios.v1ImportRepair.title, (context) =>
     withCase(
       context,
@@ -4341,8 +4517,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
 
         const { target, results } = yield* importOnServer(own.organization);
         // v1 made a connection whose recorded token endpoint it no longer trusted reconnect.
+        // It moves without its account, for its owner to connect again in v2.
         expect(results.get("untrusted")).toEqual({
-          status: "failed",
+          status: "skipped",
           reason:
             "v1 no longer trusted the token endpoint its sign-in recorded. Reconnect it in v2.",
         });
@@ -4494,8 +4671,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         yield* seedFirstParty(own.organization, own.user, `v1-${randomUUID().slice(0, 8)}`, origin);
         yield* googleSignIn(identity.email);
 
-        // The dry run refuses every connection whose account the import would refuse, with the
-        // reason the import gives, so the organization is blocked before it is ever frozen.
+        // The dry run names every connection whose account the import would leave out, with the
+        // reason the import gives. Each moves without its account, for its owner to connect again,
+        // except one through a first-party client v2 does not offer, which blocks the organization.
         const importer = yield* v1ImportOperator;
         const dry = v1RunId("first-party-dry");
         const started = yield* importer.start({
@@ -4509,6 +4687,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(planned.integrationFailures).toEqual([]);
         expect(planned.vaultFailures).toEqual([]);
         expect(planned.staleItems).toEqual([]);
+        expect(
+          planned.connectionFailures.flatMap((failure) =>
+            failure.reconnect === true ? [] : failure.connections.map((c) => c.label),
+          ),
+        ).toEqual(["notion"]);
         const predicted = Object.fromEntries(
           planned.connectionFailures.flatMap((failure) =>
             failure.connections.map((connection) => [connection.label, failure.reason] as const),
@@ -4536,7 +4719,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         });
 
         const { target: organization, results, items } = yield* importOnServer(own.organization);
-        // The import refuses exactly the accounts its dry run did, for the same reasons, and
+        // The import leaves out exactly the accounts its dry run did, for the same reasons, and
         // imports every other connection.
         const connections = items.filter((item) => item.kind === "connection");
         expect(connections).toHaveLength(12);
@@ -4550,7 +4733,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           Object.fromEntries(
             Object.entries(predicted).map(([label, reason]) => [
               label,
-              { status: "failed", reason },
+              { status: label === "notion" ? "failed" : "skipped", reason },
             ]),
           ),
         );
@@ -4802,7 +4985,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           ],
         ] as const)
           expect(results.get(`connection:${label} · Synthetic GraphQL`), label).toEqual({
-            status: "failed",
+            status: "skipped",
             reason,
           });
 

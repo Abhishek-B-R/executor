@@ -1,11 +1,13 @@
 /**
- * The one-off repair of organizations moved before the importer took v1's approval stamps
- * (`notes/v1-import.md`, "Repair of moved organizations"). It changes what that fix changes and
- * nothing else, with the importer's own code, so a repaired app holds what an import makes now:
- * an MCP tool whose row v1 stamped as needing approval, and that no policy decided, gets the app's
- * own `always` rule (`toolActions`). The app's source is generated again, as the importer generates
- * it, and a new version is deployed through the importer's own deploy call. A file the fix changes
- * is replaced only when the deployed one is still the earlier importer's output.
+ * The one-off repair of organizations moved before the importer took v1's approval stamps and
+ * decided the tools v1 did not list (`notes/v1-import.md`, "Repair of moved organizations"). It
+ * changes what those fixes change and nothing else, with the importer's own code, so a repaired
+ * app holds what an import makes now: an MCP tool whose row v1 stamped as needing approval, and
+ * that no policy decided, gets the app's own `always` rule (`toolActions`), and a tool v1 did not
+ * list gets what v1's rules give it (`v1ToolRules`). The app's source
+ * is generated again, as the importer generates it, and a new version is deployed through the
+ * importer's own deploy call. A file the fixes change is replaced only when the deployed one is
+ * still an earlier importer's output.
  *
  * Without `apply` it reports what it would change and writes nothing.
  */
@@ -23,6 +25,7 @@ import {
   mcpNaming,
   redundantFixed,
   toolActions,
+  v1ToolRules,
   type ItemContext,
 } from "./items.ts";
 import { integrationLabel, integrationPlan } from "./plan.ts";
@@ -56,10 +59,38 @@ export const stampedAlways = (
     .sort();
 };
 
+/**
+ * What deciding the tools v1 did not list changes in an app, beside the stamps: the tools v1's
+ * rules name, or for OpenAPI the operations v1 compiled (`operations`), that it now leaves out or
+ * asks before, and what a tool no rule names gets on a server that lists tools as it runs. Null
+ * when nothing changes.
+ */
+export const unlistedChange = (
+  snapshot: V1Snapshot,
+  integration: IntegrationRow,
+  tools: readonly ToolRow[],
+  operations?: readonly string[],
+) => {
+  const aliases = integration.plugin_id === "mcp" ? mcpNaming(tools).aliases : {};
+  const before = approvalRules(toolActions(snapshot, integration, tools, aliases));
+  const now = v1ToolRules(snapshot, integration, tools, aliases, operations);
+  const change = {
+    omitted: (now.omitted ?? []).filter((name) => !before.omitted.includes(name)).sort(),
+    always: Object.keys(now.approvals ?? {})
+      .filter((name) => now.approvals?.[name] === "always" && before.approvals[name] !== "always")
+      .sort(),
+    otherwise: now.otherwise?.rule ?? null,
+  };
+  return change.omitted.length === 0 && change.always.length === 0 && change.otherwise === null
+    ? null
+    : change;
+};
+
 export interface AppRepair {
   readonly integration: string;
   readonly app: string;
   readonly always: readonly string[];
+  readonly unlisted: ReturnType<typeof unlistedChange>;
   readonly decision: "deploy" | "unchanged" | "edited" | "removed" | "failed";
   /** The files the new version changes, or the ones that block it. */
   readonly files: readonly string[];
@@ -78,23 +109,27 @@ const fileKey = (file: SourceFile | undefined) =>
   file === undefined ? null : JSON.stringify(file);
 
 /**
- * The files of a new version: the deployed ones, with each file the fix changes taken from the
- * importer's output now. Undefined, with the paths that block it, when a file the fix changes is
- * not the earlier importer's output (`before`). `done` when every such file is already the
- * importer's output now, as after an earlier repair.
+ * The files of a new version: the deployed ones, with each file the fixes change taken from the
+ * importer's output now. Undefined, with the paths that block it, when a file the fixes change is
+ * neither any earlier importer's output (`before`) nor the output now. `done` when every such file
+ * is already the importer's output now, as after an earlier repair.
  */
 export const mergedFiles = (
   deployed: readonly SourceFile[],
-  before: readonly SourceFile[],
+  before: readonly (readonly SourceFile[])[],
   after: readonly SourceFile[],
 ) => {
   const at = (files: readonly SourceFile[], path: string) =>
     files.find((file) => file.path === path);
-  const paths = [...new Set([...before, ...after].map((file) => file.path))].filter(
-    (path) => fileKey(at(before, path)) !== fileKey(at(after, path)),
+  const paths = [...new Set([...before.flat(), ...after].map((file) => file.path))].filter((path) =>
+    before.some((earlier) => fileKey(at(earlier, path)) !== fileKey(at(after, path))),
   );
   const done = paths.every((path) => fileKey(at(deployed, path)) === fileKey(at(after, path)));
-  const blocked = paths.filter((path) => fileKey(at(deployed, path)) !== fileKey(at(before, path)));
+  const blocked = paths.filter(
+    (path) =>
+      fileKey(at(deployed, path)) !== fileKey(at(after, path)) &&
+      before.every((earlier) => fileKey(at(deployed, path)) !== fileKey(at(earlier, path))),
+  );
   if (done || blocked.length > 0) return { changed: paths, blocked, files: undefined, done };
   const files = [
     ...deployed.filter((file) => !paths.includes(file.path)),
@@ -124,21 +159,37 @@ export const importedMembers = (sql: SqlClient.SqlClient, organization: string) 
     Effect.mapError(() => new V1ImportUnavailable()),
   );
 
-/** Each imported MCP app of the organization whose tools the stamp fix makes ask always. */
+/**
+ * Each imported app of the organization the fixes change: an MCP app whose tools the stamp fix
+ * makes ask always, and an app whose rules decide tools v1 did not list.
+ */
 export const planStampedApps = (
   snapshot: V1Snapshot,
-  source: Pick<V1Source, "tools">,
+  source: Pick<V1Source, "tools" | "openApiOperations">,
   store: Pick<ImportStore, "find">,
 ) =>
   Effect.gen(function* () {
-    const planned: { integration: IntegrationRow; app: AppId; always: readonly string[] }[] = [];
+    const planned: {
+      integration: IntegrationRow;
+      app: AppId;
+      always: readonly string[];
+      unlisted: ReturnType<typeof unlistedChange>;
+    }[] = [];
     for (const integration of snapshot.integrations) {
-      if (integration.plugin_id !== "mcp") continue;
       const imported = yield* store.find("integration", integration.row_id);
       if (imported?.status !== "imported" || imported.v2_id === null) continue;
       const tools = yield* source.tools(snapshot.tenant, snapshot.subjects, integration.slug);
-      const always = stampedAlways(snapshot, integration, tools);
-      if (always.length > 0) planned.push({ integration, app: AppId.make(imported.v2_id), always });
+      const always =
+        integration.plugin_id === "mcp" ? stampedAlways(snapshot, integration, tools) : [];
+      const operations =
+        integration.plugin_id === "openapi"
+          ? (yield* source.openApiOperations(snapshot.tenant, integration.slug)).map(
+              (operation) => operation.tool,
+            )
+          : undefined;
+      const unlisted = unlistedChange(snapshot, integration, tools, operations);
+      if (always.length > 0 || unlisted !== null)
+        planned.push({ integration, app: AppId.make(imported.v2_id), always, unlisted });
     }
     return planned;
   });
@@ -192,11 +243,15 @@ export const repairOrganization = (organization: string, apply: boolean) =>
       firstParty: firstPartyClients(executor, environment.v1FirstPartyClients).lookup,
     };
 
-    // MCP apps: v1's stamps become the app's own `always` rules.
+    // v1's stamps and its rules for tools it did not list become the app's own.
     const apps: AppRepair[] = [];
     const appOwner = organizationOwner(target.id);
-    for (const { integration, app, always } of yield* planStampedApps(snapshot, source, store)) {
-      const base = { integration: integrationLabel(integration), app, always };
+    for (const { integration, app, always, unlisted } of yield* planStampedApps(
+      snapshot,
+      source,
+      store,
+    )) {
+      const base = { integration: integrationLabel(integration), app, always, unlisted };
       const plan = integrationPlan(integration);
       if (!plan.ok) {
         apps.push({ ...base, decision: "failed", files: [], reason: plan.reason });
@@ -214,12 +269,17 @@ export const repairOrganization = (organization: string, apply: boolean) =>
         after: generate(context, integration, plan.value, planned).pipe(
           Effect.flatMap((out) => scoped(out.files)),
         ),
-        before: generate(
-          { ...context, source: withoutStamps(source) },
-          integration,
-          plan.value,
-          planned,
-        ).pipe(Effect.flatMap((out) => scoped(out.files))),
+        // What the importer generated before each fix: without either, and with the stamps only.
+        before: Effect.all(
+          [withoutStamps(source), source].map((earlier) =>
+            generate(
+              { ...context, source: earlier, unlistedRules: false },
+              integration,
+              plan.value,
+              planned,
+            ).pipe(Effect.flatMap((out) => scoped(out.files))),
+          ),
+        ),
       }).pipe(Effect.option);
       if (Option.isNone(generated)) {
         apps.push({

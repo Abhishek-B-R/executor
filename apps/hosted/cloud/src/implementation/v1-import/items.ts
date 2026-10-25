@@ -155,6 +155,8 @@ export class ItemFailed extends Schema.TaggedError<ItemFailed>()("ItemFailed", {
   reason: Schema.String,
   vault: Schema.optional(Schema.Literals(["missing", "unavailable"])),
   stale: Schema.optional(V1StaleCategory),
+  /** The service did not respond: the item moves when tried again. */
+  outage: Schema.optional(Schema.Literal(true)),
 }) {}
 const fail = (reason: string) => Effect.fail(new ItemFailed({ reason }));
 const failStale = (stale: V1StaleCategory, reason: string) =>
@@ -551,6 +553,94 @@ export const approvalRules = (actions: ReadonlyMap<string, PolicyAction | "defau
   return { approvals, omitted };
 };
 
+/** A tool name no tool row has: only a rule's `*` in the tool's place matches it. */
+const unlistedName = "\u0000";
+
+/**
+ * Rows for tools v1 had no row for, as each of the integration's connections, and one made later
+ * in either scope, would list them. v1 decided such a tool by its rules once a connection listed
+ * it, so the app decides it the same way.
+ */
+const unlistedRows = (
+  snapshot: Pick<V1Snapshot, "connections">,
+  integration: Pick<IntegrationRow, "slug">,
+  names: Iterable<string>,
+): readonly ToolRow[] => {
+  const addresses = [
+    ...snapshot.connections
+      .filter((connection) => connection.integration === integration.slug)
+      .map(({ owner, subject, name }) => ({ owner, subject, connection: name })),
+    { owner: "org" as const, subject: "", connection: unlistedName },
+    { owner: "user" as const, subject: "", connection: unlistedName },
+  ];
+  return [...names].flatMap((name) =>
+    addresses.map((address) => ({
+      ...address,
+      name,
+      upstream: name,
+      requires_approval: false,
+      listed_at: null,
+    })),
+  );
+};
+
+/** The tool names the workspace's and toolkits' rules for an integration spell out in full. */
+const ruleNames = (snapshot: V1Snapshot, integration: Pick<IntegrationRow, "slug">) => {
+  const names = new Set<string>();
+  const patterns = [
+    ...snapshot.policies.map((policy) => policy.pattern),
+    ...decodedToolkits(snapshot).flatMap((toolkit) =>
+      toolkit.policies.map((policy) => policy.pattern),
+    ),
+  ];
+  for (const pattern of patterns) {
+    const segments = pattern.split(".");
+    if (segments[0] !== integration.slug || segments.length < 4) continue;
+    const name = segments.slice(3);
+    if (!name.includes("*")) names.add(name.join("."));
+  }
+  return names;
+};
+
+/**
+ * The app's rules from v1's policies: each tool v1 listed (`toolActions`), each tool a rule names
+ * that v1 did not list, such as one the server stopped listing, and each name in `exposed`. v1
+ * decided a tool it listed later by the same rules, so none of these runs with less than v1 gave
+ * it. `exposed` is every name the app can expose, when its source fixes them (OpenAPI); otherwise
+ * the server lists tools as it runs, and a tool no rule names gets what v1's rules give a tool
+ * they do not name (`otherwise`).
+ */
+export const v1ToolRules = (
+  snapshot: V1Snapshot,
+  integration: IntegrationRow,
+  tools: readonly ToolRow[],
+  aliases: Readonly<Record<string, string>> = {},
+  exposed?: readonly string[],
+): Pick<GeneratedToolRules, "approvals" | "omitted" | "otherwise"> => {
+  const listed = toolActions(snapshot, integration, tools, aliases);
+  const unlisted = new Set(
+    [...ruleNames(snapshot, integration), ...(exposed ?? [])].filter(
+      (name) => !listed.has(name) && !Object.hasOwn(aliases, name),
+    ),
+  );
+  const actions = new Map([
+    ...listed,
+    ...toolActions(snapshot, integration, unlistedRows(snapshot, integration, unlisted)),
+  ]);
+  const rules = approvalRules(actions);
+  if (exposed !== undefined) return rules;
+  const unnamed = toolActions(
+    snapshot,
+    integration,
+    unlistedRows(snapshot, integration, [unlistedName]),
+  ).get(unlistedName);
+  const rule =
+    unnamed === "block" ? "omitted" : unnamed === "require_approval" ? "always" : undefined;
+  return rule === undefined
+    ? rules
+    : { ...rules, otherwise: { rule, known: [...actions.keys()].sort() } };
+};
+
 const missingNames = (missing: readonly string[]) =>
   `v2 would not provide ${missing.length} of its v1 tools: ${missing
     .slice(0, 10)
@@ -727,7 +817,15 @@ const leftOutNote = (app: Pick<GeneratedApp, "traced" | "stale" | "dropped">) =>
 
 /** An integration's app source, generated from v1's rows without writing anything. */
 export const generate = (
-  context: { readonly snapshot: V1Snapshot; readonly source: GenerationSource },
+  context: {
+    readonly snapshot: V1Snapshot;
+    readonly source: GenerationSource;
+    /**
+     * False to generate the app as the importer did before it decided tools v1 did not list
+     * (`v1ToolRules`), for the repair of organizations moved before then.
+     */
+    readonly unlistedRules?: boolean;
+  },
   integration: IntegrationRow,
   decoded: ImportableIntegration,
   planned: Pick<AppAccounts, "methods" | "shared" | "fixed" | "dropped">,
@@ -745,6 +843,14 @@ export const generate = (
       ...(fixedAccount === undefined ? {} : { fixedAccount }),
     };
     const left = { traced: [], stale: [], dropped } as const;
+    const toolRules = (
+      tools: readonly ToolRow[],
+      aliases?: Readonly<Record<string, string>>,
+      exposed?: readonly string[],
+    ) =>
+      context.unlistedRules === false
+        ? approvalRules(toolActions(context.snapshot, integration, tools, aliases))
+        : v1ToolRules(context.snapshot, integration, tools, aliases, exposed);
     switch (decoded.plugin) {
       case "mcp": {
         const tools = yield* context.source.tools(tenant, subjects, integration.slug);
@@ -752,7 +858,7 @@ export const generate = (
         if (missing.length > 0) return yield* fail(missingNames(missing));
         const rules: GeneratedToolRules = {
           ...(rename ? { names: { kind: "lower_snake", overrides } } : {}),
-          ...approvalRules(toolActions(context.snapshot, integration, tools, aliases)),
+          ...toolRules(tools, aliases),
         };
         const aliased = Object.entries(aliases).sort(([a], [b]) => (a < b ? -1 : 1));
         const generated = yield* generateMcpSource(
@@ -800,7 +906,7 @@ export const generate = (
           queryParams,
           tools: {
             names: { kind: "graphql_path" },
-            ...approvalRules(toolActions(context.snapshot, integration, tools)),
+            ...toolRules(tools),
           },
           ...healthOf(check),
         });
@@ -925,12 +1031,10 @@ export const generate = (
           queryParams,
           tools: {
             names: { kind: "map", names },
-            ...approvalRules(
-              toolActions(
-                context.snapshot,
-                integration,
-                tools.filter((tool) => !staleNames.has(tool.name)),
-              ),
+            ...toolRules(
+              tools.filter((tool) => !staleNames.has(tool.name)),
+              {},
+              [...exposed].filter((name) => !staleNames.has(name)),
             ),
           },
           ...healthOf(checked?.ok === true ? checked.check : undefined),
@@ -1442,7 +1546,15 @@ const accountWrite = (
 /** Why v2 refused to save a connection's grant, as the user reads it, for an import and a check. */
 const grantRefusals = (write: Extract<AccountWrite, { kind: "grant" }>) =>
   Effect.catchTags({
-    OAuthSetupFailed: (error: OAuthSetupFailed) => fail(oauthSetupReason(error.reason)),
+    OAuthSetupFailed: (error: OAuthSetupFailed) =>
+      Effect.fail(
+        new ItemFailed({
+          reason: oauthSetupReason(error.reason),
+          ...(error.reason === "service_unavailable" || error.reason === "rate_limited"
+            ? { outage: true as const }
+            : {}),
+        }),
+      ),
     AuthMethodInvalid: () => fail("Its sign-in method is not in the imported app."),
     OAuthGrantNotImportable: (error: OAuthGrantNotImportable) =>
       write.firstParty === undefined
