@@ -8344,6 +8344,12 @@ export const scenarios = plan({
     title: "Cloud onboarding with Google opens prepared team confirmation",
     targets: cloudOnboarding,
   },
+  onboardingAssistant: {
+    file: "cloud-onboarding.spec.ts",
+    title:
+      "Cloud onboarding's assistant step notices any MCP client, and Claude's guide calls connected only an assistant that connects over MCP after it opens",
+    targets: cloudOnboarding,
+  },
   onboardingGithub: {
     file: "cloud-onboarding.spec.ts",
     title: "Cloud onboarding with GitHub retains edited team details through a failed confirmation",
