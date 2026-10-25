@@ -7627,6 +7627,117 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedManualWebhookAcrossDeploys: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual app-account webhook keeps its subscription, callback URL and secret across deploys that keep its setup, a deploy that changes the setup replaces it, and a caller's create is refused as app-managed",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookRollback: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "activating an earlier version moves a carried manual webhook back to it, so its deliveries run the active code, and activating the later version moves it forward again",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookStateSchema: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual webhook keeps its setup when a deploy reorders its state fields, and a deploy that changes what they accept replaces it in either direction",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookStateReference: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a deploy that reorders the anyOf branches a manual webhook's state schema references by position replaces its setup",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookNestedRequired: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual webhook keeps its setup when a deploy reorders a list of field names nested anywhere in its state schema, such as a Draft 7 dependency's required fields",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookDeepStateSchema: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual webhook keeps its setup across a deploy when its state schema nests 64 levels deep, and a deploy of an unchanged schema 65 or more levels deep replaces it instead of leaving its source pending",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookDeepConfiguration: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual webhook keeps its setup across a deploy when its configuration nests 64 levels deep, and a deploy of an unchanged configuration 65 or more levels deep replaces it instead of leaving its source pending",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookWideSetup: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a manual webhook keeps its setup across a deploy when the setup it compares is as long as the comparison allows, and a deploy of an unchanged setup one character longer replaces it",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookNestedWideSetup: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a deploy of an unchanged manual webhook setup whose configuration nests wide lists in each other, each fitting the comparison alone, replaces it",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedManualWebhookConcurrentActivations: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "a webhook source reconciling for an activation that another supersedes, also one back to the same version, is ready only once its manual and registered webhooks run the active version",
+    targets: {
+      local: na("Hosted managers and app links; Local has no organization roles."),
+      "self-host": scheduled,
+      // Deployed Cloud refuses the loopback provider fixture; the local Cloud Worker reaches it.
+      cloud: managedCloud,
+    },
+  },
   hostedAppSchedules: {
     fixtures: "actors",
     file: "app-schedules.spec.ts",

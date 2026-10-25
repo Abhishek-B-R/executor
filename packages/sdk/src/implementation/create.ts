@@ -187,6 +187,7 @@ export const createExecutor = (
       liveDefinitions: webhooks.liveDefinitions,
       retarget: webhooks.retarget,
       createManaged: webhooks.createManaged,
+      removeManaged: webhooks.removeManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
     // App source defines schedules. Each activation removes saved settings for schedules the new

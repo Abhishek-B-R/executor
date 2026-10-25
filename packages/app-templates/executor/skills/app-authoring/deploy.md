@@ -495,7 +495,9 @@ Every call follows the active version, so nothing needs updating to pick up
 new code. The next `execute` lists and calls the new tools. Activating a
 version re-registers each webhook source's subscriptions on it in the
 background, usually within seconds, without blocking tool calls; the app's
-Webhooks tab shows their status. It also deletes the saved settings of schedules
+Webhooks tab shows their status. A manual (`setup`) subscription keeps its
+callback URL, secret and setup fields while the activated version keeps the same
+`signingSecret` and accepts the same `state` fields; changing either needs a new setup. It also deletes the saved settings of schedules
 the new version no longer declares.
 
 `apps.versions` lists retained versions. `apps.source` accepts an optional
