@@ -79,6 +79,12 @@ export const appWorkerBudgetLimit = 2;
  * stalled app reached during the program is told apart from one discovery gave up on.
  */
 export const lazyStallTimeoutMs = 15_000;
+/**
+ * Seconds the aged search rows scenario's server reuses a tool listing
+ * (`EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS`), in place of the default day: MCP readers never renew
+ * the rows they read, so every app's rows age past it together.
+ */
+export const agedRowsMaxAgeSeconds = 30;
 /** Seconds an idle app Worker stays loaded in the idle unloading scenario. */
 export const appWorkerIdleSeconds = 4;
 /** A relay callback in a valid form other than its serialization, which the SDK sends. */
@@ -610,7 +616,31 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
-  // The two Cloud listing scenarios read a running listing or a remembered timeout, which live only
+  mcpAgedSearchRows: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title:
+      "MCP execute serves a search from rows past the listing age at once and renews them in the background",
+    serverEnvironment: { EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS: String(agedRowsMaxAgeSeconds) },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Needs a short listing age; Cloud serves search through the same listings code"),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  mcpAgedRowsFailedRenewal: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title:
+      "MCP execute reports an app whose aged search rows fail to renew, however fast, until its upstream recovers",
+    serverEnvironment: { EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS: String(agedRowsMaxAgeSeconds) },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Needs a short listing age and a loopback upstream; same listings code"),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  // The Cloud listing scenarios read a running listing or a remembered timeout, which live only
   // in the isolate that ran the listing. The local Worker serves every search from one isolate; a
   // deployed one may not.
   mcpBackgroundListingCloud: {
@@ -634,6 +664,19 @@ export const scenarios = plan({
       cloud: managedCloud,
       "self-host": na(
         "Self-host keeps background work for the server's lifetime; its stalled listing scenario covers the load bound",
+      ),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  mcpStoppedRenewalCloud: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title:
+      "Cloud remembers a stopped renewal of aged search rows as timed out and reports the app until it recovers",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host never refuses background work, so its aged-row renewals always run as their own and stop at the load bound",
       ),
       local: na("Hosted version API scenario"),
     },
