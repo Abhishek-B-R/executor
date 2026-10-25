@@ -85,6 +85,16 @@ const refreshFailures = {
     body: { ok: false, error: "internal_error", ...privateError },
   },
   invalid_grant: { status: 400, body: { error: "invalid_grant", ...privateError } },
+  // Supabase Auth's OAuth server refuses a refresh with its own body instead of RFC 6749's
+  // `error`. Its `refresh_token_already_used` means the grant has ended; other codes do not.
+  supabase_refusal: {
+    status: 400,
+    body: { code: 400, error_code: "validation_failed", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
+  supabase_already_used: {
+    status: 400,
+    body: { code: 400, error_code: "refresh_token_already_used", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
 } satisfies Record<string, TokenError>;
 type RefreshFailure = keyof typeof refreshFailures;
 /** Seconds a token lasts when a scenario needs it to expire before the next call. */
@@ -399,6 +409,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             providerError: "invalid_scope",
           },
           { failure: "slack_internal_error", reason: "renewal_rejected", status: 200 },
+          { failure: "supabase_refusal", reason: "renewal_rejected", status: 400 },
         ];
         for (const scenario of transient) {
           yield* Effect.sleep(pastShortLifetime);
@@ -518,6 +529,24 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const again = yield* read();
         expect(again.status, JSON.stringify(again.body)).toBe(409);
         expect(yield* refreshes).toBe(beforeRefusal + 1);
+
+        // Supabase Auth's own code for a refresh token used again ends the grant too, so the
+        // account asks to reconnect instead of renewing on every use.
+        const reused = yield* connect("Synthetic reused account");
+        yield* issuer.configure({ tokenError: refreshFailures.supabase_already_used });
+        const beforeReuse = yield* refreshes;
+        const ended = yield* read();
+        expect(ended.status, JSON.stringify(ended.body)).toBe(409);
+        expect(yield* body(Failure, ended)).toMatchObject({
+          _tag: "OAuthReconnectRequired",
+          account: reused,
+          cause: { stage: "refresh", status: 400 },
+        });
+        assertPrivate(ended.body);
+        yield* issuer.configure({ tokenError: null });
+        const stillEnded = yield* read();
+        expect(stillEnded.status, JSON.stringify(stillEnded.body)).toBe(409);
+        expect(yield* refreshes).toBe(beforeReuse + 1);
       }),
     ),
   );

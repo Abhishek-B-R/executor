@@ -193,15 +193,19 @@ const serviceErrorResponse = (error: unknown, description: unknown, secrets: Sen
 
 /**
  * RFC 6749 §5.2: a JSON object with an `error` code and no access token is an error response,
- * whatever its HTTP status.
+ * whatever its HTTP status. Supabase Auth's OAuth server answers a refused refresh in its own
+ * shape, `{"code": 400, "error_code": "refresh_token_already_used", "msg": "..."}`, with no
+ * `error`; its code and message stand in for RFC 6749's.
  */
 const oauthErrorBody = (body: unknown) => {
-  if (!isObject(body)) return undefined;
+  if (!isObject(body) || Reflect.get(body, "access_token") !== undefined) return undefined;
   const error = Reflect.get(body, "error");
-  return typeof error === "string" &&
-    error !== "" &&
-    Reflect.get(body, "access_token") === undefined
-    ? { error, description: Reflect.get(body, "error_description") }
+  if (typeof error === "string" && error !== "")
+    return { error, description: Reflect.get(body, "error_description") };
+  const supabase = Reflect.get(body, "error_code");
+  const message = Reflect.get(body, "msg");
+  return typeof supabase === "string" && supabase !== "" && typeof message === "string"
+    ? { error: supabase, description: message }
     : undefined;
 };
 
@@ -387,9 +391,20 @@ const isClientRejection = (error: string) =>
   error === "invalid_client_id" ||
   error.startsWith("invalid_client:");
 
+/**
+ * Supabase Auth's codes for a refresh token that can never be used again, its RFC 6749
+ * `invalid_grant`: it was already used outside the reuse interval, which also revokes every token
+ * of its session, or it or its session no longer exists or has expired.
+ */
+const isEndedSupabaseGrant = (error: string) =>
+  error === "refresh_token_already_used" ||
+  error === "refresh_token_not_found" ||
+  error === "session_expired" ||
+  error === "session_not_found";
+
 /** The reason an RFC 6749 §5.2 error code gives for a failed token request. */
 const errorReason = (error: string) =>
-  error === "invalid_grant"
+  error === "invalid_grant" || isEndedSupabaseGrant(error)
     ? ("invalid_grant" as const)
     : isClientRejection(error)
       ? ("invalid_client" as const)

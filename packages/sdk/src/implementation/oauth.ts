@@ -396,9 +396,10 @@ const outcome = (error: OAuthProtocolFailed) =>
             : "incompatible";
 
 /**
- * Classify a failed renewal. Only RFC 6749 §5.2's `invalid_grant` says this account's grant has
- * ended: its refresh token was revoked, expired or already used. Every other refusal keeps the
- * grant, because it says nothing about it:
+ * Classify a failed renewal. Only RFC 6749 §5.2's `invalid_grant`, or a service's own code for
+ * it such as Supabase Auth's `refresh_token_already_used`, says this account's grant has ended:
+ * its refresh token was revoked, expired or already used. Every other refusal keeps the grant,
+ * because it says nothing about it:
  *
  * - `invalid_client`, `unauthorized_client` and a 401 are about the OAuth client, which every
  *   account on that client shares. They are also what a fault in Executor's own client
