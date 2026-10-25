@@ -6744,6 +6744,32 @@ export const scenarios = plan({
       local: na("Hosted account selection covers the shared catalog diagnostics."),
     },
   },
+  mcpFailureReference: {
+    fixtures: "actors",
+    file: "mcp-failure-reference.spec.ts",
+    title:
+      "MCP failures name their cause, the phase they stopped and the request's trace on search, call and execute",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The failing MCP server is a loopback listener; the shared MCP diagnostics are covered on self-host.",
+      ),
+      local: na("Hosted self-host covers the shared MCP diagnostics."),
+    },
+  },
+  mcpFailureReferenceMatchedLimit: {
+    fixtures: "actors",
+    file: "mcp-failure-reference.spec.ts",
+    title:
+      "MCP failures call a runtime limit matched from an app Worker's own error a cause Executor has not confirmed",
+    targets: {
+      "self-host": na(
+        "The scenario above asserts the same unconfirmed match for the forged rejection on self-host.",
+      ),
+      cloud: managedCloud,
+      local: na("Hosted Cloud covers the shared runtime presentation."),
+    },
+  },
   mcpExecuteAppThrew: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",

@@ -45,7 +45,7 @@ import {
   type Executor,
   type ResourceLifecycle,
 } from "../contracts/executor.ts";
-import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
+import { AppCodeEntered, runtimeFailures, type Runtime } from "../contracts/runtime.ts";
 import {
   Cursor,
   ToolName,
@@ -660,10 +660,8 @@ const runtimeFailure = (
       HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),
       HostOutputInvalid: () => new ToolCallFailed({ ...identity, reason: "Tool execution failed" }),
-      HostRequestInvalid: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
-      HostAccountsInvalid: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
+      HostRequestInvalid: (error) => evaluationFailure(identity, error),
+      HostAccountsInvalid: (error) => evaluationFailure(identity, error),
       // Also how the app's framework reports an unexpected failure anywhere in its handling of
       // the call, including after the handler returned, so it is not reported as a failure to
       // load the app's tools.
@@ -676,11 +674,11 @@ const runtimeFailure = (
       HostEvaluationFailed: (error) => evaluationFailure(identity, error),
       SkillLoadFailed: (error) => evaluationFailure(identity, error),
       McpError: (error) => operationMcpFailure(identity, error),
-      RuntimeBuildUnavailable: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
+      RuntimeBuildUnavailable: (error) => evaluationFailure(identity, error),
       // The runtime's reply to the call was lost or unusable, which can happen after the tool ran,
-      // so it is not reported as a failure to load the app's tools.
-      // A size failure is matched on text the app's Worker can produce, so it stays a likely cause.
+      // so it is not reported as a failure to load the app's tools. The kind is matched from the
+      // runtime's error, which the app's isolate can produce, so it is not claimed: a size failure
+      // stays a likely cause.
       RuntimeProtocolFailed: ({ reason }) =>
         reason === "too-large"
           ? new ToolCallFailed({
@@ -690,10 +688,15 @@ const runtimeFailure = (
             })
           : new ToolCallFailed({
               ...identity,
-              reason: "Executor did not receive a usable result from this tool call.",
+              reason: `Executor did not receive a usable result from this tool call. ${
+                reason === undefined
+                  ? "The runtime did not report why."
+                  : reason === "unrecognized"
+                    ? "The runtime did not recognize why."
+                    : `The runtime’s error matches this cause, which Executor has not confirmed: ${runtimeFailures[reason]}.`
+              }`,
             }),
-      RuntimeProtocolUnsupported: (error) =>
-        new AppEvaluationFailed({ ...identity, reason: error.message }),
+      RuntimeProtocolUnsupported: (error) => evaluationFailure(identity, error, error.message),
     }),
   );
 

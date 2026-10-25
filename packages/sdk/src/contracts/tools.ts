@@ -22,7 +22,10 @@ import {
   ApprovalElicitation,
   ApprovalResponse,
   ElicitationFailed,
+  HostAccountsInvalid,
+  HostDeclarationInvalid,
   HostEvaluationFailed,
+  HostRequestInvalid,
   HostedRouter,
   type HostRouterError,
   HostedTool,
@@ -30,6 +33,13 @@ import {
   type ElicitationHandler,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
+import {
+  RuntimeBuildUnavailable,
+  RuntimeFailure,
+  runtimeFailures,
+  RuntimeProtocolFailed,
+  RuntimeProtocolUnsupported,
+} from "./runtime.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
 import type { Executor } from "./executor.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
@@ -833,6 +843,213 @@ export const mcpFailurePresentation = ({
   }
 };
 
+/** The errors an app's framework answers with when it cannot evaluate the app without details. */
+const FrameworkError = Schema.Literals([
+  "HostRequestInvalid",
+  "HostAccountsInvalid",
+  "HostDeclarationInvalid",
+  "HostEvaluationFailed",
+]);
+
+/**
+ * What failed when the app's definition could not be evaluated and neither the app's code nor a
+ * service it called stated an error: the app's Worker, the build Executor keeps for it, the host
+ * protocol the build speaks, or the app's framework, which answered without details.
+ */
+export const EvaluationRuntime = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("worker"),
+    /** The failure the runtime's error matched, absent when the runtime reported none. */
+    failure: Schema.optional(RuntimeFailure),
+  }),
+  Schema.Struct({ kind: Schema.Literal("build") }),
+  Schema.Struct({
+    kind: Schema.Literal("protocol"),
+    protocol: Schema.Int,
+    supported: Schema.Array(Schema.Int),
+  }),
+  Schema.Struct({ kind: Schema.Literal("framework"), error: FrameworkError }),
+]);
+export type EvaluationRuntime = typeof EvaluationRuntime.Type;
+
+/**
+ * The runtime failures only the host's own code sets: its read of the build, its protocol check,
+ * and its account handling. Every other kind is matched from the text a failed call rejected with,
+ * which the app's isolate can produce, the runtime's own messages included.
+ */
+const hostRuntimeFailures: ReadonlySet<RuntimeFailure> = new Set([
+  "build",
+  "unsupported",
+  "managed",
+]);
+const loadingInstructions =
+  "This happened while Executor loaded the app's definition, before any tool ran. Do not change the app's accounts to work around it.";
+const rebuild = {
+  action: "Rebuild the app on this host’s apps version and deploy it again.",
+  instructions: `${loadingInstructions} Read framework.release for the apps version this host runs, pin it in the app's package.json, deploy the app again, and verify that its tools load.`,
+};
+const retryOnce = (then: string, instructions: string) => ({
+  action: `Try again once. If it fails the same way, ${then}`,
+  instructions: `${loadingInstructions} Retry the unchanged request at most once. ${instructions} Verify that the app's tools load after the repair.`,
+});
+const reportReference =
+  "If it fails again, report the failure with the reference shown beside this error, if any, and check what the app's recent changes run while it lists its tools.";
+
+/** What the app's Worker failure says and what to do about it. */
+const workerPresentation = (failure: RuntimeFailure | undefined) => {
+  const stopped = "The app’s Worker stopped without an answer from the app’s code";
+  const description =
+    failure === undefined
+      ? `${stopped}, and the runtime did not report why.`
+      : failure === "unrecognized"
+        ? `${stopped}, for a reason the runtime did not recognize.`
+        : hostRuntimeFailures.has(failure)
+          ? `${runtimeFailures[failure]}.`
+          : `${stopped}. Its error matches this cause, which Executor has not confirmed: ${runtimeFailures[failure]}.`;
+  switch (failure) {
+    case "memory":
+    case "cpu":
+    case "timeout":
+    case "too-large":
+      return {
+        description,
+        recovery: retryOnce(
+          "reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. Find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+        ),
+        retryable: true,
+      };
+    case "cold-start":
+      return {
+        description,
+        recovery: retryOnce(
+          "check that the app’s modules load without throwing.",
+          "A Worker that could not be loaded matches this failure, such as a module whose top-level code throws or an import that cannot be resolved. Check the app's modules and imports, then deploy it again.",
+        ),
+        retryable: true,
+      };
+    case "hung":
+      return {
+        description,
+        recovery: retryOnce(
+          "check that the app’s factory does not wait on something that never finishes.",
+          "A Worker that can never answer matches this failure, such as code that awaits a promise nothing settles.",
+        ),
+        retryable: true,
+      };
+    case "invalid-reply":
+      return {
+        description,
+        recovery: retryOnce(
+          "rebuild the app on this host’s apps version.",
+          "An answer that does not match the host protocol matches this failure, such as one from an app built on another apps version. Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.",
+        ),
+        retryable: true,
+      };
+    case "build":
+      return {
+        description,
+        recovery: retryOnce(
+          "deploy the app again.",
+          "Executor could not read the build it keeps for the app's current deployment. Deploying the app's source again creates a new build.",
+        ),
+        retryable: true,
+      };
+    case "unsupported":
+    case "managed":
+      return { description, recovery: rebuild, retryable: false };
+    default:
+      return {
+        description,
+        recovery: retryOnce(
+          "report the failure with its reference.",
+          `This does not show whether the app's code or Executor's runtime caused it. ${reportReference}`,
+        ),
+        retryable: true,
+      };
+  }
+};
+
+/** What the framework's answer without details reports. */
+const frameworkFailures: Record<typeof FrameworkError.Type, string> = {
+  HostRequestInvalid: "it could not read Executor’s request",
+  HostAccountsInvalid: "the accounts Executor sent do not match the ones the app declares",
+  HostDeclarationInvalid: "the app’s tools or skills are declared in a way it cannot host",
+  HostEvaluationFailed:
+    "evaluating the app failed; builds on older apps versions report no further detail",
+};
+
+/** Present a failure of the app's runtime, build or framework while loading its definition. */
+const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
+  const loaded = (description: string) =>
+    `Executor could not load this app’s tool definitions. ${description}`;
+  switch (runtime.kind) {
+    case "worker":
+    case "build": {
+      const { description, ...rest } = workerPresentation(
+        runtime.kind === "build" ? "build" : runtime.failure,
+      );
+      return { title: "Tools could not be loaded", description: loaded(description), ...rest };
+    }
+    case "protocol":
+      return {
+        title: "App build is not supported",
+        description: loaded(
+          `This app’s apps framework uses host protocol ${runtime.protocol}; this host runs protocol ${runtime.supported.join(", ")}.`,
+        ),
+        recovery: rebuild,
+        retryable: false,
+      };
+    case "framework":
+      return {
+        title: "Tools could not be loaded",
+        description: loaded(
+          `The app’s framework answered ${runtime.error} without details: it reported that ${frameworkFailures[runtime.error]}.`,
+        ),
+        recovery: retryOnce(
+          "rebuild the app on this host’s apps version.",
+          `The app's framework reported this, so Executor has not confirmed its cause. An app built on an apps version far from this host's is a common one.${runtime.error === "HostDeclarationInvalid" ? " Check the app's tool and skill declarations too, such as duplicate tool names or invalid schemas." : ""} Read framework.release for the apps version this host runs, pin it in the app's package.json and deploy the app again.`,
+        ),
+        retryable: true,
+      };
+  }
+};
+
+/** What traces record for a runtime failure: closed literals only. */
+const recordedRuntime = (runtime: EvaluationRuntime) => {
+  switch (runtime.kind) {
+    case "worker":
+      return `the app's Worker failed (${runtime.failure ?? "unreported"})`;
+    case "build":
+      return "the app's build could not be read";
+    case "protocol":
+      return "the app's build uses a host protocol this host does not run";
+    case "framework":
+      return `the app's framework answered ${runtime.error}`;
+  }
+};
+
+/** The runtime failure an evaluation's error reports, if it is one. */
+const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
+  if (Schema.is(RuntimeProtocolFailed)(error))
+    return {
+      kind: "worker",
+      ...(error.reason === undefined ? {} : { failure: error.reason }),
+    };
+  if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
+  if (Schema.is(RuntimeProtocolUnsupported)(error))
+    return { kind: "protocol", protocol: error.protocol, supported: error.supported };
+  if (Schema.is(HostRequestInvalid)(error))
+    return { kind: "framework", error: "HostRequestInvalid" };
+  if (Schema.is(HostAccountsInvalid)(error))
+    return { kind: "framework", error: "HostAccountsInvalid" };
+  if (Schema.is(HostDeclarationInvalid)(error))
+    return { kind: "framework", error: "HostDeclarationInvalid" };
+  if (Schema.is(HostEvaluationFailed)(error))
+    return { kind: "framework", error: "HostEvaluationFailed" };
+  return undefined;
+};
+
 /**
  * Evaluating the app's live definition failed before any tool ran. With `mayHaveWritten`, it
  * failed during a call that may write, after the host handed the call to the app's code, which
@@ -861,9 +1078,14 @@ export const AppEvaluationFailed = UserFacingError.define({
      * including the session a tool call opens, or while listing its tools.
      */
     mcp: Schema.optional(McpFailure),
+    /**
+     * Present when the app's Worker, its build or its framework failed without an error of the
+     * app's own: the runtime failure Executor observed or matched.
+     */
+    runtime: Schema.optional(EvaluationRuntime),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ skills, mcp, failure }) =>
+  recorded: ({ skills, mcp, failure, runtime }) =>
     `Tools could not be loaded: ${
       mcp !== undefined
         ? recordedMcp(mcp)
@@ -871,36 +1093,53 @@ export const AppEvaluationFailed = UserFacingError.define({
           ? recordedApp(failure)
           : skills !== undefined
             ? `the app's skill source failed (${skills.reason})${recordedStatus(skills.status)}`
-            : "the app's definition could not be evaluated"
+            : runtime !== undefined
+              ? recordedRuntime(runtime)
+              : "the app's definition could not be evaluated"
     }`,
-  presentation: callPresentation(({ skills, mcp, failure }) =>
+  presentation: callPresentation(({ skills, mcp, failure, runtime }) =>
     mcp !== undefined
       ? mcpFailurePresentation(mcp)
-      : failure !== undefined
-        ? {
-            title: "Tools could not be loaded",
-            description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
-            recovery: {
-              action: "Try again. If this continues, investigate this error and fix its cause.",
-              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
-            },
-            retryable: true,
-          }
-        : skills === undefined
+      : runtime !== undefined && failure === undefined
+        ? runtimePresentation(runtime)
+        : failure !== undefined
           ? {
               title: "Tools could not be loaded",
-              description: "Executor could not load this app’s tool definitions.",
+              description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
               recovery: {
-                action: "Try again. If this continues, copy the fix prompt to investigate the app.",
-                instructions: evaluationInstructions,
+                action: "Try again. If this continues, investigate this error and fix its cause.",
+                instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
               },
               retryable: true,
             }
-          : skillPresentation(skills),
+          : skills === undefined
+            ? {
+                title: "Tools could not be loaded",
+                description: "Executor could not load this app’s tool definitions.",
+                recovery: {
+                  action:
+                    "Try again. If this continues, copy the fix prompt to investigate the app.",
+                  instructions: evaluationInstructions,
+                },
+                retryable: true,
+              }
+            : skillPresentation(skills),
   ),
 });
 /** Parsed evaluation failure; raw runtime diagnostics never enter its presentation. */
 export type AppEvaluationFailed = typeof AppEvaluationFailed.Type;
+/**
+ * Whether Executor's own code found that the app's definition could not load: it could not read
+ * the app's build, the build speaks a host protocol this host does not run, or the build cannot
+ * receive the accounts the host handles. Every other evaluation failure reaches the host through
+ * code the app controls, which can raise it while its tools are listed or called.
+ */
+export const hostObservedEvaluation = ({ runtime }: AppEvaluationFailed) =>
+  runtime?.kind === "build" ||
+  runtime?.kind === "protocol" ||
+  (runtime?.kind === "worker" &&
+    runtime.failure !== undefined &&
+    hostRuntimeFailures.has(runtime.failure));
 
 /**
  * A tool listing ran longer than a caller waits, or than its bound with nobody waiting, or was
@@ -1172,15 +1411,21 @@ export const appFailure = ({
       });
 
 /**
- * Keep a skill loader's or MCP server's safe fields, and the error the app's own factory or loader
- * raised; other evaluation failures stay generic.
+ * Keep a skill loader's or MCP server's safe fields, the error the app's own factory or loader
+ * raised, or the runtime failure that stopped the app's Worker, build or framework. Only an error
+ * none of them describes stays generic.
  */
 export const evaluationFailure = (
   identity: { app: AppId; version: VersionId },
   error: unknown,
   reason = "App evaluation failed",
-) =>
-  new AppEvaluationFailed({
+) => {
+  const failure =
+    Schema.is(HostEvaluationFailed)(error) || Schema.is(HostDeclarationInvalid)(error)
+      ? appFailure(error)
+      : Option.none<AppFailure>();
+  const runtime = Option.isNone(failure) ? evaluationRuntime(error) : undefined;
+  return new AppEvaluationFailed({
     app: identity.app,
     version: identity.version,
     reason,
@@ -1194,11 +1439,11 @@ export const evaluationFailure = (
           },
         }
       : {}),
-    ...(Schema.is(HostEvaluationFailed)(error)
-      ? Option.match(appFailure(error), { onNone: () => ({}), onSome: (failure) => ({ failure }) })
-      : {}),
+    ...Option.match(failure, { onNone: () => ({}), onSome: (failure) => ({ failure }) }),
+    ...(runtime === undefined ? {} : { runtime }),
     ...(Schema.is(McpError)(error) ? { mcp: mcpFailure(error) } : {}),
   });
+};
 
 /**
  * What a router that could not list its tools reports to a caller of the listing, such as MCP

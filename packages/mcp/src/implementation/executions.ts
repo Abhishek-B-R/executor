@@ -52,7 +52,7 @@ import {
 } from "../contracts/execute.ts";
 import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../contracts/browser.ts";
 import { programScheduler } from "./program-scheduler.ts";
-import { reportFailure } from "./diagnostics.ts";
+import { failureReference, reportFailure } from "./diagnostics.ts";
 import {
   executionProgress,
   reportedCalls,
@@ -604,6 +604,8 @@ export const makeExecutions = (
     ): Effect.Effect<McpExecutionResult> =>
       Effect.gen(function* () {
         run.busy = true;
+        // Failures the program meets from here are this request's to report, so they name its trace.
+        run.progress.reference = yield* failureReference;
         run.scheduling.resume();
         const started = yield* Clock.currentTimeMillis;
         const loop = Effect.gen(function* () {
@@ -769,7 +771,7 @@ export const makeExecutions = (
             events: yield* Queue.unbounded<Event>(),
             pending: new Map(),
             operations: new Set(),
-            progress: executionProgress(),
+            progress: executionProgress(yield* failureReference),
             expired: yield* Deferred.make<void>(),
             remainingMs: limits.timeoutMs,
             busy: false,

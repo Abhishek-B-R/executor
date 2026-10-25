@@ -31,7 +31,9 @@ import {
   diagnosticSummary,
   executionDiagnostic,
   failureDetail,
+  failureReference,
   reportFailure,
+  type FailureSite,
 } from "./diagnostics.ts";
 import { nearest } from "./suggestions.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
@@ -811,6 +813,11 @@ function catalog(
       discoveryIdleMs,
     } = defaultMcpRuntimeLimits;
     const slots = yield* Semaphore.make(concurrency);
+    // Every failure this catalog reports names the trace of the request driving it then.
+    const site = (operation: FailureSite["operation"]): FailureSite => ({
+      operation,
+      reference: progress.reference,
+    });
     // Listings share one app runtime, so how long one takes depends on the others. Discovery
     // gives up on an app only when no listing has completed for a while, not on a per-app clock.
     let progressed = yield* Clock.currentTimeMillis;
@@ -965,7 +972,7 @@ function catalog(
               // still gets the whole result; the call is reported as a failure.
               if (result.toolError === true) yield* toolReportedError(progress);
               return result.value;
-            }).pipe(Effect.mapError((error) => toolError(diagnostic(error)))),
+            }).pipe(Effect.mapError((error) => toolError(diagnostic(error, site("call"))))),
           ),
         );
     /** The program's own tool for an entry, built when the program's catalog takes its app. */
@@ -1020,13 +1027,13 @@ function catalog(
                   // timed out. Give up on the app now, as discovery would after waiting.
                   if (Schema.is(ToolListingTimedOut)(error)) yield* stop(app.id);
                   yield* unloaded(error);
-                  return { kind: "failed", error: diagnostic(error) } as const;
+                  return { kind: "failed", error: diagnostic(error, site("discover")) } as const;
                 }),
               ),
             );
           }),
           Effect.catch((error) =>
-            Effect.succeed({ kind: "failed", error: diagnostic(error) } as const),
+            Effect.succeed({ kind: "failed", error: diagnostic(error, site("discover")) } as const),
           ),
         );
       });
@@ -1055,7 +1062,10 @@ function catalog(
                   app: app.id,
                   name: `${app.name} ${router.title ?? router.path}`,
                   router: router.path,
-                  reason: diagnostic(routerFailure({ app: app.id, version }, router.error)),
+                  reason: diagnostic(
+                    routerFailure({ app: app.id, version }, router.error),
+                    site("discover"),
+                  ),
                 },
               },
             ],
@@ -1068,7 +1078,7 @@ function catalog(
     const accountRequired = (app: ListedApp) => ({
       app: app.id,
       name: app.name,
-      reason: diagnostic(new AppAccountRequired({ app: app.id })),
+      reason: diagnostic(new AppAccountRequired({ app: app.id }), site("discover")),
     });
 
     const project = (
@@ -1275,7 +1285,10 @@ function catalog(
           failed.push({
             app: app.id,
             name: app.name,
-            reason: diagnostic(new ToolSearchUnavailable({ app: app.id, reason: "removed" })),
+            reason: diagnostic(
+              new ToolSearchUnavailable({ app: app.id, reason: "removed" }),
+              site("discover"),
+            ),
           });
         }
         progress.unavailableApps = unavailableApps();
@@ -1390,13 +1403,20 @@ export type ExecutionProgress = {
    * it when they happen reports them, with its own reporter and trace.
    */
   readonly failures: Array<Error>;
+  /**
+   * The trace of the request driving the program, the reference of each failure the program
+   * meets. Its driver sets it before the program runs again, so a failure after a resume names
+   * the resume that reports it, not the request that started the program.
+   */
+  reference: string | undefined;
 };
-export const executionProgress = (): ExecutionProgress => ({
+export const executionProgress = (reference: string | undefined): ExecutionProgress => ({
   calls: [],
   callFibers: new Map(),
   phase: "discovery",
   unavailableApps: [],
   failures: [],
+  reference,
 });
 const recordFailure = (progress: ExecutionProgress, error: Error) =>
   Effect.sync(() => {
@@ -1708,7 +1728,12 @@ function runProgram(
     }).pipe(
       Effect.catch((error) =>
         recordFailure(progress, error).pipe(
-          Effect.as(failure("ExecutionFailure", diagnostic(error))),
+          Effect.as(
+            failure(
+              "ExecutionFailure",
+              diagnostic(error, { operation: "discover", reference: progress.reference }),
+            ),
+          ),
         ),
       ),
     );
@@ -1844,7 +1869,12 @@ export function callTools(input: typeof CallInput.Type): Program {
       }).pipe(
         Effect.catch((error) =>
           recordFailure(progress, error).pipe(
-            Effect.as(failure("ExecutionFailure", diagnostic(error))),
+            Effect.as(
+              failure(
+                "ExecutionFailure",
+                diagnostic(error, { operation: "discover", reference: progress.reference }),
+              ),
+            ),
           ),
         ),
       );
@@ -1860,7 +1890,7 @@ const readCatalog = <A>(
   read: (discovered: Effect.Success<ReturnType<typeof catalog>>) => Effect.Effect<A, Error>,
 ) =>
   Effect.gen(function* () {
-    const progress = executionProgress();
+    const progress = executionProgress(yield* failureReference);
     // No program runs, so no program deadline stops a load.
     return yield* catalog(backend, progress, Effect.never).pipe(
       Effect.flatMap((discovered) =>
@@ -1874,7 +1904,14 @@ const readCatalog = <A>(
       Effect.catch((error) =>
         reportFailure(error).pipe(
           Effect.andThen(
-            Effect.fail(new CatalogUnavailable({ message: diagnosticSummary(error) })),
+            Effect.fail(
+              new CatalogUnavailable({
+                message: diagnosticSummary(error, {
+                  operation: "discover",
+                  reference: progress.reference,
+                }),
+              }),
+            ),
           ),
         ),
       ),

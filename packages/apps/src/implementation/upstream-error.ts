@@ -40,7 +40,11 @@ const bounded = (message: string) => boundStated(message, maxUpstreamMessageLeng
 export const isShortenedUpstream = (message: string) =>
   isShortenedStated(message, maxUpstreamMessageLength);
 
-const stated = (code: number | string, message: string | undefined): UpstreamError => ({
+/** A service's stated error code and message, the message bounded. */
+export const statedUpstream = (
+  code: number | string,
+  message: string | undefined,
+): UpstreamError => ({
   code,
   ...(message === undefined || message === "" ? {} : { message: bounded(message) }),
 });
@@ -48,9 +52,10 @@ const stated = (code: number | string, message: string | undefined): UpstreamErr
 /** The error a JSON error body states, if it uses a nested error object or OAuth's format. */
 export const bodyUpstreamError = (json: unknown): UpstreamError | undefined => {
   const nested = Schema.decodeUnknownOption(NestedError)(json);
-  if (Option.isSome(nested)) return stated(nested.value.error.code, nested.value.error.message);
+  if (Option.isSome(nested))
+    return statedUpstream(nested.value.error.code, nested.value.error.message);
   const oauth = Schema.decodeUnknownOption(OAuthError)(json);
-  if (Option.isSome(oauth)) return stated(oauth.value.error, oauth.value.error_description);
+  if (Option.isSome(oauth)) return statedUpstream(oauth.value.error, oauth.value.error_description);
   return undefined;
 };
 
@@ -66,5 +71,7 @@ export const challengeUpstreamError = (header: string | undefined): UpstreamErro
     if (name !== undefined && !params.has(name.toLowerCase()))
       params.set(name.toLowerCase(), quoted?.replace(/\\(.)/g, "$1") ?? token ?? "");
   const code = Schema.decodeUnknownOption(ErrorToken)(params.get("error"));
-  return Option.isNone(code) ? undefined : stated(code.value, params.get("error_description"));
+  return Option.isNone(code)
+    ? undefined
+    : statedUpstream(code.value, params.get("error_description"));
 };

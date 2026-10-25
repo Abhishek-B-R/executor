@@ -270,9 +270,24 @@ export type McpToolCall = typeof McpToolCall.Type;
  * does not guarantee success, and correcting the input, configuration or access may allow a new
  * attempt even when it is false.
  */
+/**
+ * Which part of Executor's work on an app a failure stopped, as Executor observed it: loading the
+ * app's definition (`evaluate`), listing its tools (`discover`) or running one (`call`). Only
+ * Executor's own code sets it; a phase the app reports stays in the message as its account.
+ */
+export const McpFailurePhase = Schema.Literals(["evaluate", "discover", "call"]);
+export type McpFailurePhase = typeof McpFailurePhase.Type;
+/**
+ * The trace ID of the request that met a failure: the one Executor's tracer created, or continued
+ * from the MCP client's `traceparent`, never one an app chose. The request's spans and error
+ * reports carry it, so a user can share it to find the failure.
+ */
+export const FailureReference = Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u));
 export const McpErrorResponse = Schema.Struct({
   ...ApiErrorResponse.fields,
   retryable: Schema.Boolean,
+  phase: Schema.optionalKey(McpFailurePhase),
+  reference: Schema.optionalKey(FailureReference),
 });
 export type McpErrorResponse = typeof McpErrorResponse.Type;
 /** Program result plus apps that could not expose a live catalog during this execution. */

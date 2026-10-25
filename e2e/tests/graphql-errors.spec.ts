@@ -253,6 +253,8 @@ const ExecutionFailed = Schema.Struct({
           Schema.Struct({ action: Schema.String, instructions: Schema.String }),
         ),
         retryable: Schema.Boolean,
+        phase: Schema.Literal("call"),
+        reference: Schema.String.check(Schema.isPattern(/^[0-9a-f]{32}$/u)),
       }),
     }),
   }),
@@ -481,7 +483,9 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
           "description must be shorter than or equal to 255 characters",
         );
         expect(failure.message).not.toContain("thrown without a message");
-        expect(failure.message).toMatch(/ Retryable \(unchanged call\): no\.$/u);
+        expect(failure.message).toBe(
+          `ToolCallFailed (HTTP 502): ${failure.response.message} Recovery: ${failure.response.recovery?.action} Retryable (unchanged call): no. Phase: call. Reference: ${failure.response.reference}.`,
+        );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );
