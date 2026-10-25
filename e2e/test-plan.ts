@@ -7945,6 +7945,39 @@ export const scenarios = plan({
       local: na("This scenario uses hosted memberships, API keys and MCP."),
     },
   },
+  workflowControls: {
+    fixtures: "actors",
+    file: "workflow-controls.spec.ts",
+    title:
+      "in-app workflow controls answer apps built before the version rename and refuse an over-long key before starting a run",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app management routes."),
+    },
+  },
+  workflowStartReadBack: {
+    fixtures: "actors",
+    file: "workflow-controls.spec.ts",
+    title:
+      "an in-app workflow start whose saved run cannot be read back names the run, is not retryable, and starting again as advised makes no second run",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The storage fault is mounted by the self-host test entry point."),
+      local: na("This scenario uses hosted app management routes."),
+    },
+  },
+  workflowStartCommit: {
+    fixtures: "actors",
+    file: "workflow-controls.spec.ts",
+    title:
+      "an in-app workflow start whose commit is refused, times out or loses its answer says the run may exist without offering a retry, and answers with the run once it reads it back",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The storage fault is mounted by the self-host test entry point."),
+      local: na("This scenario uses hosted app management routes."),
+    },
+  },
   workflowStarts: {
     fixtures: "actors",
     file: "workflows.spec.ts",
