@@ -206,7 +206,9 @@ export const UnavailableApp = Schema.Struct({
   router: Schema.optionalKey(Schema.String),
 });
 /**
- * One admitted tool call in call order. `interrupted` calls were still running when the
+ * One admitted tool call in call order. `failure` calls threw, or returned a result that says the
+ * tool failed, such as a remote MCP tool's `isError: true`; the program received that result
+ * whole. A failed call may still have had effects. `interrupted` calls were still running when the
  * execution ended; the upstream may or may not have applied them. `awaiting-approval` calls
  * were still waiting for approval when the execution ended; Executor did not resume the saved
  * call, though the tool may have had effects before it asked.

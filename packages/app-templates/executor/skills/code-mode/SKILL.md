@@ -201,8 +201,16 @@ Never rerun an entire `execute` program merely to retry one failed tool.
 - `ToolCallLimitExceeded`, `TimeoutExceeded`: split the work into smaller
   executions.
 
-Calls with outcome `success` took effect, and `interrupted` calls may have.
-Effects are never rolled back. When Executor could not confirm a failed write's
+A remote MCP tool returns its whole result. `isError: true` there means the
+tool says it failed: the call does not throw, and its outcome is `failure`.
+Check `isError` before using such a result. Other fields, such as `ok`, mean
+what the tool's description says.
+
+An outcome of `success` means only that the call returned normally, with no
+tool error reported to Executor. It does not show that the intended action
+happened: check the returned value, such as `isError` or the app's own status
+fields, before treating it as done. `failure` and `interrupted` calls may have
+had effects. Effects are never rolled back. When Executor could not confirm a failed write's
 outcome, its recovery says so: do not repeat it automatically.
 Inside a program, a caught tool error's `message` is the same JSON as
 `response`, so a program can handle expected failures itself.

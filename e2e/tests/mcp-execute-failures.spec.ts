@@ -141,8 +141,10 @@ const invalidArguments = "Invalid arguments for tool lookup: item is required";
  * Which requests the server answers with a JSON-RPC error: every request with HTTP 400, tool calls
  * with HTTP 400, the session a tool call opens with HTTP 400, or tool calls inside a successful
  * response. `silent-calls` answers tool calls only after the app stopped waiting, and
- * `dropped-calls` runs each tool call, then closes the connection without answering. Only a tool
- * call's session offers elicitation, so its initialize is told apart by that.
+ * `dropped-calls` runs each tool call, then closes the connection without answering.
+ * `error-results` answers `lookup` with a result that says the tool failed (`isError: true`), as
+ * a server does when its own upstream refuses. Only a tool call's session offers elicitation, so
+ * its initialize is told apart by that.
  */
 type Refusal =
   | "everything"
@@ -150,7 +152,11 @@ type Refusal =
   | "call-sessions"
   | "tool-arguments"
   | "silent-calls"
-  | "dropped-calls";
+  | "dropped-calls"
+  | "error-results";
+
+/** What `error-results` says when `lookup` fails. */
+const reportedError = "Upstream returned HTTP 404 for the item";
 
 /** The JSON-RPC fields this fixture reads. */
 const JsonRpcRequest = Schema.Struct({
@@ -175,6 +181,7 @@ const refusingMcpServer = Effect.gen(function* () {
   const refuses = yield* Ref.make<Refusal>("everything");
   const silentCalls = yield* Ref.make(0);
   const droppedCalls = yield* Ref.make<ReadonlyArray<string>>([]);
+  const answeredCalls = yield* Ref.make<ReadonlyArray<string>>([]);
   const answer = (id: string | number | null, body: object, status = 200) =>
     HttpServerResponse.json({ jsonrpc: "2.0", id, ...body }, { status });
   const refused = (id: string | number | null) =>
@@ -223,6 +230,13 @@ const refusingMcpServer = Effect.gen(function* () {
           source.socket.destroy();
           return HttpServerResponse.empty({ status: 500 });
         }
+        if (refusing === "error-results") {
+          yield* Ref.update(answeredCalls, (calls) => [...calls, message.params?.name ?? ""]);
+          if (message.params?.name === "lookup")
+            return yield* answer(message.id, {
+              result: { isError: true, content: [{ type: "text", text: reportedError }] },
+            });
+        }
         if (refusing === "silent-calls") {
           yield* Ref.update(silentCalls, (count) => count + 1);
           // Long after the app stopped waiting, so the request still ends with the scenario.
@@ -257,6 +271,8 @@ const refusingMcpServer = Effect.gen(function* () {
     silentCalls: Ref.get(silentCalls),
     /** The tools the server ran before its connection closed, in order. */
     droppedCalls: Ref.get(droppedCalls),
+    /** The tools the server answered in `error-results`, in order. */
+    answeredCalls: Ref.get(answeredCalls),
   };
 });
 
@@ -2438,6 +2454,121 @@ try { return await call(); } catch (error) {
 
         // Each call reached the server once: neither Executor nor the advice repeated one.
         expect(yield* server.silentCalls).toBe(4);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpExecuteToolReportedError.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const server = yield* refusingMcpServer;
+        yield* server.refuse("error-results");
+        // `remote` and `reviewed` are the same server; `reviewed` asks for approval first.
+        // `lookalike` is the app's own tool, whose result only looks like an MCP failure.
+        const app = yield* hostedAppFiles("Reported MCP error", [
+          {
+            path: "package.json",
+            content: JSON.stringify({
+              dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+            }),
+          },
+          {
+            path: "index.ts",
+            content: `import { defineApp, object, query, router, withApprovals } from "apps";
+import { always } from "apps/operations/approval";
+import { mcpRouter } from "apps/mcp";
+export default defineApp({}, async () => ({ tools: router({
+  remote: await mcpRouter({ url: ${JSON.stringify(server.url)} }),
+  reviewed: withApprovals(await mcpRouter({ url: ${JSON.stringify(server.url)} }), () => always()),
+  lookalike: query({ input: object({}) }, async () => ({ isError: true, content: [] })),
+}) }));`,
+          },
+        ]);
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        const Outcomes = Schema.Struct({
+          status: Schema.Literal("completed"),
+          execution: Schema.Struct({
+            ok: Schema.Literal(true),
+            value: Schema.Unknown,
+            toolCalls: Schema.Array(Schema.Struct({ name: Schema.String, outcome: Schema.String })),
+          }),
+        });
+        const outcomes = (structured: unknown) =>
+          Schema.decodeUnknownEffect(Outcomes)(structured).pipe(
+            Effect.map(({ execution }) => ({
+              value: execution.value,
+              calls: execution.toolCalls.map(({ name, outcome }) => [name, outcome]),
+            })),
+          );
+
+        // The program still receives the server's result whole, so one that reads `isError`
+        // works as before; the call that reported failure is no longer listed as a success.
+        const executed = yield* executeOnce(
+          app.client,
+          "Call a remote MCP tool whose result says it failed",
+          `const failed = await ${tools}.remote.lookup({});
+const read = await ${tools}.remote.peek({});
+const lookalike = await ${tools}.lookalike({});
+return { failed: failed.isError, text: failed.content[0].text, read: read.isError ?? false, lookalike: lookalike.isError };`,
+          "reported-error.json",
+        );
+        expect(yield* outcomes(executed.structured)).toEqual({
+          value: { failed: true, text: reportedError, read: false, lookalike: true },
+          calls: [
+            [`${app.slug}.remote.lookup`, "failure"],
+            [`${app.slug}.remote.peek`, "success"],
+            // A field an app returns means what the app says: Executor reads no failure into it.
+            [`${app.slug}.lookalike`, "success"],
+          ],
+        });
+
+        // A direct call returns the same result and lists it the same way.
+        const direct = yield* app.client.use(
+          "Call the remote MCP tool directly",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "call",
+                arguments: { calls: { path: `${tools}.remote.lookup`, input: {} } },
+              },
+              undefined,
+              { signal, timeout: 55_000 },
+            ),
+        );
+        expect(yield* outcomes(direct.structuredContent)).toEqual({
+          value: {
+            path: `${tools}.remote.lookup`,
+            ok: true,
+            value: { isError: true, content: [{ type: "text", text: reportedError }] },
+          },
+          calls: [[`${tools}.remote.lookup`, "failure"]],
+        });
+
+        // So does a call that ran after its approval.
+        const parked = yield* executeOnce(
+          app.client,
+          "Call a remote MCP tool that asks for approval and then says it failed",
+          `return (await ${tools}.reviewed.lookup({})).isError;`,
+          "reported-error-approval.json",
+        );
+        const pending = yield* Schema.decodeUnknownEffect(Pending)(parked.structured);
+        const resumed = yield* app.client.use("Approve the call", (client, signal) =>
+          client.callTool(
+            {
+              name: "resume",
+              arguments: { requestId: pending.requestId, response: { action: "accept" } },
+            },
+            undefined,
+            { signal, timeout: 55_000 },
+          ),
+        );
+        expect(yield* outcomes(resumed.structuredContent)).toEqual({
+          value: true,
+          calls: [[`${app.slug}.reviewed.lookup`, "failure"]],
+        });
+
+        // Executor repeated none of the calls.
+        expect(yield* server.answeredCalls).toEqual(["lookup", "peek", "lookup", "lookup"]);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

@@ -6774,6 +6774,16 @@ export const scenarios = plan({
       local: na("Hosted self-host covers the shared app runtime error mapping."),
     },
   },
+  mcpExecuteToolReportedError: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP tool results that say the tool failed are listed as failed calls",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The reporting MCP server is a loopback listener."),
+      local: na("Hosted self-host covers the shared execute path."),
+    },
+  },
   mcpExecutePendingWriteRefused: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",

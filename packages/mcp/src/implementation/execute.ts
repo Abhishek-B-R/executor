@@ -961,6 +961,9 @@ function catalog(
                 input,
               });
               if (result.status !== "completed") return yield* approvalRequired(result);
+              // The tool's result says it failed, as an MCP server's `isError` does. The program
+              // still gets the whole result; the call is reported as a failure.
+              if (result.toolError === true) yield* toolReportedError(progress);
               return result.value;
             }).pipe(Effect.mapError((error) => toolError(diagnostic(error)))),
           ),
@@ -1374,6 +1377,8 @@ export type ExecutionProgress = {
     readonly name: string;
     outcome: McpToolCall["outcome"] | "running";
     durationMs?: number;
+    /** The call returned a result that says the tool failed (`toolError`), so it did not succeed. */
+    toolError?: true;
   }>;
   /** The call index each running tool fiber serves, so the driver can mark its approval wait. */
   readonly callFibers: Map<number, number>;
@@ -1396,6 +1401,13 @@ export const executionProgress = (): ExecutionProgress => ({
 const recordFailure = (progress: ExecutionProgress, error: Error) =>
   Effect.sync(() => {
     progress.failures.push(error);
+  });
+/** Mark the call this fiber makes as one whose result says its tool failed. */
+const toolReportedError = (progress: ExecutionProgress) =>
+  Effect.map(Effect.fiberId, (fiber) => {
+    const index = progress.callFibers.get(fiber);
+    const call = index === undefined ? undefined : progress.calls[index];
+    if (call !== undefined) call.toolError = true;
   });
 
 /** The canonical path CodeMode's UnknownTool diagnostic names. */
@@ -1458,7 +1470,8 @@ const unavailableMessage = (unavailable: typeof UnavailableApp.Type) =>
 
 /**
  * A snapshot for a result. A call still running when the execution ends is reported as
- * interrupted. A driver-assembled result lists only calls whose start was recorded.
+ * interrupted, and one whose result says its tool failed as a failure. A driver-assembled result
+ * lists only calls whose start was recorded.
  */
 export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =>
   progress.calls.flatMap((call) =>
@@ -1467,7 +1480,12 @@ export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =
       : [
           {
             name: call.name,
-            outcome: call.outcome === "running" ? "interrupted" : call.outcome,
+            outcome:
+              call.outcome === "running"
+                ? "interrupted"
+                : call.outcome === "success" && call.toolError === true
+                  ? "failure"
+                  : call.outcome,
             ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
           },
         ],
