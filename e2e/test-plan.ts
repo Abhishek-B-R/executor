@@ -8279,6 +8279,18 @@ export const scenarios = plan({
       "Cloud v1 import makes toolkits over the workspace's and a member's connections callable through their v1 URLs, running the org toolkit's copy as the app the workspace's account is linked to and the personal toolkit's as the member's account",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportStampedApprovals: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import keeps asking before an MCP tool v1 stamped as needing approval after its server drops the destructive hint, and leaves the tools v1 allowed without a rule of their own",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportRepair: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import repairs an MCP app moved before v1's approval stamps became rules: it plans without writing, leaves an app edited since the import, deploys the earlier importer's app with the stamp as its own rule, and finds nothing left on a second run",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportRollback: {
     file: "cloud-v1-import-run.spec.ts",
     title:

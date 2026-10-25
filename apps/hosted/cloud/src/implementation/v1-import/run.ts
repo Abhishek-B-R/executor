@@ -513,7 +513,7 @@ interface FirstPartyMismatch {
  * The v2 clients v1's first-party connections move to: only one that is v1's own client, with
  * v1's client ID. Any other is a mismatch the report lists, and its connections cannot move.
  */
-const firstPartyClients = (executor: Executor, v1: Readonly<Record<string, string>>) => {
+export const firstPartyClients = (executor: Executor, v1: Readonly<Record<string, string>>) => {
   const offered = (name: string) => executor[OAuthGrantImport].firstPartyClient(name);
   const mismatch = (name: string): FirstPartyMismatch | undefined => {
     const client = offered(name);

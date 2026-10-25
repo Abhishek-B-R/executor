@@ -559,6 +559,12 @@ export default Api.make(
         "/api/internal/v1-import/orgs/:organization/rollback",
         v1Import.rollback,
       ).pipe(HttpRouter.provideRequest(executor)),
+      // The repair deploys apps with the importer's context, which holds the MCP connection store.
+      HttpRouter.add(
+        "POST",
+        "/api/internal/v1-import/orgs/:organization/repair",
+        v1Import.repair,
+      ).pipe(HttpRouter.provideRequest(Layer.merge(executor, auth.mcpIdentity))),
       jobs.route((job) => backgroundJobs[job]),
       authoringRoutes,
       ...(["login", "login/sso", "create"] as const).map((page) =>

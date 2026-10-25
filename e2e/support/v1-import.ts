@@ -238,6 +238,12 @@ export const v1ImportOperator = Effect.gen(function* () {
         body: { maxInFlight: 100, ...input },
         authorization: operator,
       }),
+    /** Repair a moved organization (`repair.ts`), or only plan it when `apply` is false. */
+    repair: (organization: string, apply: boolean) =>
+      send("POST", `/api/internal/v1-import/orgs/${organization}/repair`, {
+        body: { apply },
+        authorization: operator,
+      }),
     /** The organization's report once its run has written it. */
     waitForReport: (run: string, organization: string) =>
       report(run, organization).pipe(

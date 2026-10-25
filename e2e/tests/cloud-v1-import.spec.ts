@@ -23,6 +23,7 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { AccountLink, connectionsPath } from "../support/app-accounts.ts";
 import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
+import { approvalMcpUpstream } from "../support/approval-mcp-upstream.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
 import { largeOpenapiDocument } from "../support/large-openapi.ts";
 import { Emulators } from "../support/emulators.ts";
@@ -97,9 +98,9 @@ const Health = Schema.Struct({
     }),
   ),
 });
-const Source = Schema.Struct({
-  files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
-});
+const SourceFile = Schema.Struct({ path: Schema.String, content: Schema.String });
+type SourceFile = typeof SourceFile.Type;
+const Source = Schema.Struct({ files: Schema.Array(SourceFile) });
 const Connections = Schema.Array(
   Schema.Struct({
     id: Schema.String,
@@ -1374,6 +1375,81 @@ const seedToolkitCalls = (organization: string, user: string, slug: string, orig
         toolkitId: "tk_mine",
         pattern: `${ledger}.user.mine.*`,
         position: "a0",
+      }),
+    ]);
+  });
+
+/**
+ * A workspace whose public MCP server dropped a tool's destructive hint after v1 last listed it:
+ * v1 stamped `unhinted` as needing approval and asks from that stamp, while the server lists it
+ * without a hint now. v1 allowed `safe`, which it never stamped, and `read`, which it stamped but a
+ * workspace policy approves. A toolkit grants the first two.
+ */
+const seedStampedApprovals = (organization: string, slug: string, origin: string) =>
+  Effect.gen(function* () {
+    const server = `approvals_${randomUUID().slice(0, 6)}`;
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    const tool = (name: string, stamped: boolean) =>
+      row(
+        "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, 'org', '', $2, 'open', 'mcp', $3, $4::json)",
+        organization,
+        server,
+        name,
+        JSON.stringify({ ...(stamped ? { requiresApproval: true } : {}), mcp: { toolName: name } }),
+      );
+    const toolkitRow = (collection: string, data: Record<string, string>) =>
+      row(
+        "insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, 'org', '', 'toolkits', $2, $3, $4::json)",
+        organization,
+        collection,
+        data.id ?? "",
+        JSON.stringify(data),
+      );
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic approvals workspace",
+        slug,
+      ),
+      row(
+        "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Approvals', $3::json)",
+        organization,
+        server,
+        JSON.stringify({
+          transport: "remote",
+          endpoint: `${origin}/mcp`,
+          authenticationTemplate: [{ slug: "none", kind: "none" }],
+        }),
+      ),
+      row(
+        "insert into connection (tenant, owner, subject, integration, name, template) values ($1, 'org', '', $2, 'open', 'none')",
+        organization,
+        server,
+      ),
+      tool("unhinted", true),
+      tool("safe", false),
+      tool("read", true),
+      row(
+        "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'approve', 'a0')",
+        organization,
+        `${server}.*.*.read`,
+      ),
+      toolkitRow("toolkits", { id: "tk_ops", name: "Ops", slug: "ops" }),
+      toolkitRow("toolkitConnections", {
+        id: "tkconn_ops",
+        toolkitId: "tk_ops",
+        pattern: `${server}.org.open.*`,
+        position: "a0",
+      }),
+      // The toolkit leaves `read` out. Had it served `read`, v1 would have asked there from the
+      // stamp, ignoring the workspace's approve, and the app would ask for every caller.
+      toolkitRow("toolkitPolicies", {
+        id: "tkpol_ops",
+        toolkitId: "tk_ops",
+        pattern: `${server}.*.*.read`,
+        action: "block",
+        position: "a1",
       }),
     ]);
   });
@@ -3811,6 +3887,155 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           }
         }
       }).pipe(Effect.provide(Layer.mergeAll(services, McpClient.layer))),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportStampedApprovals.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const upstream = yield* approvalMcpUpstream;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedStampedApprovals(
+          own.organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+
+        const { target: imported, results } = yield* importOnServer(own.organization);
+        for (const name of ["Approvals", "Ops"])
+          expect(results.get(name)?.status, results.get(name)?.reason).toBe("imported");
+        const app = results.get("Approvals")?.v2Id;
+        // v1's stamp becomes the app's own rule, so the app asks whatever the server says now.
+        // A tool v1 allowed gets no rule, and a policy's approve stays the app's `never`.
+        const tools = (yield* appSource(imported.id, app)).find((file) => file.path === "tools.ts");
+        expect(tools?.content).toContain('"unhinted": "always"');
+        expect(tools?.content).toContain('"read": "never"');
+        expect(tools?.content).not.toContain('"safe"');
+
+        // Called as the member, the stamped tool waits for approval and never reaches the server;
+        // the tools v1 allowed run.
+        for (const [tool, kind, asks] of [
+          ["unhinted", "mutation", true],
+          ["safe", "mutation", false],
+          ["read", "query", false],
+        ] as const) {
+          const before = yield* upstream.calls;
+          const result = yield* call(
+            `Call ${tool}`,
+            "POST",
+            `/api/organizations/${imported.id}/apps/${app}/tools/call`,
+            { tool, kind, input: {} },
+          );
+          if (asks) {
+            expect(result.status, `${tool}: ${JSON.stringify(result.body)}`).toBe(409);
+            expect(result.body).toMatchObject({ _tag: "ToolApprovalRequired" });
+            expect(yield* upstream.calls, tool).toEqual(before);
+          } else {
+            expect(result.status, `${tool}: ${JSON.stringify(result.body)}`).toBe(200);
+            expect(yield* upstream.calls, tool).toEqual([...before, tool]);
+          }
+        }
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportRepair.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const operator = yield* v1ImportOperator;
+        const upstream = yield* approvalMcpUpstream;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        yield* seedStampedApprovals(
+          own.organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          upstream.origin,
+        );
+        yield* googleSignIn(identity.email);
+        const { target: imported, results } = yield* importOnServer(own.organization);
+        expect(results.get("Approvals")?.status, results.get("Approvals")?.reason).toBe("imported");
+        const app = results.get("Approvals")?.v2Id;
+        const appPath = `/api/organizations/${imported.id}/apps/${app}`;
+        const callTool = (tool: string) =>
+          call(`Call ${tool}`, "POST", `${appPath}/tools/call`, {
+            tool,
+            kind: "mutation",
+            input: {},
+          });
+        const deploy = (step: string, files: readonly SourceFile[]) =>
+          call(step, "POST", `${appPath}/deploy`, { files }).pipe(
+            Effect.tap((response) =>
+              Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+            ),
+          );
+        // The app's files by path: the repair keeps every file and replaces the ones it changes.
+        const deployed = appSource(imported.id, app).pipe(
+          Effect.map((files) => files.toSorted((a, b) => a.path.localeCompare(b.path))),
+        );
+        const withTools = (files: readonly SourceFile[], edit: (content: string) => string) =>
+          files.map((file) =>
+            file.path === "tools.ts" ? { ...file, content: edit(file.content) } : file,
+          );
+
+        // Make the app what an import before the fix left: no rule for the tool v1 stamped, so it
+        // runs because the server no longer marks it destructive.
+        const files = yield* deployed;
+        const earlier = withTools(files, (content) =>
+          content.replace(/\n {2}"unhinted": "always",|,\n {2}"unhinted": "always"/u, ""),
+        );
+        expect(earlier).not.toEqual(files);
+        yield* deploy("Deploy the earlier importer's source", earlier);
+        expect((yield* callTool("unhinted")).status).toBe(200);
+
+        // An app edited since the import is reported and left alone, even when applying.
+        const edited = withTools(earlier, (content) => `${content}\n// Edited in v2.\n`);
+        yield* deploy("Edit the app in v2", edited);
+        for (const apply of [false, true]) {
+          const response = yield* operator.repair(own.organization, apply);
+          expect(response.status, JSON.stringify(response.body)).toBe(200);
+          expect(response.body).toMatchObject({
+            apps: [{ app, always: ["unhinted"], decision: "edited", files: ["tools.ts"] }],
+          });
+        }
+        expect(yield* deployed).toEqual(edited);
+        expect((yield* callTool("unhinted")).status).toBe(200);
+
+        // Planning the earlier importer's app names the change and writes nothing.
+        yield* deploy("Deploy the earlier importer's source again", earlier);
+        const planned = yield* operator.repair(own.organization, false);
+        expect(planned.status, JSON.stringify(planned.body)).toBe(200);
+        expect(planned.body).toMatchObject({
+          status: "planned",
+          applied: false,
+          apps: [{ app, always: ["unhinted"], decision: "deploy", files: ["tools.ts"] }],
+        });
+        expect(yield* deployed).toEqual(earlier);
+        expect((yield* callTool("unhinted")).status).toBe(200);
+
+        // Applying deploys the app with v1's stamp as its rule: the import's own source again.
+        const applied = yield* operator.repair(own.organization, true);
+        expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+        expect(applied.body).toMatchObject({
+          status: "repaired",
+          applied: true,
+          apps: [{ app, decision: "deploy", files: ["tools.ts"] }],
+        });
+        expect(yield* deployed).toEqual(files);
+        const asked = yield* callTool("unhinted");
+        expect(asked.status, JSON.stringify(asked.body)).toBe(409);
+        expect(asked.body).toMatchObject({ _tag: "ToolApprovalRequired" });
+        expect((yield* callTool("safe")).status).toBe(200);
+
+        // A second repair finds nothing left to change.
+        const again = yield* operator.repair(own.organization, false);
+        expect(again.body).toMatchObject({ apps: [{ app, decision: "unchanged", files: [] }] });
+      }).pipe(Effect.provide(services)),
     ),
   );
 

@@ -40,6 +40,7 @@ import {
   type V1ImportReports,
   type V1ImportStep,
 } from "../implementation/v1-import/run.ts";
+import { repairOrganization } from "../implementation/v1-import/repair.ts";
 import { makeV1Source } from "../implementation/v1-import/source.ts";
 import { V1MovedState } from "../implementation/v1-import/moved-flag.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
@@ -162,6 +163,26 @@ const runner =
       ),
     );
 
+/** The importer's environment for a run or a repair, from the deployment's settings. */
+const importEnvironment = (
+  settings: V1ImportSettings,
+  reports: V1ImportReports,
+  connections: McpAuthentication["Service"]["connections"],
+) =>
+  V1ImportEnvironment.of({
+    source: settings.source.pipe(
+      Effect.flatMap(makeV1Source),
+      Effect.provide(FetchHttpClient.layer),
+      Effect.mapError(() => new V1ImportUnavailable()),
+    ),
+    connections,
+    reports,
+    writes: settings.writes,
+    freezeSettleSeconds: settings.freezeSettleSeconds,
+    v1FirstPartyClients: settings.v1FirstPartyClients,
+    slugKey: settings.slugKey,
+  });
+
 export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
   "V1Import",
   // An organization's integrations, toolkits and artifacts each take a step.
@@ -184,19 +205,7 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
         if (Option.isNone(configuration))
           return yield* Effect.die(new Error("This deployment has no v1 importer."));
         const { settings, reports } = configuration.value;
-        const environment = V1ImportEnvironment.of({
-          source: settings.source.pipe(
-            Effect.flatMap(makeV1Source),
-            Effect.provide(FetchHttpClient.layer),
-            Effect.mapError(() => new V1ImportUnavailable()),
-          ),
-          connections,
-          reports,
-          writes: settings.writes,
-          freezeSettleSeconds: settings.freezeSettleSeconds,
-          v1FirstPartyClients: settings.v1FirstPartyClients,
-          slugKey: settings.slugKey,
-        });
+        const environment = importEnvironment(settings, reports, connections);
         return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
           Cloudflare.Workflows.sleep(name, seconds * 1000),
         ).pipe(
@@ -215,6 +224,9 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
 ) {}
 
 type Workflow = Effect.Success<typeof V1ImportWorkflow>;
+
+/** A repair request: whether to apply it, or only plan it (the default). */
+const RepairRequest = Schema.Struct({ apply: Schema.optional(Schema.Boolean) });
 
 /** How long one Workflows call may take before it counts as refused (see organization removal). */
 const callDeadline = "3 seconds";
@@ -261,6 +273,8 @@ const aggregationId = /^[0-9a-f]{32}$/u;
  *   and its instance's status.
  * - `POST /api/internal/v1-import/orgs/:organization/rollback` gives an organization back to v1
  *   after its v2 organization was deleted (see `rollback`).
+ * - `POST /api/internal/v1-import/orgs/:organization/repair` deploys a moved organization's MCP
+ *   apps with v1's approval stamps as rules, or with `{"apply": false}` plans it (see `repair`).
  * - `POST /api/internal/v1-import/runs/:run/aggregate[?cursor=…][&limit=…]` combines a page of a
  *   run's reports (at most 200, or `limit`) into the aggregate so far and returns the cursor of the next page; the last page
  *   writes `v1-import/runs/<run>/aggregate.json` and returns it. `complete` is false while any
@@ -646,5 +660,55 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       ),
     );
 
-    return { start, report, aggregate, rollback };
+    /**
+     * Repair one moved organization as `repairOrganization` says: deploy its MCP apps with v1's
+     * approval stamps as their own rules.
+     * The body's `apply` defaults to false, which plans the repair and writes nothing. Applying
+     * needs the deployment's write switch, and is refused while the organization's import
+     * instance runs. The answer lists every change, made or planned, and what it left alone.
+     */
+    const repair = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const { settings, reports } = found.value;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const body = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(RepairRequest)),
+        Effect.option,
+      );
+      if (Option.isNone(body)) return yield* json(400, { error: "invalid body" });
+      const apply = body.value.apply === true;
+      if (apply) {
+        const refused = writesRefused(settings.writes);
+        if (refused !== undefined) return yield* json(409, { error: refused });
+        const state = yield* status(decoded.value);
+        if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+          return yield* json(409, {
+            error: `Its import instance is ${state}; repair it once it has stopped.`,
+          });
+      }
+      const connections = (yield* McpAuthentication).connections;
+      const result = yield* repairOrganization(decoded.value, apply).pipe(
+        Effect.scoped,
+        Effect.provideService(
+          V1ImportEnvironment,
+          importEnvironment(settings, reports, connections),
+        ),
+      );
+      return yield* json(200, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import repair failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    return { start, report, aggregate, rollback, repair };
   });

@@ -491,9 +491,19 @@ export type AppAccounts = ReturnType<typeof appMethods>;
 
 const rank = { approve: 1, default: 1.5, require_approval: 2, block: 3 } as const;
 /**
+ * What v1 did with a tool no policy decided, when the app's own default would not do the same: ask,
+ * for an MCP tool whose row v1 stamped as needing approval. v1 asked from that stamp, made from the
+ * server's `destructiveHint` when it last listed the tools; the app's default reads the live hint,
+ * which a server may have dropped since, so the app asks always. OpenAPI and GraphQL defaults
+ * come from the generated source (a method or a mutation), which asks wherever v1 stamped one.
+ * A tool v1 did not stamp keeps the app's default.
+ */
+const unruled = (integration: Pick<IntegrationRow, "plugin_id">, tool: ToolRow) =>
+  integration.plugin_id === "mcp" && tool.requires_approval ? "require_approval" : "default";
+/**
  * Each tool's v1 policy result, combined across its connections and the v1 names it had: the most
- * restrictive, where a connection without a matching policy keeps the tool's own default.
- * `aliases` maps a dropped v1 name to the name the tool keeps.
+ * restrictive, where a connection without a matching policy keeps the tool's own default, pinned
+ * as `unruled` says. `aliases` maps a dropped v1 name to the name the tool keeps.
  *
  * A toolkit's own policies applied only to calls through the toolkit, and v1 ignored the
  * workspace's policies there, but v2 keeps approvals in the app for every caller. A toolkit that
@@ -512,12 +522,14 @@ export const toolActions = (
   const toolkits = decodedToolkits(snapshot);
   for (const tool of tools) {
     const id = `${integration.slug}.${tool.owner}.${tool.connection}.${tool.name}`;
-    const own = resolvePolicy(id, snapshot.policies, snapshot.multiMember) ?? "default";
+    const fallback = unruled(integration, tool);
+    const own = resolvePolicy(id, snapshot.policies, snapshot.multiMember) ?? fallback;
     // The least the app may do for each toolkit that grants the tool: ask when the toolkit asks,
     // keep the tool's default when the toolkit left it to the default.
     const action = toolkits.reduce<PolicyAction | "default">((current, toolkit) => {
       const granted = toolkitAction(toolkit, id);
-      const floor = granted === "require_approval" || granted === "default" ? granted : undefined;
+      const floor =
+        granted === "require_approval" ? granted : granted === "default" ? fallback : undefined;
       return floor !== undefined && rank[floor] > rank[current] ? floor : current;
     }, own);
     const name = Object.hasOwn(aliases, tool.name) ? (aliases[tool.name] ?? tool.name) : tool.name;
@@ -527,7 +539,8 @@ export const toolActions = (
   return actions;
 };
 
-const approvalRules = (actions: ReadonlyMap<string, PolicyAction | "default">) => {
+/** The app's own rules from each tool's action: left out, `never` or `always`. */
+export const approvalRules = (actions: ReadonlyMap<string, PolicyAction | "default">) => {
   const approvals: Record<string, "always" | "never"> = {};
   const omitted: string[] = [];
   for (const [name, action] of actions) {
