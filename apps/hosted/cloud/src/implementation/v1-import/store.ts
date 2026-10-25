@@ -223,6 +223,17 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
       Effect.map((found) => new Set(found.map((row) => row.id))),
       unavailable,
     );
+  /** Whether the import made this app for one of the organization's integrations. */
+  const importedApp = (organization: string, app: string) =>
+    sql`
+      select m.v1_id as id from private_v1_import_map m
+      where m.v1_org_id = ${organization} and m.v1_kind = 'integration' and m.status = 'imported'
+        and m.v2_id = ${app}
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Ids)),
+      Effect.map((found) => found.length > 0),
+      unavailable,
+    );
   const target = (id: string) =>
     sql`select id, name, slug from organization where id = ${id}`.pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Owned)),
@@ -310,6 +321,7 @@ export const makeImportStore = (sql: SqlClient.SqlClient) => {
     adoptToolkitCopy,
     importedVersions,
     deployedSince,
+    importedApp,
     target,
     createOrganization,
     holdBilling,

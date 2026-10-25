@@ -568,6 +568,11 @@ export default Api.make(
       ).pipe(HttpRouter.provideRequest(Layer.mergeAll(executor, auth.mcpIdentity, billing))),
       HttpRouter.add(
         "POST",
+        "/api/internal/v1-import/orgs/:organization/restore",
+        v1Import.restore,
+      ).pipe(HttpRouter.provideRequest(executor)),
+      HttpRouter.add(
+        "POST",
         "/api/internal/v1-import/orgs/:organization/accounts",
         v1Import.accounts,
       ).pipe(HttpRouter.provideRequest(Layer.mergeAll(executor, auth.mcpIdentity, billing))),

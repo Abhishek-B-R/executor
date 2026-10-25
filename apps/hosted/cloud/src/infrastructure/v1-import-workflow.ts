@@ -41,7 +41,7 @@ import {
   type V1ImportStep,
 } from "../implementation/v1-import/run.ts";
 import { repairCopiedAccounts } from "../implementation/v1-import/copied-accounts.ts";
-import { repairOrganization } from "../implementation/v1-import/repair.ts";
+import { AppRestore, repairOrganization, restoreApp } from "../implementation/v1-import/repair.ts";
 import { makeV1Source } from "../implementation/v1-import/source.ts";
 import { V1MovedState } from "../implementation/v1-import/moved-flag.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
@@ -317,6 +317,8 @@ const aggregationId = /^[0-9a-f]{32}$/u;
  *   after its v2 organization was deleted (see `rollback`).
  * - `POST /api/internal/v1-import/orgs/:organization/repair` deploys a moved organization's MCP
  *   apps with v1's approval stamps as rules, or with `{"apply": false}` plans it (see `repair`).
+ * - `POST /api/internal/v1-import/orgs/:organization/restore` runs an earlier version of one of its
+ *   imported apps again, while the app still runs the version named (see `restore`).
  * - `POST /api/internal/v1-import/orgs/:organization/accounts` brings the accounts of an
  *   organization the opt-in import copied before it moved up to date with v1's final tokens and
  *   their apps' providers (see `accounts`).
@@ -812,6 +814,38 @@ export const v1ImportRoutes = (workflow: Workflow) =>
     );
 
     /**
+     * Run an earlier version of one of the organization's imported apps again as `restoreApp`
+     * says, while the app still runs `expected`. It needs the deployment's write switch. The answer
+     * says whether it did, or why not.
+     */
+    const restore = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const body = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AppRestore)),
+        Effect.option,
+      );
+      if (Option.isNone(body)) return yield* json(400, { error: "invalid body" });
+      const refused = writesRefused(found.value.settings.writes);
+      if (refused !== undefined) return yield* json(409, { error: refused });
+      const result = yield* restoreApp(decoded.value, body.value);
+      return yield* json(result.status === "restored" ? 200 : 409, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import restore failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    /**
      * Repair the copied accounts of one organization that cut over as `repairCopiedAccounts` says.
      * It needs the deployment's write switch, and is refused while the organization's import
      * instance runs. The answer lists each copied account and what changed.
@@ -850,5 +884,5 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       ),
     );
 
-    return { start, report, aggregate, rollback, repair, accounts, giveBillingBack };
+    return { start, report, aggregate, rollback, repair, restore, accounts, giveBillingBack };
   });

@@ -674,3 +674,66 @@ export const repairOrganization = (organization: string, apply: boolean) =>
       apps,
     } satisfies OrganizationRepair;
   });
+
+/** An earlier version of an imported app to run again, while the app still runs `expected`. */
+export const AppRestore = Schema.Struct({
+  app: AppId,
+  version: VersionId,
+  expected: VersionId,
+});
+
+export interface RestoredApp {
+  readonly organization: string;
+  readonly app: string;
+  readonly version: string;
+  /**
+   * `restored`, or why not: the app runs another version than `expected` (`changed`, with the
+   * version it runs), the app or version is not one of the organization's imported apps' (`not_found`),
+   * or the organization has no live import (`not_imported`).
+   */
+  readonly status: "restored" | "changed" | "not_found" | "not_imported";
+  readonly active?: string | null;
+}
+
+/**
+ * Run an earlier version of one of a moved organization's imported apps again, as its users
+ * would: the product's activation, which moves the app's version and nothing else. Only while it
+ * still runs `expected`, so a version its users deployed since is never replaced. It gives an app
+ * whose users changed its approvals in v2 back the version a repair replaced (decision 30).
+ */
+export const restoreApp = (organization: string, request: typeof AppRestore.Type) =>
+  Effect.gen(function* () {
+    const sql = yield* Effect.flatten(V1ImportDatabase);
+    const store = makeImportStore(sql);
+    const base = { organization, app: request.app, version: request.version };
+    const recorded = yield* store.find("organization", organization);
+    const target =
+      recorded?.status === "imported" && recorded.v2_id !== null
+        ? yield* store.target(recorded.v2_id)
+        : undefined;
+    if (target === undefined) return { ...base, status: "not_imported" } satisfies RestoredApp;
+    if (!(yield* store.importedApp(organization, request.app)))
+      return { ...base, status: "not_found" } satisfies RestoredApp;
+    const executor = yield* Effect.flatten(HostedExecutor);
+    return yield* executor.apps
+      .activate({
+        owner: organizationOwner(target.id),
+        app: request.app,
+        version: request.version,
+        expectedVersion: request.expected,
+      })
+      .pipe(
+        Effect.as({ ...base, status: "restored" } satisfies RestoredApp),
+        Effect.catchTags({
+          AppVersionChanged: (error) =>
+            Effect.succeed({
+              ...base,
+              status: "changed",
+              active: error.current,
+            } satisfies RestoredApp),
+          AppNotFound: () => Effect.succeed({ ...base, status: "not_found" } satisfies RestoredApp),
+          VersionNotFound: () =>
+            Effect.succeed({ ...base, status: "not_found" } satisfies RestoredApp),
+        }),
+      );
+  });

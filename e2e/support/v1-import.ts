@@ -284,6 +284,18 @@ export const v1ImportOperator = Effect.gen(function* () {
         body: { apply },
         authorization: operator,
       }),
+    /**
+     * Run an earlier version of one of a moved organization's imported apps again, while it still
+     * runs `expected` (`restoreApp`).
+     */
+    restore: (
+      organization: string,
+      body: { readonly app: string; readonly version: string; readonly expected: string },
+    ) =>
+      send("POST", `/api/internal/v1-import/orgs/${organization}/restore`, {
+        body,
+        authorization: operator,
+      }),
     /** The organization's report once its run has written it. */
     waitForReport: (run: string, organization: string) =>
       report(run, organization).pipe(

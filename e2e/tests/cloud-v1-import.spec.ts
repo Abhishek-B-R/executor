@@ -4536,6 +4536,55 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         // A second repair finds nothing left to change.
         const again = yield* operator.repair(own.organization, false);
         expect(again.body).toMatchObject({ apps: [{ app, decision: "unchanged", files: [] }] });
+
+        // The restore runs the version a repair replaced again, and only while the app still runs
+        // the repair's version.
+        const activeVersion = call(
+          "List the apps",
+          "GET",
+          `/api/organizations/${imported.id}/apps`,
+        ).pipe(
+          Effect.flatMap((response) => decode(Apps, response)),
+          Effect.map((apps) => apps.find((found) => found.id === app)?.activeVersion),
+        );
+        const changed = withIndex(earlier, (content) => `// Changed in v2.\n${content}`);
+        yield* deploy("Change the earlier importer's app in v2", changed);
+        const users = yield* activeVersion;
+        yield* runs("unhinted");
+        const layered = yield* operator.repair(own.organization, true);
+        expect(layered.body).toMatchObject({
+          apps: [
+            { app, decision: "deploy", source: "edited", files: ["index.ts", "v1-approvals.ts"] },
+          ],
+        });
+        const repaired = yield* activeVersion;
+        expect(repaired).not.toBe(users);
+        yield* asks("unhinted");
+        const stale = yield* operator.restore(own.organization, {
+          app: app ?? "",
+          version: users ?? "",
+          expected: users ?? "",
+        });
+        expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+        expect(stale.body).toMatchObject({ status: "changed", active: repaired });
+        expect(yield* activeVersion).toBe(repaired);
+        const unknown = yield* operator.restore(own.organization, {
+          app: `app_${randomUUID()}`,
+          version: users ?? "",
+          expected: repaired ?? "",
+        });
+        expect(unknown.status, JSON.stringify(unknown.body)).toBe(409);
+        expect(unknown.body).toMatchObject({ status: "not_found" });
+        const restored = yield* operator.restore(own.organization, {
+          app: app ?? "",
+          version: users ?? "",
+          expected: repaired ?? "",
+        });
+        expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+        expect(restored.body).toMatchObject({ app, version: users, status: "restored" });
+        expect(yield* activeVersion).toBe(users);
+        expect(yield* deployed).toEqual(changed);
+        yield* runs("unhinted");
       }).pipe(Effect.provide(services)),
     ),
   );
