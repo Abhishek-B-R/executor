@@ -1684,4 +1684,20 @@ export interface OAuthGrantImport {
    * verifies its accounts with it.
    */
   readonly credentialsReadable: (account: AccountId) => Effect.Effect<boolean, StorageError>;
+  /**
+   * Replace an imported account's tokens with those the issuing product holds now, when its grant
+   * needs reconnecting or the product renewed the grant after this account did: a service that
+   * rotates refresh tokens keeps only the last renewal's. Keeps the grant's client and renewal
+   * settings, and keeps a grant reconnected since the import or being renewed. Makes no token
+   * request.
+   */
+  readonly refreshImportedGrant: (
+    account: AccountId,
+    tokens: ImportedGrantTokens,
+  ) => Effect.Effect<"kept" | "replaced", StorageError | CredentialsError>;
 }
+/** An imported grant's tokens as the issuing product holds them (`refreshImportedGrant`). */
+export type ImportedGrantTokens = Pick<
+  ImportOAuthGrant,
+  "accessToken" | "refreshToken" | "expiresAt"
+>;

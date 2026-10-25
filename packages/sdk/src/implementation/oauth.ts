@@ -68,6 +68,7 @@ import {
   type OAuthOptions,
   type OAuthTokenServer,
   type ImportOAuthGrant,
+  type ImportedGrantTokens,
   OAuthGrantNotImportable,
 } from "../contracts/oauth.ts";
 import {
@@ -3352,12 +3353,87 @@ export const makeOAuth = (
       Effect.withSpan("oauth.checkGrant"),
     );
 
+  /**
+   * Bring an imported account's grant up to date with the tokens the issuing product holds now
+   * (`OAuthGrantImport.refreshImportedGrant`). The grant keeps its client and renewal settings;
+   * only its tokens are replaced, and only when the grant needs reconnecting, or when the product
+   * holds another refresh token with an access token that expires later, so it renewed after this
+   * grant did. A grant reconnected since the import, one without a refresh token to compare, and
+   * one being renewed are kept, as is a grant that changes while this runs.
+   */
+  const refreshImportedGrant = (account: AccountId, tokens: ImportedGrantTokens) =>
+    Effect.gen(function* () {
+      const stored = yield* query(() =>
+        db.findFirst("accounts", { where: (b) => b("id", "=", account) }),
+      );
+      const row = yield* query(() =>
+        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+      );
+      if (stored === null || row === null || stored.credentialGeneration > 0) return "kept";
+      const reconnect = row.status === "reconnect";
+      if (!reconnect && !row.status.startsWith("ready_")) return "kept";
+      const grant = yield* decrypt(account, row.encrypted, OAuthGrant);
+      if (grant.grant === "client_credentials" || (grant.generation ?? 0) > 0) return "kept";
+      const refreshToken =
+        tokens.refreshToken === undefined ? undefined : Redacted.value(tokens.refreshToken);
+      const renewedLater =
+        refreshToken !== undefined &&
+        refreshToken !== grant.refreshToken &&
+        tokens.expiresAt !== undefined &&
+        grant.expiresAt !== undefined &&
+        tokens.expiresAt > grant.expiresAt;
+      if (!reconnect && !renewedLater) return "kept";
+      const fields = yield* project(grant.response, {
+        ...grant.fields,
+        access_token: Redacted.value(tokens.accessToken),
+        token_type: "Bearer",
+      });
+      const replaced = yield* decode(OAuthGrant, {
+        ...Struct.omit(grant, ["expiresAt"]),
+        fields,
+        ...(refreshToken === undefined ? {} : { refreshToken }),
+        ...(tokens.expiresAt === undefined ? {} : { expiresAt: tokens.expiresAt }),
+      });
+      const encrypted = yield* encrypt(account, replaced);
+      const encryptedCredentials = yield* encrypt(account, fields);
+      const ready = `ready_${yield* nextId}`;
+      const updatedAt = new Date(yield* Clock.currentTimeMillis);
+      return yield* transaction(db, (tx) =>
+        Effect.gen(function* () {
+          // Written only over the grant read above, so a renewal or reconnect meanwhile stands.
+          yield* query(() =>
+            tx.updateMany("oauthGrants", {
+              where: (b) =>
+                b.and(
+                  b("id", "=", account),
+                  b("status", "=", row.status),
+                  b("encrypted", "=", row.encrypted),
+                ),
+              set: { status: ready, encrypted, updatedAt },
+            }),
+          );
+          const written = yield* query(() =>
+            tx.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+          );
+          if (written?.status !== ready) return "kept" as const;
+          yield* query(() =>
+            tx.updateMany("accounts", {
+              where: (b) => b("id", "=", account),
+              set: { encryptedCredentials },
+            }),
+          );
+          return "replaced" as const;
+        }),
+      );
+    }).pipe(Effect.withSpan("oauth.refreshImportedGrant"));
+
   return {
     revocation,
     clients,
     connections: { oauthSetup, startOAuth, completeOAuth },
     importGrant,
     checkGrant,
+    refreshImportedGrant,
     /** The operator's client `id` as the importer checks a grant against it, without its secret. */
     firstPartyClient: (id: string) => {
       const client = [...firstPartyClients.values()].find((candidate) => candidate.id === id);

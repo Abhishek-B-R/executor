@@ -1627,6 +1627,34 @@ const saveAccount = (
   });
 
 /**
+ * The account of a connection an earlier run imported, given v1's tokens as they are now. An
+ * organization copied before it moved ran in both products, and both renewed the connection's
+ * grant; a service that rotates refresh tokens keeps only the last renewal's. Once the
+ * organization moves, v1 no longer renews, so its tokens are final, and the account takes them
+ * when its own grant needs reconnecting or v1 renewed after it did (`refreshImportedGrant`). A
+ * connection without an authorization-code grant, or whose tokens v1's Vault no longer holds, is
+ * left as it is.
+ */
+export const refreshCopiedGrant = (context: ItemContext, row: ConnectionRow, account: AccountId) =>
+  Effect.gen(function* () {
+    const plan = connectionPlan(context.snapshot, context.firstParty, row);
+    if (!plan.ok) return "kept" as const;
+    const { access } = plan.value;
+    const accessItem =
+      access.kind === "first_party" ||
+      (access.kind === "oauth" && access.grant === "authorization_code")
+        ? access.accessItem
+        : undefined;
+    if (accessItem === undefined || row.refresh_item_id === null) return "kept" as const;
+    const tokens = {
+      accessToken: yield* readSecret(context, row, accessItem),
+      refreshToken: yield* readSecret(context, row, row.refresh_item_id),
+      ...(row.expires_at === null ? {} : { expiresAt: row.expires_at }),
+    };
+    return yield* context.executor[OAuthGrantImport].refreshImportedGrant(account, tokens);
+  }).pipe(Effect.catchTag("ItemFailed", () => Effect.succeed("kept" as const)));
+
+/**
  * Check the connection's account as `importAccount` would save it, against the requirements its
  * app's build declares, and save nothing: the dry run's check that every account moves. Its
  * refusals are the import's, with the same reasons. `secret` reads what the import would read

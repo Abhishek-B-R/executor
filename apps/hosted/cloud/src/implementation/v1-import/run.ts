@@ -65,6 +65,7 @@ import {
   mapLookup,
   needsNoAccount,
   readSecretCompared,
+  refreshCopiedGrant,
   refused,
   toolkitCopyKey,
   toolkitMembers,
@@ -111,6 +112,10 @@ export const personalApproveDropped =
 
 /** Why a connection or rule of an integration whose app was not imported cannot move. */
 const integrationNotImported = "Its integration was not imported.";
+/** Why an item an earlier run imported is left out: its users removed it in v2 since. */
+const removedInV2 = "Its users removed it in v2 after an earlier run imported it.";
+/** The note on an item an earlier run imported that its users changed in v2 since. */
+const keptInV2 = "Kept as its users changed it in v2 after an earlier run imported it.";
 
 /** The v2 kind of an app imported as source without a version, which needs repair. */
 const undeployedApp = "undeployed_app";
@@ -420,11 +425,21 @@ const assess = (params: V1ImportParams) =>
         Effect.map((match) => ({ user: member.user, match })),
       );
     });
-    const slug = yield* plannedSlug(
-      sql,
-      yield* slugPlan(source, organization, snapshot.organization.slug),
-      snapshot.organization.slug,
-    );
+    // An organization an earlier run imported keeps that organization and its slug.
+    const store = makeImportStore(sql);
+    const recorded = yield* store.find("organization", organization);
+    const copy =
+      recorded?.status === "imported" && recorded.v2_id !== null
+        ? yield* store.target(recorded.v2_id)
+        : undefined;
+    const slug =
+      copy === undefined
+        ? yield* plannedSlug(
+            sql,
+            yield* slugPlan(source, organization, snapshot.organization.slug),
+            snapshot.organization.slug,
+          )
+        : { slug: copy.slug, changed: copy.slug !== snapshot.organization.slug };
     const held =
       billing.kind === "enterprise"
         ? "Enterprise organizations move by hand, after their v2 SSO is set up."
@@ -1204,28 +1219,33 @@ const importIntegrationItem = (context: ItemContext, id: string) =>
     const { row, hash } = found;
     const base = { kind: "integration", id, label: integrationLabel(row), context: null } as const;
     const existing = yield* context.store.find("integration", id);
-    if (
-      existing?.status === "imported" &&
-      existing.source_hash === hash &&
-      existing.v2_id !== null
-    ) {
-      // An earlier attempt may have stopped before the app's fixed account was saved.
-      return yield* withFixedAccount(
-        context,
-        row,
-        AppId.make(existing.v2_id),
-        outcomeOf(base, {
-          status: "imported",
-          v2Kind: "app",
-          v2Id: existing.v2_id,
-          ...(existing.reason === null ? {} : { note: existing.reason }),
-        }),
-      );
-    }
     const app =
       existing?.status === "imported" && existing.v2_id !== null
         ? AppId.make(existing.v2_id)
         : undefined;
+    const since =
+      app === undefined ? "kept" : yield* context.store.sinceImported("integration", id);
+    // An app its users removed in v2 since stays removed.
+    if (since === "removed")
+      return { ...base, status: "skipped", reason: removedInV2 } satisfies Outcome;
+    if (app !== undefined && (existing?.source_hash === hash || since === "changed"))
+      // An earlier attempt may have stopped before the app's fixed account was saved. An app its
+      // users deployed again in v2 since stays as they made it.
+      return yield* withFixedAccount(
+        context,
+        row,
+        app,
+        outcomeOf(base, {
+          status: "imported",
+          v2Kind: "app",
+          v2Id: app,
+          ...(since === "changed"
+            ? { note: keptInV2 }
+            : existing?.reason === null || existing?.reason === undefined
+              ? {}
+              : { note: existing.reason }),
+        }),
+      );
     return yield* importIntegration(context, row, app).pipe(
       Effect.tap(({ result }) => recorded(context, "integration", id, hash)(result)),
       Effect.map(({ result, app: deployed, traced, stale, dropped }) => ({
@@ -1309,13 +1329,21 @@ const importConnectionItem = (context: ImportContext, id: string, stale: StaleIn
     const linked = yield* store.find("profile", id);
     if (linked?.status === "imported" && linked.v2_id !== null) {
       const saved = yield* store.find("connection", id);
+      const account =
+        saved?.status === "imported" && saved.v2_id !== null ? saved.v2_id : undefined;
+      // An account its users removed in v2 since stays removed; verification leaves it out.
+      if (account !== undefined && (yield* store.sinceImported("connection", id)) === "removed")
+        return { ...base, status: "skipped", reason: removedInV2, v2Id: account } satisfies Outcome;
+      // An account an earlier run saved takes v1's tokens if they are newer (`refreshCopiedGrant`).
+      const refreshed =
+        account === undefined
+          ? "kept"
+          : yield* refreshCopiedGrant(context, row, AccountId.make(account));
       return outcomeOf(base, {
         status: "imported",
         v2Kind: "account",
-        v2Id:
-          linked.v2_kind === "profile" && saved?.status === "imported" && saved.v2_id !== null
-            ? saved.v2_id
-            : linked.v2_id,
+        v2Id: linked.v2_kind === "profile" && account !== undefined ? account : linked.v2_id,
+        ...(refreshed === "replaced" ? { note: "Took v1's newer sign-in." } : {}),
       });
     }
     return yield* Effect.gen(function* () {
@@ -1327,6 +1355,12 @@ const importConnectionItem = (context: ImportContext, id: string, stale: StaleIn
           : yield* store.find("integration", integration.row_id);
       if (appRow?.status !== "imported" || appRow.v2_id === null)
         return yield* new ItemFailed({ reason: integrationNotImported });
+      // The app its users removed in v2 since takes no new connections.
+      if (
+        integration !== undefined &&
+        (yield* store.sinceImported("integration", integration.row_id)) === "removed"
+      )
+        return { ...base, status: "skipped", reason: removedInV2 } satisfies Outcome;
       const app = yield* executor.apps.get({
         owner: organizationOwner(context.target.id),
         app: AppId.make(appRow.v2_id),
@@ -1440,12 +1474,30 @@ const importToolkitItem = (context: ItemContext, id: string) =>
     const members = toolkitMembers(toolkit, snapshot.subjects);
     const copies = yield* Effect.forEach(members, (member) => {
       const key = toolkitCopyKey(toolkit, member);
-      // Its connection follows the apps and accounts imported since; saving it again is safe.
-      return importToolkit(context, toolkit, member).pipe(
-        Effect.tap(recorded(context, "toolkit", key, hash)),
-        Effect.map((result) => outcomeOf(base, result)),
-        Effect.catch(failedItem(context, "toolkit", key, hash, base)),
-      );
+      return Effect.gen(function* () {
+        const existing = yield* context.store.find("toolkit", key);
+        const since =
+          existing?.status === "imported" && existing.v2_id !== null
+            ? yield* context.store.sinceImported("toolkit", key)
+            : "kept";
+        // A copy its member removed or changed in v2 since stays as they left it.
+        if (since === "removed")
+          return { ...base, status: "skipped", reason: removedInV2 } satisfies Outcome;
+        if (since === "changed" && existing?.v2_id !== null && existing?.v2_id !== undefined)
+          return outcomeOf(base, {
+            status: "imported",
+            v2Kind: "mcp_connection",
+            v2Id: existing.v2_id,
+            note: keptInV2,
+          });
+        // Otherwise its connection follows the apps and accounts imported since; saving it again
+        // is safe.
+        return yield* importToolkit(context, toolkit, member).pipe(
+          Effect.tap(recorded(context, "toolkit", key, hash)),
+          Effect.map((result) => outcomeOf(base, result)),
+          Effect.catch(failedItem(context, "toolkit", key, hash, base)),
+        );
+      });
     });
     const failed = copies.find((copy) => copy.status === "failed");
     const first = copies[0];
@@ -1477,12 +1529,27 @@ const importArtifactItem = (context: ItemContext, id: string) =>
     // Its source and the mapping written into it.
     const hash = yield* sourceHash({ artifact: row, mapping });
     const existing = yield* store.find("artifact", id);
-    if (existing?.status === "imported" && existing.source_hash === hash && existing.v2_id !== null)
+    const since =
+      existing?.status === "imported" && existing.v2_id !== null
+        ? yield* store.sinceImported("artifact", id)
+        : "kept";
+    // An app its users removed or deployed again in v2 since stays as they left it.
+    if (since === "removed")
+      return { ...base, status: "skipped", reason: removedInV2 } satisfies Outcome;
+    if (
+      existing?.status === "imported" &&
+      existing.v2_id !== null &&
+      (existing.source_hash === hash || since === "changed")
+    )
       return outcomeOf(base, {
         status: "imported",
         v2Kind: existing.v2_kind ?? undeployedApp,
         v2Id: existing.v2_id,
-        ...(existing.reason === null ? {} : { note: existing.reason }),
+        ...(since === "changed"
+          ? { note: keptInV2 }
+          : existing.reason === null
+            ? {}
+            : { note: existing.reason }),
       });
     const app =
       existing?.status === "imported" && existing.v2_id !== null
@@ -1509,9 +1576,10 @@ interface Verified {
 const MemberCount = Schema.Array(Schema.Struct({ members: Schema.NumberFromString }));
 
 /**
- * Cutover step 4 (`V1ImportVerification`): every planned item has a result and none failed, the
- * v2 organization's members are exactly the planned ones, every imported account's credentials
- * decrypt, and every imported integration's app has an active version. Returns the counts and
+ * Cutover step 4 (`V1ImportVerification`): every planned item has a result and none failed, every
+ * planned member is a member of the v2 organization, every imported account its users have not
+ * removed since has credentials that decrypt, and every imported integration's app has an active
+ * version. Members its users added in v2 after an earlier run are theirs. Returns the counts and
  * each problem found.
  */
 const verify = (
@@ -1537,23 +1605,36 @@ const verify = (
     const failed = outcomes.filter((outcome) => outcome.status === "failed").length;
     if (failed > 0) problems.push(`${failed} items failed.`);
 
-    const inV2 = Number(
-      (yield* context.sql`
-        select count(*)::text as members from member where "organizationId" = ${context.target.id}
+    const plannedUsers = members.flatMap((member) => {
+      const user = context.users.get(member.user);
+      return user === undefined ? [] : [user];
+    });
+    const inV2 =
+      plannedUsers.length === 0
+        ? 0
+        : Number(
+            (yield* context.sql`
+        select count(*)::text as members from member
+        where "organizationId" = ${context.target.id} and ${context.sql.in("userId", plannedUsers)}
       `.pipe(
-        Effect.flatMap(Schema.decodeUnknownEffect(MemberCount)),
-        Effect.mapError(() => new V1ImportUnavailable()),
-      ))[0]?.members ?? 0,
-    );
+              Effect.flatMap(Schema.decodeUnknownEffect(MemberCount)),
+              Effect.mapError(() => new V1ImportUnavailable()),
+            ))[0]?.members ?? 0,
+          );
     const unmapped = members.filter((member) => !context.users.has(member.user)).length;
     if (unmapped > 0) problems.push(`${unmapped} members have no v2 user.`);
     if (inV2 !== members.length)
-      problems.push(`The v2 organization has ${inV2} members; ${members.length} were planned.`);
+      problems.push(`The v2 organization has ${inV2} of the ${members.length} planned members.`);
 
+    const removed = new Set(
+      outcomes.flatMap((outcome) =>
+        outcome.reason === removedInV2 && outcome.v2Id !== undefined ? [outcome.v2Id] : [],
+      ),
+    );
     const accounts = new Set(
       (yield* context.store.rows(organization))
         .filter((row) => row.status === "imported" && row.v2_kind === "account")
-        .flatMap((row) => (row.v2_id === null ? [] : [row.v2_id])),
+        .flatMap((row) => (row.v2_id === null || removed.has(row.v2_id) ? [] : [row.v2_id])),
     );
     let unreadable = 0;
     for (const account of accounts)

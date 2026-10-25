@@ -651,7 +651,7 @@ const seedChecks = (organization: string, user: string, slug: string, origin: st
   });
 
 /** Call Cloud's API from the signed-in page, as the dashboard does. */
-const call = (step: string, method: "GET" | "POST", path: string, payload?: unknown) =>
+const call = (step: string, method: "GET" | "POST" | "DELETE", path: string, payload?: unknown) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     return yield* browser
@@ -667,7 +667,14 @@ const call = (step: string, method: "GET" | "POST", path: string, payload?: unkn
                     body: JSON.stringify(payload),
                   }),
             }).then((response) =>
-              response.json().then((body: unknown) => ({ status: response.status, body })),
+              // A body that is not JSON is kept as text, so a failed assertion shows it.
+              response.text().then((text) => {
+                let body: unknown = text;
+                try {
+                  body = JSON.parse(text);
+                } catch {}
+                return { status: response.status, body };
+              }),
             ),
           { method, path, payload },
         ),
@@ -2202,10 +2209,17 @@ const parameterRecord = (parameters: Parameters) => ({
  * gateway that takes its own client ID and secret, which v2 keeps in a second account. `Pasted
  * mail` sends its OAuth client's own ID and secret as headers, which its sign-in already sends.
  */
-const seedRenewal = (organization: string, user: string, slug: string, origin: string) =>
+const seedRenewal = (
+  organization: string,
+  user: string,
+  slug: string,
+  origin: string,
+  // Another organization's seed gives the same integrations and OAuth clients the same names.
+  suffix = randomUUID().slice(0, 6),
+) =>
   Effect.gen(function* () {
     const emulators = yield* Emulators;
-    const mail = `mail_${randomUUID().slice(0, 6)}`;
+    const mail = `mail_${suffix}`;
     const userScope = `executor/user/${encodeURIComponent(organization)}/${encodeURIComponent(user)}`;
     const orgScope = `executor/org/${encodeURIComponent(organization)}`;
     const access = (name: string) => `oauth:user:${mail}:${name}`;
@@ -2222,8 +2236,8 @@ const seedRenewal = (organization: string, user: string, slug: string, origin: s
       );
     }
     yield* emulators.v1VaultObject(vaultName(orgScope, secret), "synthetic-confidential-secret");
-    const gated = `gated_${randomUUID().slice(0, 6)}`;
-    const pasted = `pasted_${randomUUID().slice(0, 6)}`;
+    const gated = `gated_${suffix}`;
+    const pasted = `pasted_${suffix}`;
     const pastedSecret = `oauth-client:org:${pasted}:secret`;
     yield* emulators.v1VaultObject(vaultName(userScope, access("gated")), "synthetic-gated-access");
     yield* emulators.v1VaultObject(
@@ -4648,6 +4662,215 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
         expect(yield* service.tokens).toHaveLength(1);
       }).pipe(Effect.provide(services)),
     ),
+  );
+
+  /**
+   * v1 reads an organization's connections in creation order, then by row ID. A seed creates them
+   * at once with random row IDs, so the copied organization and its own are put in the same order,
+   * as one organization's rows always are.
+   */
+  const orderConnections = (organization: string) =>
+    writeRows("v1-database.json", [
+      {
+        sql: `update connection c set created_at = timestamptz '2026-01-01' + (
+            select count(*) from connection o where o.tenant = c.tenant and o.name < c.name
+          ) * interval '1 second' where c.tenant = $1`,
+        params: [organization],
+      },
+    ]);
+
+  it.effect(
+    scenarios.v1ImportCopiedMove.title,
+    (context) =>
+      withCase(
+        context,
+        Effect.gen(function* () {
+          const emulators = yield* Emulators;
+          const operator = yield* v1ImportOperator;
+          const service = yield* oauthService;
+          const identity = yield* emulators.identity("google");
+          // The opt-in import copied an organization to v2 while v1 kept serving it: imported, with
+          // no import instance and not moved. The copy is made by importing a twin organization
+          // and handing its import map to this one, whose rows match the twin's by name.
+          const twin = yield* emulators.v1Workspace([identity.email]);
+          const copySlug = `v1-${randomUUID().slice(0, 8)}`;
+          const names = randomUUID().slice(0, 6);
+          yield* seedRenewal(twin.organization, twin.user, copySlug, service.origin, names);
+          yield* orderConnections(twin.organization);
+          yield* googleSignIn(identity.email);
+          const target = (yield* importOnServer(twin.organization)).target;
+          expect(target.slug).toBe(copySlug);
+          const own = yield* emulators.v1Workspace([identity.email]);
+          const slug = `v1-${randomUUID().slice(0, 8)}`;
+          yield* seedRenewal(own.organization, own.user, slug, service.origin, names);
+          yield* orderConnections(own.organization);
+          const [pairs = []] = yield* writeRows("v1-database.json", [
+            {
+              sql: `select twin.row_id as twin, own.row_id as own from (
+                  select row_id, 'integration:' || name as key from integration where tenant = $1
+                  union all select row_id, 'connection:' || name from connection where tenant = $1
+                  union all select row_id, 'tool_policy:' || pattern from tool_policy where tenant = $1
+                ) twin join (
+                  select row_id, 'integration:' || name as key from integration where tenant = $2
+                  union all select row_id, 'connection:' || name from connection where tenant = $2
+                  union all select row_id, 'tool_policy:' || pattern from tool_policy where tenant = $2
+                ) own using (key)`,
+              params: [twin.organization, own.organization],
+            },
+          ]);
+          const matched = yield* Schema.decodeUnknownEffect(
+            Schema.Array(Schema.Struct({ twin: Schema.String, own: Schema.String })),
+          )(pairs);
+          yield* writeRows("sso-database.json", [
+            ...[...matched, { twin: twin.organization, own: own.organization }].map((pair) => ({
+              sql: "update private_v1_import_map set v1_id = $2 where v1_org_id = $3 and v1_id = $1",
+              params: [pair.twin, pair.own, twin.organization],
+            })),
+            {
+              sql: "update private_v1_import_map set v1_org_id = $2 where v1_org_id = $1",
+              params: [twin.organization, own.organization],
+            },
+          ]);
+          const inventory = yield* call(
+            "Read the copied organization",
+            "GET",
+            `/api/organizations/${target.id}/inventory`,
+          ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+          const accountOf = (label: string) =>
+            inventory.accounts.find((entry) => entry.label === label)?.id;
+          const callMail = (step: string, label: string) =>
+            call(step, "POST", `/api/organizations/${target.id}/apps/${appOf("Mail")}/tools/call`, {
+              tool: "mail.me",
+              kind: "query",
+              input: { accountId: accountOf(label), input: {} },
+            });
+          const appOf = (name: string) => inventory.apps.find((entry) => entry.name === name)?.id;
+          const expectMail = (step: string, label: string) =>
+            callMail(step, label).pipe(
+              Effect.map((sent) => expect(sent.status, JSON.stringify(sent.body)).toBe(200)),
+            );
+
+          // v2 renews the expired account on its first call.
+          yield* expectMail("Call the mail API as the renewed account", "renewed");
+          expect(yield* service.tokens).toHaveLength(1);
+
+          // v1 renews the second account later, and the service rotates its refresh token: v1 now
+          // holds the only tokens that work, which expire after the ones copied to v2.
+          const rotated = randomUUID().slice(0, 8);
+          const userScope = `executor/user/${encodeURIComponent(own.organization)}/${encodeURIComponent(own.user)}`;
+          yield* emulators.v1VaultObject(
+            vaultName(userScope, `oauth:user:rotated${rotated}:second`),
+            service.renewedToken,
+          );
+          yield* emulators.v1VaultObject(
+            vaultName(userScope, `oauth:user:rotated${rotated}:second:refresh`),
+            "synthetic-second-rotated-refresh",
+          );
+          yield* writeRows("v1-database.json", [
+            {
+              sql: "update connection set item_ids = $2::json, refresh_item_id = $3, expires_at = $4::bigint where tenant = $1 and name = 'second'",
+              params: [
+                own.organization,
+                JSON.stringify({ token: `oauth:user:rotated${rotated}:second` }),
+                `oauth:user:rotated${rotated}:second:refresh`,
+                String(Date.now() + 7_200_000),
+              ],
+            },
+          ]);
+          // A member changes an imported app in v2, and its integration changes in v1.
+          const gated = appOf("Gated mail");
+          const edited = (yield* appSource(target.id, gated)).map((file) =>
+            file.path === "index.ts"
+              ? { ...file, content: `${file.content}\n// edited in v2\n` }
+              : file,
+          );
+          const redeployed = yield* call(
+            "Deploy a member's version of the gated app",
+            "POST",
+            `/api/organizations/${target.id}/apps/${gated}/deploy`,
+            { files: edited },
+          );
+          expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
+          yield* writeRows("v1-database.json", [
+            {
+              sql: "insert into tool_policy (tenant, owner, subject, pattern, action) values ($1, 'org', '', 'removed_service.*', 'block')",
+              params: [own.organization],
+            },
+            // The member removes in v1 the connection that could not move.
+            {
+              sql: "delete from connection where tenant = $1 and name = 'untrusted'",
+              params: [own.organization],
+            },
+          ]);
+          // In v2 they remove an app and an account, and add a teammate.
+          for (const [step, path] of [
+            ["Remove the pasted app in v2", `apps/${appOf("Pasted mail")}`],
+            ["Remove the pasted account in v2", `accounts/${accountOf("pasted")}`],
+          ] as const) {
+            const removed = yield* call(step, "DELETE", `/api/organizations/${target.id}/${path}`);
+            expect(removed.status, JSON.stringify(removed.body)).toBeLessThan(300);
+          }
+          const teammate = randomUUID();
+          yield* writeRows("sso-database.json", [
+            {
+              sql: `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") values ($1, 'Teammate', $2, true, now(), now())`,
+              params: [teammate, `teammate-${teammate.slice(0, 8)}@example.test`],
+            },
+            {
+              sql: `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'member', now())`,
+              params: [randomUUID(), target.id, teammate],
+            },
+          ]);
+
+          // The dry run reports the copy's slug, which the move keeps.
+          const dryRun = v1RunId("copied-dry-run");
+          const checked = yield* operator.start({
+            mode: "dry-run",
+            runId: dryRun,
+            organizations: [own.organization],
+          });
+          expect(checked.status, JSON.stringify(checked.body)).toBe(200);
+          expect((yield* operator.waitForReport(dryRun, own.organization)).slug).toEqual({
+            v1: slug,
+            v2: copySlug,
+            changed: true,
+          });
+
+          const moved = yield* importOnServer(own.organization);
+          expect(moved.report.cutover, JSON.stringify(moved.report.verification)).toBe(true);
+          expect(moved.target).toEqual(target);
+          // What the member removed in v2 stays removed.
+          const removedInV2 = {
+            status: "skipped",
+            reason: "Its users removed it in v2 after an earlier run imported it.",
+          };
+          expect(moved.results.get("Pasted mail")).toEqual(removedInV2);
+          expect(moved.results.get("pasted")).toMatchObject(removedInV2);
+          // The second account takes v1's newer tokens; the renewed one keeps v2's own renewal.
+          expect(moved.results.get("second")).toMatchObject({
+            status: "imported",
+            note: "Took v1's newer sign-in.",
+          });
+          expect(moved.results.get("renewed")?.note).toBeUndefined();
+          yield* expectMail("Call the mail API as the second account", "second");
+          yield* expectMail("Call the mail API as the renewed account again", "renewed");
+          expect((yield* service.calls).slice(-2)).toEqual([
+            `Bearer ${service.renewedToken}`,
+            `Bearer ${service.renewedToken}`,
+          ]);
+          expect(yield* service.tokens).toHaveLength(1);
+          // The member's version of the gated app stands; the others follow v1's change.
+          expect(moved.results.get("Gated mail")).toMatchObject({
+            status: "imported",
+            note: "Kept as its users changed it in v2 after an earlier run imported it.",
+          });
+          expect(
+            (yield* appSource(target.id, gated)).find((file) => file.path === "index.ts")?.content,
+          ).toContain("// edited in v2");
+        }).pipe(Effect.provide(services)),
+      ),
+    // It copies the organization, checks it again and moves it: three runs of the import.
+    { timeout: 180_000 },
   );
 
   it.effect(scenarios.v1ImportFirstParty.title, (context) =>

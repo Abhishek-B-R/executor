@@ -8462,6 +8462,12 @@ export const scenarios = plan({
       "Cloud v1 import signs in and renews OAuth accounts with each connection's v1 client, granted scopes and resource, not the integration's method, refuses a token endpoint v1 no longer trusted, sends an OAuth integration's fixed credentials from a second account linked for everyone, and leaves out fixed headers that repeat the connection's own client ID and secret",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportCopiedMove: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import moves an organization already copied to v2 into that copy: its dry run reports the copy's slug, an account v1 renewed later takes v1's newer tokens while one v2 renewed keeps its own, and an app its members deployed in v2 since keeps their version, while what they removed in v2 stays removed and a teammate they added stays",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   // The operator clients it moves grants to are the ones every managed local Cloud starts with.
   v1ImportFirstParty: {
     file: "cloud-v1-import.spec.ts",

@@ -231,6 +231,7 @@ export const createExecutor = (
           ),
         firstPartyClient: oauth.firstPartyClient,
         credentialsReadable: credentialsReadable(db, credentials),
+        refreshImportedGrant: oauth.refreshImportedGrant,
       },
       [StorageHost]: {
         transaction: (effect) =>
