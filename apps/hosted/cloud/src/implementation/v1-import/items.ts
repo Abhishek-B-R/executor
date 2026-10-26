@@ -102,6 +102,12 @@ import {
 } from "./plan.ts";
 import type { V1Snapshot, V1Source } from "./source.ts";
 import {
+  blockYamlDocument,
+  type Entries,
+  microsoftGraphFormat,
+  parsedDocument,
+} from "./stored-document.ts";
+import {
   sourceHash,
   toolkitCopyConnectionId,
   toolkitCopyId,
@@ -866,7 +872,7 @@ const toolNames = (tools: readonly ToolRow[]) => new Set(tools.map((tool) => too
  * new connection.
  */
 export const compiledTools = (
-  document: Record<string, unknown>,
+  document: Entries,
   operations: readonly OpenApiOperationRow[],
   tools: readonly ToolRow[],
 ): ReadonlyMap<string, string> => {
@@ -973,6 +979,70 @@ const leftOutNote = (app: Pick<GeneratedApp, "traced" | "stale" | "dropped">) =>
     );
   return notes.length === 0 ? undefined : notes.join(" ");
 };
+
+/**
+ * The document v1 stored for an OpenAPI integration, read as v1 read it: a Microsoft Graph preset's
+ * entry by entry from its text, as v1 compiled it, and any other whole.
+ */
+const storedDocument = (
+  source: GenerationSource,
+  decoded: Extract<ImportableIntegration, { readonly plugin: "openapi" }>,
+  bytes: Uint8Array,
+) =>
+  Effect.gen(function* () {
+    if (decoded.config.specFormat === microsoftGraphFormat) {
+      const read = blockYamlDocument(bytes);
+      if (!read.ok) return yield* fail(read.reason);
+      return read;
+    }
+    const read = parseSpec(bytes);
+    if (read.ok === false) return yield* failStale("unreadable_spec", read.reason);
+    // v1 stored some specifications as their URL and fetched the document once; so does this.
+    // v1 kept what it fetched, so a document that cannot be fetched or read now still blocks.
+    const parsed =
+      read.ok === "url"
+        ? parseSpec(
+            yield* source
+              .specification(read.url)
+              .pipe(Effect.catchTag("SpecificationUnavailable", (error) => fail(error.reason))),
+          )
+        : read;
+    if (parsed.ok === "url")
+      return yield* fail("v1's stored specification is a URL whose document is another URL.");
+    if (!parsed.ok) return yield* fail(parsed.reason);
+    return {
+      document: parsedDocument(parsed.document),
+      unread: (): string | undefined => undefined,
+    };
+  });
+
+/**
+ * The integration's stored document cut to v1's operations, with v1's operation rows and tool
+ * listing. The stored bytes and the document read from them end with this, before the app is
+ * generated from the cut.
+ */
+const importedSpecification = (
+  context: { readonly snapshot: V1Snapshot; readonly source: GenerationSource },
+  integration: IntegrationRow,
+  decoded: Extract<ImportableIntegration, { readonly plugin: "openapi" }>,
+) =>
+  Effect.gen(function* () {
+    const { tenant, subjects } = context.snapshot;
+    const stored = yield* context.source.blob(tenant, "openapi", `spec/${decoded.specHash}`);
+    if (Option.isNone(stored)) return yield* fail(context.source.blobMissing);
+    const { document, unread } = yield* storedDocument(context.source, decoded, stored.value);
+    const operations = yield* context.source.openApiOperations(tenant, integration.slug);
+    const tools = yield* context.source.tools(tenant, subjects, integration.slug);
+    const compiled = importedDocument(
+      document,
+      operations,
+      compiledTools(document, operations, tools),
+    );
+    // An entry the cut read could not be parsed: v1 could not read it either.
+    const reason = unread();
+    if (reason !== undefined) return yield* failStale("unreadable_spec", reason);
+    return { compiled, operations, tools };
+  });
 
 /** An integration's app source, generated from v1's rows without writing anything. */
 export const generate = (
@@ -1108,30 +1178,10 @@ export const generate = (
         } satisfies GeneratedApp;
       }
       case "openapi": {
-        const stored = yield* context.source.blob(tenant, "openapi", `spec/${decoded.specHash}`);
-        if (Option.isNone(stored)) return yield* fail(context.source.blobMissing);
-        const read = parseSpec(stored.value);
-        if (read.ok === false) return yield* failStale("unreadable_spec", read.reason);
-        // v1 stored some specifications as their URL and fetched the document once; so does this.
-        // v1 kept what it fetched, so a document that cannot be fetched or read now still blocks.
-        const parsed =
-          read.ok === "url"
-            ? parseSpec(
-                yield* context.source
-                  .specification(read.url)
-                  .pipe(Effect.catchTag("SpecificationUnavailable", (error) => fail(error.reason))),
-              )
-            : read;
-        if (parsed.ok === "url")
-          return yield* fail("v1's stored specification is a URL whose document is another URL.");
-        if (!parsed.ok) return yield* fail(parsed.reason);
-        const { document } = parsed;
-        const operations = yield* context.source.openApiOperations(tenant, integration.slug);
-        const tools = yield* context.source.tools(tenant, subjects, integration.slug);
-        const compiled = importedDocument(
-          document,
-          operations,
-          compiledTools(document, operations, tools),
+        const { compiled, operations, tools } = yield* importedSpecification(
+          context,
+          integration,
+          decoded,
         );
         // v1 sent each operation to its own server unless the integration set a base URL, with the
         // account's credentials on every one, and the app does the same. An operation v1 never

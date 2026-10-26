@@ -26,6 +26,7 @@ import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { approvalMcpUpstream } from "../support/approval-mcp-upstream.ts";
 import { credentialUpstream } from "../support/credential-upstream.ts";
 import { largeOpenapiDocument } from "../support/large-openapi.ts";
+import { graphComponents, graphDocument } from "../support/graph-openapi.ts";
 import { Emulators } from "../support/emulators.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Execution } from "../support/mcp-connections.ts";
@@ -3222,6 +3223,111 @@ info:
    version: "1"
 paths: {}
 `;
+
+/** The API every synthetic Graph operation calls. */
+const graphOrigin = "https://graph.example.invalid";
+
+/**
+ * Four Microsoft Graph presets as v1 added them, each with v1's rows for the operations it kept.
+ * `Graph Mail` and `Graph Calendar` keep areas of one Graph-shaped document of about 15 MB, which
+ * v1 stored once for both. `Graph Tasks` keeps an area of a small one whose first area's detail
+ * schema, which that area's operations reach, is indented deeper than its sibling title. v1 never
+ * stored a Graph preset's document as JSON, as `Graph Files`'s is.
+ */
+const seedGraph = (organization: string, slug: string) =>
+  Effect.gen(function* () {
+    const shared = graphDocument(graphOrigin, 2500);
+    const small = graphDocument(graphOrigin, 2);
+    const misindented = "       type: object";
+    const broken = small.text.replace(
+      "    synthetic.area0.detail:\n      title: detail\n",
+      `    synthetic.area0.detail:\n      title: detail\n${misindented}\n`,
+    );
+    const presets = [
+      {
+        slug: "microsoft_mail",
+        name: "Graph Mail",
+        text: shared.text,
+        areas: shared.areas.slice(0, 10),
+      },
+      {
+        slug: "microsoft_calendar",
+        name: "Graph Calendar",
+        text: shared.text,
+        areas: shared.areas.slice(10, 15),
+      },
+      {
+        slug: "microsoft_tasks",
+        name: "Graph Tasks",
+        text: broken,
+        areas: small.areas.slice(0, 1),
+      },
+      {
+        slug: "microsoft_files",
+        name: "Graph Files",
+        text: JSON.stringify({
+          openapi: "3.0.4",
+          info: { title: "Graph", version: "1" },
+          paths: {},
+        }),
+        areas: small.areas.slice(1),
+      },
+    ];
+    const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+    const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic Graph workspace",
+        slug,
+      ),
+      ...[...new Set(presets.map((preset) => preset.text))].map((text) =>
+        row(
+          "insert into blob (namespace, key, value) values ($1, $2, $3)",
+          `o:${organization}/openapi`,
+          `spec/${hash(text)}`,
+          text,
+        ),
+      ),
+      ...presets.flatMap((preset) => [
+        row(
+          "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'openapi', $3, $4::json)",
+          organization,
+          preset.slug,
+          preset.name,
+          JSON.stringify({
+            specHash: hash(preset.text),
+            specFormat: "microsoft-graph",
+            family: "microsoft",
+            sourceUrl: `${graphOrigin}/openapi.yaml#preset=${preset.slug}`,
+            authenticationTemplate: [],
+          }),
+        ),
+        ...preset.areas.flatMap((area) =>
+          area.operations.map(([tool, method, path]) =>
+            row(
+              "insert into plugin_storage (tenant, plugin_id, collection, key, data) values ($1, 'openapi', 'operation', $2, $3::json)",
+              organization,
+              `op.${preset.slug}.${tool}`,
+              JSON.stringify({
+                integration: preset.slug,
+                toolName: tool,
+                binding: { method, pathTemplate: path },
+              }),
+            ),
+          ),
+        ),
+      ]),
+    ]);
+    return {
+      presets,
+      broken: {
+        line: broken.split("\n").indexOf(misindented) + 1,
+        bytes: new TextEncoder().encode(broken).length,
+      },
+    };
+  });
 
 /**
  * Four OpenAPI integrations and a GraphQL one. `Typography`'s document describes its one public
@@ -6493,6 +6599,100 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import", (it) => {
           status: "skipped",
           reason:
             "v1's stored specification could not be read: it is not JSON, and as YAML, bad indentation of a mapping entry at line 4, column 11 (81 bytes).",
+        });
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportMicrosoftGraph.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const identity = yield* emulators.identity("google");
+        const own = yield* emulators.v1Workspace([identity.email]);
+        const seeded = yield* seedGraph(own.organization, `v1-${randomUUID().slice(0, 8)}`);
+        yield* googleSignIn(identity.email);
+
+        const { target, results } = yield* importOnServer(own.organization);
+        const inventory = yield* call(
+          "Read the new organization",
+          "GET",
+          `/api/organizations/${target.id}/inventory`,
+        ).pipe(Effect.flatMap((response) => decode(Inventory, response)));
+        // Each preset's app has exactly the operations v1 kept for it, under v1's names, and of the
+        // shared document only the components they reach: none of the areas it left out, no
+        // examples, no security schemes and no security requirements.
+        for (const preset of seeded.presets.slice(0, 2)) {
+          const result = results.get(preset.name);
+          expect(result?.status, result?.reason).toBe("imported");
+          const app = inventory.apps.find((entry) => entry.name === preset.name)?.id;
+          const operations = preset.areas.flatMap((area) => area.operations);
+          const listed = yield* call(
+            `List the ${preset.name} app's tools`,
+            "GET",
+            `/api/organizations/${target.id}/apps/${app}/tools`,
+          );
+          expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+          expect((yield* decode(Tools, listed)).items.map((tool) => tool.name).sort()).toEqual(
+            operations.map(([tool]) => tool).sort(),
+          );
+          const configuration = (yield* appSource(target.id, app)).find(
+            (file) => file.path === "openapi.json",
+          )?.content;
+          if (configuration === undefined)
+            return yield* Effect.die(`The ${preset.name} app has no openapi.json`);
+          const { document } = Schema.decodeUnknownSync(
+            Schema.fromJsonString(
+              Schema.Struct({
+                source: Schema.Struct({
+                  document: Schema.Record(Schema.String, Schema.Unknown),
+                }),
+              }),
+            ),
+          )(configuration).source;
+          expect(Object.keys(document)).toEqual([
+            "openapi",
+            "info",
+            "servers",
+            "paths",
+            "components",
+            "tags",
+          ]);
+          const Sections = Schema.Record(
+            Schema.String,
+            Schema.Record(Schema.String, Schema.Unknown),
+          );
+          const paths = Schema.decodeUnknownSync(Sections)(document.paths);
+          expect(
+            Object.entries(paths)
+              .flatMap(([path, item]) =>
+                Object.keys(item)
+                  .filter((key) => key !== "description" && key !== "parameters")
+                  .map((method) => `${method} ${path}`),
+              )
+              .sort(),
+          ).toEqual(operations.map(([, method, path]) => `${method} ${path}`).sort());
+          const components = Schema.decodeUnknownSync(Sections)(document.components);
+          expect(
+            Object.fromEntries(
+              Object.entries(components).map(([section, entries]) => [
+                section,
+                Object.keys(entries).sort(),
+              ]),
+            ),
+          ).toEqual(graphComponents(preset.areas));
+        }
+        // An entry the preset's cut reaches cannot be parsed, so v1 could not read it either; the
+        // reason names the line and column of the document, as for a document parsed whole.
+        expect(results.get("Graph Tasks")).toMatchObject({
+          status: "skipped",
+          reason: `v1's stored specification could not be read: as YAML, bad indentation of a mapping entry at line ${seeded.broken.line}, column 12 (${seeded.broken.bytes} bytes).`,
+        });
+        expect(results.get("Graph Files")).toMatchObject({
+          status: "failed",
+          reason:
+            "v1's stored Microsoft Graph specification is not block YAML the import can read one entry at a time, as v1 read it: line 1 holds no key it can read.",
         });
       }).pipe(Effect.provide(services)),
     ),

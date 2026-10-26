@@ -8662,6 +8662,12 @@ export const scenarios = plan({
       "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, builds OpenAPI and GraphQL apps whose v1 OAuth clients set scopes in their authorization URLs, which reconnect sending v1's authorization and token requests, refusing a client whose request v2 cannot send as v1 did, and says why and where a stored specification cannot be read",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportMicrosoftGraph: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import reads the large Graph document v1's Microsoft presets share one entry at a time, as v1 read it, and moves each preset into an app with exactly its v1 operations under v1's names and only the components they reach, skips a preset whose document has an entry that cannot be parsed, naming its line, and refuses one whose document is not block YAML",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportPlanOutage: {
     file: "cloud-v1-import.spec.ts",
     title:
