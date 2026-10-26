@@ -8589,6 +8589,12 @@ export const scenarios = plan({
       "Cloud v1 import makes toolkits over the workspace's and a member's connections callable through their v1 URLs, running the org toolkit's copy as the app the workspace's account is linked to and the personal toolkit's as the member's account",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportSplitConnections: {
+    file: "cloud-v1-import.spec.ts",
+    title:
+      "Cloud v1 import moves an integration whose connections have different v1 rules as an app per connection, each with only its connection's account, tools and rules and a member's private to them, keeps one app for an integration whose moving connections share their rules, selects both apps for a toolkit over both connections and forwards each v1 call to its connection's app, plans the same apps in its dry run, and reuses every app, account and toolkit copy when it runs again",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportStampedApprovals: {
     file: "cloud-v1-import.spec.ts",
     title:

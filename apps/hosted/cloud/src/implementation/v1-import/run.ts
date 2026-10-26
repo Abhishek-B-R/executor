@@ -74,9 +74,14 @@ import {
   checkAccount,
   checkFixedAccount,
   checkIntegration,
+  connectionAppName,
+  connectionAppOf,
+  connectionPlans,
   connectionTarget,
   importAccount,
   importArtifact,
+  importConnectionApp,
+  importedApps,
   importFixedAccount,
   importIntegration,
   importToolkit,
@@ -91,9 +96,11 @@ import {
   updateCopiedAccount,
   toolkitPolicy,
   type AppAccountRequirements,
+  type AppScope,
   type DroppedFixed,
   type ImportedLookup,
   type ItemContext,
+  type RuleCounts,
   type StaleTool,
 } from "./items.ts";
 import {
@@ -852,7 +859,66 @@ interface Outcome {
   readonly unmappedRoles?: ReadonlyArray<{ readonly role: string; readonly problem: string }>;
   /** Scoped MCP connections a toolkit makes or would make, one per member copy. */
   readonly copies?: number | undefined;
+  /**
+   * An integration whose connections' rules differ, which moves as an app per connection
+   * (decision 33): each connection's app.
+   */
+  readonly apps?: readonly ConnectionAppOutcome[] | undefined;
 }
+
+/** One connection's own app (decision 33): what it did or would do, and its rules' counts. */
+interface ConnectionAppOutcome {
+  /** The connection's row id. */
+  readonly connection: string;
+  readonly label: string;
+  readonly owner: ConnectionRow["owner"];
+  readonly name: string;
+  readonly status: Outcome["status"];
+  readonly reason?: string | undefined;
+  readonly v2Id?: string | undefined;
+  /** Counted when the app was generated; an app an earlier run left as it was has none. */
+  readonly rules?: RuleCounts | undefined;
+  /** As an integration's `accounts`: what a dry run's build of this app takes. */
+  readonly accounts?: AppAccountRequirements | undefined;
+}
+
+/** What the user should know about an integration that moves as an app per connection. */
+const splitNote = (apps: readonly ConnectionAppOutcome[]) =>
+  `Its connections have different v1 rules, so each is its own app: ${apps.map((app) => app.name).join(", ")}.`;
+
+/** Why an integration that moves as an app per connection failed: each app that did. */
+const splitFailure = (apps: readonly ConnectionAppOutcome[]) =>
+  clip(
+    apps
+      .filter((app) => app.status === "failed")
+      .map((app) => `${app.name}: ${app.reason ?? ""}`)
+      .join(" "),
+  );
+
+/** An integration's outcome from its connections' own apps: failed when any of them failed. */
+const splitOutcome = (
+  base: Pick<Outcome, "kind" | "id" | "label" | "context">,
+  done: "planned" | "imported",
+  apps: readonly ConnectionAppOutcome[],
+  left: Pick<Outcome, "note" | "traced" | "staleTools" | "droppedCredentials">,
+): Outcome => {
+  const failed = apps.some((app) => app.status === "failed");
+  const moved = apps.some((app) => app.status === done);
+  return {
+    ...base,
+    ...left,
+    status: failed || apps.length === 0 ? "failed" : moved ? done : "skipped",
+    ...(failed
+      ? { reason: splitFailure(apps) }
+      : apps.length === 0
+        ? { reason: "None of its connections can move to an app of its own." }
+        : moved
+          ? {}
+          : { reason: removedInV2 }),
+    note: [left.note, splitNote(apps)].filter((text) => text !== undefined).join(" "),
+    apps,
+  };
+};
 
 const firstPartyName = (row: ConnectionRow) =>
   row.oauth_client?.startsWith(firstPartyClientPrefix) === true
@@ -1019,15 +1085,30 @@ const policyMatches = (
 
 /**
  * What an import would find in the map, decided from v1's rows: an integration's app when it can
- * be generated, a connection's account when it can be imported. The ids name nothing in v2.
+ * be generated, or for one the dry run plans as an app per connection (`split`), each connection's
+ * own app, and a connection's account when it can be imported. The ids name nothing in v2.
  */
 const plannedLookup = (
   snapshot: Pick<V1Snapshot, "integrations" | "clients">,
   firstParty: FirstPartyClients,
+  split: ReadonlySet<string>,
 ): ImportedLookup => ({
   app: (integration) =>
     Effect.succeed(
-      integrationPlan(integration).ok ? `app_planned_${integration.row_id}` : undefined,
+      !integrationPlan(integration).ok
+        ? undefined
+        : split.has(integration.row_id)
+          ? { kind: "split" }
+          : { kind: "one", id: `app_planned_${integration.row_id}` },
+    ),
+  connectionApp: (connection) =>
+    Effect.succeed(
+      snapshot.integrations.some(
+        (integration) =>
+          integration.slug === connection.integration && split.has(integration.row_id),
+      ) && connectionPlan(snapshot, firstParty, connection).ok
+        ? `app_planned_${connection.row_id}`
+        : undefined,
     ),
   connection: (connection) =>
     Effect.succeed(
@@ -1080,18 +1161,28 @@ const dryIntegration = (assessment: Assessment, organization: string, id: string
         reason: "It no longer exists in v1.",
       } satisfies Outcome;
     const label = integrationLabel(row);
-    return yield* checkIntegration(
-      {
-        executor,
-        snapshot,
-        source,
-        firstParty,
-        owner: OwnerId.make(`v1:${organization}`),
-        slug: assessment.slug?.v2 ?? snapshot.organization.slug,
-      },
-      row,
-    ).pipe(
+    const checking = {
+      executor,
+      snapshot,
+      source,
+      firstParty,
+      owner: OwnerId.make(`v1:${organization}`),
+      slug: assessment.slug?.v2 ?? snapshot.organization.slug,
+    };
+    return yield* checkIntegration(checking, row).pipe(
       Effect.flatMap((checked) => {
+        // Connections whose rules differ move as an app each (decision 33), checked one by one.
+        if (checked.split)
+          return dryConnectionApps(checking, row).pipe(
+            Effect.map((apps) =>
+              splitOutcome({ kind: "integration", id, label, context: null }, "planned", apps, {
+                note: checked.note,
+                traced: checked.traced,
+                staleTools: checked.stale,
+                droppedCredentials: checked.dropped,
+              }),
+            ),
+          );
         const outcome: Outcome = {
           kind: "integration",
           id,
@@ -1138,17 +1229,75 @@ const dryIntegration = (assessment: Assessment, organization: string, id: string
   });
 
 /**
- * The apps a dry run built, by integration row id: the accounts each takes. An integration that
- * did not build has none, as an import would have imported no app for it.
+ * Each connection's own app (decision 33), checked as `checkIntegration` checks an integration's,
+ * with its fixed account: a refused fixed account fails the app, whose connection still gets it.
  */
-const builtApps = (outcomes: readonly Outcome[]): ReadonlyMap<string, AppAccountRequirements> =>
-  new Map(
+const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row: IntegrationRow) =>
+  Effect.forEach(
+    connectionPlans(checking.snapshot, checking.firstParty, row),
+    ({ row: connection }) => {
+      const app = {
+        connection: connection.row_id,
+        label: connection.name,
+        owner: connection.owner,
+        name: connectionAppName(checking.snapshot, row, connection),
+      };
+      const failed = (
+        error: unknown,
+      ): Effect.Effect<Pick<ConnectionAppOutcome, "status" | "reason">, unknown> =>
+        transient(error)
+          ? Effect.fail(error)
+          : Effect.succeed({ status: "failed", reason: clip(refusal(error)) });
+      return checkIntegration(checking, row, connection).pipe(
+        Effect.flatMap((checked) =>
+          checkFixedAccount(checking, row, checked.accounts, connection).pipe(
+            Effect.as<Pick<ConnectionAppOutcome, "status" | "reason">>({ status: "planned" }),
+            Effect.catch(failed),
+            Effect.map((result): ConnectionAppOutcome => ({
+              ...app,
+              ...result,
+              rules: checked.rules,
+              accounts: checked.accounts,
+            })),
+          ),
+        ),
+        Effect.catch((error) =>
+          failed(error).pipe(Effect.map((result): ConnectionAppOutcome => ({ ...app, ...result }))),
+        ),
+      );
+    },
+  );
+
+/** The integrations a dry run plans as an app per connection, by row id. */
+const splitIntegrations = (outcomes: readonly Outcome[]): ReadonlySet<string> =>
+  new Set(
     outcomes.flatMap((outcome) =>
-      outcome.kind === "integration" && outcome.accounts !== undefined
-        ? [[outcome.id, outcome.accounts] as const]
-        : [],
+      outcome.kind === "integration" && outcome.apps !== undefined ? [outcome.id] : [],
     ),
   );
+
+/**
+ * The apps a dry run built: the accounts the app a connection's account goes to takes, its
+ * integration's or its own (decision 33). An app that did not build has none, as an import would
+ * have imported no app for it.
+ */
+const builtApps = (outcomes: readonly Outcome[]) => {
+  const byIntegration = new Map(
+    outcomes.flatMap((outcome) => (outcome.kind === "integration" ? [[outcome.id, outcome]] : [])),
+  );
+  return (
+    integration: string,
+    connection: string,
+  ): { readonly accounts: AppAccountRequirements; readonly scope: AppScope } | undefined => {
+    const outcome = byIntegration.get(integration);
+    if (outcome?.apps === undefined)
+      return outcome?.accounts === undefined
+        ? undefined
+        : { accounts: outcome.accounts, scope: "integration" };
+    const own = outcome.apps.find((app) => app.connection === connection)?.accounts;
+    return own === undefined ? undefined : { accounts: own, scope: "own" };
+  };
+};
 
 /**
  * Decide each connection as `importConnectionItem` would, writing nothing: its plan, its app, and
@@ -1162,7 +1311,7 @@ const dryConnections = (
   organization: string,
   ids: readonly string[],
   stale: StaleIntegrations,
-  apps: ReadonlyMap<string, AppAccountRequirements>,
+  apps: ReturnType<typeof builtApps>,
 ) =>
   Effect.gen(function* () {
     const { source, snapshot, executor, firstParty, mismatchOf } = yield* dryContext(
@@ -1203,9 +1352,10 @@ const dryConnections = (
                 reason: plan.reason,
                 stale: plan.stale,
               } satisfies Outcome);
-        const accounts = integration === undefined ? undefined : apps.get(integration.row_id);
-        if (accounts === undefined)
+        const built = integration === undefined ? undefined : apps(integration.row_id, row.row_id);
+        if (built === undefined)
           return { ...base, status: "failed", reason: integrationNotImported } satisfies Outcome;
+        const { accounts, scope } = built;
         if (needsNoAccount(plan.value, accounts))
           return { ...base, status: "planned" } satisfies Outcome;
         const differing: Array<{ readonly members: number; readonly values: number }> = [];
@@ -1220,6 +1370,7 @@ const dryConnections = (
                 return read.value;
               }),
             ),
+          scope,
         ).pipe(
           Effect.as(undefined),
           Effect.catch((error) => (transient(error) ? Effect.fail(error) : Effect.succeed(error))),
@@ -1282,14 +1433,14 @@ const dryPolicies = (
     );
   });
 
-const dryToolkits = (assessment: Assessment, organization: string) =>
+const dryToolkits = (assessment: Assessment, organization: string, split: ReadonlySet<string>) =>
   Effect.gen(function* () {
     const { source, snapshot, firstParty } = yield* dryContext(
       assessment,
       organization,
       allSnapshotTables,
     );
-    const lookup = plannedLookup(snapshot, firstParty);
+    const lookup = plannedLookup(snapshot, firstParty, split);
     return yield* Effect.forEach(snapshot.toolkits, (row) =>
       Effect.gen(function* () {
         const toolkit = decodeToolkit(row, snapshot.toolkitRules);
@@ -1331,14 +1482,14 @@ const artifactRows = (
     : source.artifacts(snapshot.tenant, snapshot.subjects, [first, ...rest]);
 };
 
-const dryArtifacts = (assessment: Assessment, organization: string) =>
+const dryArtifacts = (assessment: Assessment, organization: string, split: ReadonlySet<string>) =>
   Effect.gen(function* () {
     const { source, snapshot, firstParty } = yield* dryContext(assessment, organization, [
       "integrations",
       "connections",
       "clients",
     ]);
-    const lookup = plannedLookup(snapshot, firstParty);
+    const lookup = plannedLookup(snapshot, firstParty, split);
     const rows = yield* artifactRows(source, snapshot, assessment.items.artifacts);
     return yield* Effect.forEach(rows, (row) =>
       artifactMapping(snapshot, lookup, row).pipe(
@@ -1592,6 +1743,9 @@ const importIntegrationItem = (context: ItemContext, id: string) =>
       } satisfies Outcome;
     const { row, hash } = found;
     const base = { kind: "integration", id, label: integrationLabel(row), context: null } as const;
+    // An integration an earlier run imported as an app per connection stays so (decision 33).
+    if ((yield* importedApps(context.store, context.snapshot, row))?.kind === "split")
+      return yield* importConnectionApps(context, row, hash, base);
     const existing = yield* context.store.find("integration", id);
     const app =
       existing?.status === "imported" && existing.v2_id !== null
@@ -1620,25 +1774,111 @@ const importIntegrationItem = (context: ItemContext, id: string) =>
               : { note: existing.reason }),
         }),
       );
-    return yield* importIntegration(context, row, app).pipe(
-      Effect.tap(({ result }) => recorded(context, "integration", id, hash)(result)),
-      Effect.map(({ result, app: deployed, traced, stale, dropped }) => ({
-        deployed,
-        outcome: {
-          ...outcomeOf(base, result),
-          traced,
-          staleTools: stale,
-          droppedCredentials: dropped,
-        },
-      })),
-      Effect.catch(failedItem(context, "integration", id, hash, base)),
-      // The app's fixed account, once the app is recorded, so a retry keeps the app.
-      Effect.flatMap((done) =>
-        "deployed" in done
-          ? withFixedAccount(context, row, done.deployed, done.outcome)
-          : Effect.succeed(done),
+    const whole = yield* importIntegration(context, row, app).pipe(
+      Effect.tap((done) =>
+        done.kind === "one" ? recorded(context, "integration", id, hash)(done.result) : Effect.void,
+      ),
+      Effect.catch((error) =>
+        failedItem(
+          context,
+          "integration",
+          id,
+          hash,
+          base,
+        )(error).pipe(Effect.map((outcome) => ({ kind: "failed" as const, outcome }))),
       ),
     );
+    if (whole.kind === "failed") return whole.outcome;
+    // Its connections' rules differ, so each moves as its own app (decision 33).
+    if (whole.kind === "split") return yield* importConnectionApps(context, row, hash, base);
+    // The app's fixed account, once the app is recorded, so a retry keeps the app.
+    return yield* withFixedAccount(context, row, whole.app, {
+      ...outcomeOf(base, whole.result),
+      traced: whole.traced,
+      staleTools: whole.stale,
+      droppedCredentials: whole.dropped,
+    });
+  });
+
+/**
+ * Each moving connection's own app (decision 33), as `importIntegrationItem` imports an
+ * integration's one app: each is recorded by its connection (`connection_app`), an app its users
+ * removed in v2 since stays removed, one they deployed again stays as they made it, and an app is
+ * deployed again only when v1 changed. The integration fails when any of its apps does.
+ */
+const importConnectionApps = (
+  context: ItemContext,
+  row: IntegrationRow,
+  hash: string,
+  base: Pick<Outcome, "kind" | "id" | "label" | "context">,
+) =>
+  Effect.gen(function* () {
+    const apps: ConnectionAppOutcome[] = [];
+    let left: Pick<Outcome, "traced" | "staleTools" | "droppedCredentials"> = {};
+    for (const { row: connection } of connectionPlans(context.snapshot, context.firstParty, row)) {
+      const key = connection.row_id;
+      const appHash = yield* sourceHash([hash, key]);
+      const app = {
+        connection: key,
+        label: connection.name,
+        owner: connection.owner,
+        name: connectionAppName(context.snapshot, row, connection),
+      };
+      const existing = yield* context.store.find("connection_app", key);
+      const earlier =
+        existing?.status === "imported" && existing.v2_id !== null
+          ? AppId.make(existing.v2_id)
+          : undefined;
+      const since =
+        earlier === undefined ? "kept" : yield* context.store.sinceImported("connection_app", key);
+      const withAccount = (outcome: ConnectionAppOutcome, deployed: AppId) =>
+        importFixedAccount(context, row, deployed, connection).pipe(
+          Effect.as(outcome),
+          Effect.catch((error) =>
+            transient(error)
+              ? Effect.fail(error)
+              : Effect.succeed<ConnectionAppOutcome>({
+                  ...outcome,
+                  status: "failed",
+                  reason: clip(refusal(error)),
+                }),
+          ),
+        );
+      if (since === "removed") {
+        apps.push({ ...app, status: "skipped", reason: removedInV2, v2Id: earlier });
+        continue;
+      }
+      if (earlier !== undefined && (existing?.source_hash === appHash || since === "changed")) {
+        apps.push(yield* withAccount({ ...app, status: "imported", v2Id: earlier }, earlier));
+        continue;
+      }
+      const done = yield* importConnectionApp(context, row, connection, earlier).pipe(
+        Effect.tap(({ result }) => recorded(context, "connection_app", key, appHash)(result)),
+        Effect.map((imported) => ({ kind: "imported" as const, ...imported })),
+        Effect.catch((error) =>
+          failedItem(
+            context,
+            "connection_app",
+            key,
+            appHash,
+            base,
+          )(error).pipe(Effect.map((outcome) => ({ kind: "failed" as const, outcome }))),
+        ),
+      );
+      if (done.kind === "failed") {
+        apps.push({ ...app, status: done.outcome.status, reason: done.outcome.reason });
+        continue;
+      }
+      if (left.traced === undefined)
+        left = { traced: done.traced, staleTools: done.stale, droppedCredentials: done.dropped };
+      apps.push(
+        yield* withAccount(
+          { ...app, name: done.name, status: "imported", v2Id: done.app, rules: done.rules },
+          done.app,
+        ),
+      );
+    }
+    return splitOutcome(base, "imported", apps, left);
   });
 
 /**
@@ -1733,21 +1973,19 @@ const importConnectionItem = (
     return yield* Effect.gen(function* () {
       const plan = connectionPlan(snapshot, firstParty, row);
       if (!plan.ok) return yield* refused(plan);
-      const appRow =
-        integration === undefined
-          ? undefined
-          : yield* store.find("integration", integration.row_id);
-      if (appRow?.status !== "imported" || appRow.v2_id === null)
-        return yield* new ItemFailed({ reason: integrationNotImported });
+      // Its integration's one app, or its own (decision 33).
+      const found = yield* connectionAppOf(store, snapshot, row);
+      if (found === undefined) return yield* new ItemFailed({ reason: integrationNotImported });
       // The app its users removed in v2 since takes no new connections.
-      if (
-        integration !== undefined &&
-        (yield* store.sinceImported("integration", integration.row_id)) === "removed"
-      )
+      const since =
+        found.scope === "own"
+          ? yield* store.sinceImported("connection_app", row.row_id)
+          : yield* store.sinceImported("integration", found.integration.row_id);
+      if (since === "removed")
         return { ...base, status: "skipped", reason: removedInV2 } satisfies Outcome;
       const app = yield* executor.apps.get({
         owner: organizationOwner(context.target.id),
-        app: AppId.make(appRow.v2_id),
+        app: found.app,
       });
       // A public app needs no account or link.
       if (needsNoAccount(plan.value, app.requirements.accounts)) {
@@ -1764,6 +2002,7 @@ const importConnectionItem = (
               plan.value,
               app,
               recorded(context, "connection", id, hash),
+              found.scope,
             );
       yield* linkConnectionAccount(context, row, app, account);
       const result: MapResult = { status: "imported", v2Kind: "account", v2Id: account };
@@ -1811,9 +2050,12 @@ const importPolicyItem = (
     // The rule is already in each matching app's tools.ts. One that matches none of the tools v1
     // last listed still moves, for tools the server may list again.
     const apps: string[] = [];
-    for (const integration of decided.integrations) {
-      const found = yield* store.find("integration", integration);
-      if (found?.status === "imported" && found.v2_id !== null) apps.push(found.v2_id);
+    for (const id of decided.integrations) {
+      const integration = snapshot.integrations.find((candidate) => candidate.row_id === id);
+      const found =
+        integration === undefined ? undefined : yield* importedApps(store, snapshot, integration);
+      if (found?.kind === "one") apps.push(found.app);
+      else if (found?.kind === "split") apps.push(...found.apps.values());
     }
     const matches = yield* policyMatches(context.source, snapshot, row.pattern, dropped);
     const result: MapResult =
@@ -1924,7 +2166,7 @@ const importArtifactItem = (context: ItemContext, id: string) =>
         reason: "It no longer exists in v1.",
       } satisfies Outcome;
     const base = { kind: "artifact", id, label: row.title, context: null } as const;
-    const mapping = yield* artifactMapping(snapshot, mapLookup(store), row);
+    const mapping = yield* artifactMapping(snapshot, mapLookup(store, snapshot), row);
     // Its source and the mapping written into it.
     const hash = yield* sourceHash({ artifact: row, mapping });
     const existing = yield* store.find("artifact", id);
@@ -2054,22 +2296,31 @@ const verify = (
 
     let apps = 0;
     let withoutVersion = 0;
-    for (const outcome of outcomes)
-      if (
-        outcome.kind === "integration" &&
-        outcome.status === "imported" &&
-        outcome.v2Id !== undefined
-      ) {
-        apps++;
-        const app = yield* context.executor.apps.get({
-          owner: organizationOwner(context.target.id),
-          app: AppId.make(outcome.v2Id),
-        });
-        if (app.activeVersion === null) {
-          withoutVersion++;
-          problems.push(`${outcome.label} has no active version.`);
-        }
+    // Each integration's app, or each of its connections' own apps (decision 33).
+    const imported = outcomes.flatMap((outcome) =>
+      outcome.kind !== "integration" || outcome.status !== "imported"
+        ? []
+        : outcome.apps === undefined
+          ? outcome.v2Id === undefined
+            ? []
+            : [{ label: outcome.label, id: outcome.v2Id }]
+          : outcome.apps.flatMap((app) =>
+              app.status === "imported" && app.v2Id !== undefined
+                ? [{ label: app.name, id: app.v2Id }]
+                : [],
+            ),
+    );
+    for (const { label, id } of imported) {
+      apps++;
+      const app = yield* context.executor.apps.get({
+        owner: organizationOwner(context.target.id),
+        app: AppId.make(id),
+      });
+      if (app.activeVersion === null) {
+        withoutVersion++;
+        problems.push(`${label} has no active version.`);
       }
+    }
     const verification: V1ImportVerification = {
       items: {
         planned: Object.values(planned).reduce((sum, count) => sum + count, 0),
@@ -2196,6 +2447,13 @@ const reportOf = (
       (outcome) => outcome.kind === kind && (status === undefined || outcome.status === status),
     ).length;
   const done = params.mode === "import" ? "imported" : "planned";
+  // An integration that moves as an app per connection counts each of its apps (decision 33).
+  const apps = outcomes
+    .filter((outcome) => outcome.kind === "integration" && outcome.status === done)
+    .reduce(
+      (total, outcome) => total + (outcome.apps?.filter((app) => app.status === done).length ?? 1),
+      0,
+    );
   // Toolkits and artifacts are never stale: they move with what they can reach. An app that
   // moves can leave stale tools out.
   const staleItems: V1OrgReport["staleItems"] = outcomes.flatMap((outcome) => [
@@ -2240,7 +2498,7 @@ const reportOf = (
         users: members - merged,
         mergedUsers: merged,
         members,
-        apps: count("integration", done),
+        apps,
         accounts: count("connection", done),
         mcpConnections: outcomes
           .filter((outcome) => outcome.kind === "toolkit" && outcome.status === done)
@@ -2314,6 +2572,26 @@ const reportOf = (
     artifacts: outcomes.flatMap((outcome) =>
       outcome.kind === "artifact"
         ? [{ id: outcome.id, title: outcome.label, unmappedRoles: outcome.unmappedRoles ?? [] }]
+        : [],
+    ),
+    splitIntegrations: outcomes.flatMap((outcome) =>
+      outcome.kind === "integration" && outcome.apps !== undefined
+        ? [
+            {
+              id: outcome.id,
+              label: outcome.label,
+              apps: outcome.apps.map((app) => ({
+                connection: app.connection,
+                label: app.label,
+                owner: app.owner,
+                name: app.name,
+                status: app.status,
+                ...(app.v2Id === undefined ? {} : { v2Id: app.v2Id }),
+                ...(app.reason === undefined ? {} : { reason: app.reason }),
+                ...(app.rules === undefined ? {} : { rules: app.rules }),
+              })),
+            },
+          ]
         : [],
     ),
     flags: {
@@ -2726,6 +3004,7 @@ export const runV1Import = <S>(
           )),
         );
       const dropped = droppedTools(outcomes);
+      const split = splitIntegrations(outcomes);
       const later = [
         [
           "policies",
@@ -2733,8 +3012,8 @@ export const runV1Import = <S>(
           "tool_policy",
           items.policies,
         ],
-        ["toolkits", dryToolkits(assessment, organization), "toolkit", items.toolkits],
-        ["artifacts", dryArtifacts(assessment, organization), "artifact", items.artifacts],
+        ["toolkits", dryToolkits(assessment, organization, split), "toolkit", items.toolkits],
+        ["artifacts", dryArtifacts(assessment, organization, split), "artifact", items.artifacts],
       ] as const;
       for (const [name, work, kind, ids] of later)
         outcomes.push(

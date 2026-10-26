@@ -112,6 +112,34 @@ export const V1Report = Schema.Struct({
       reason: Schema.String,
     }),
   ),
+  /** Integrations that move as an app per connection, with each connection's app. */
+  splitIntegrations: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        label: Schema.String,
+        apps: Schema.Array(
+          Schema.Struct({
+            connection: Schema.String,
+            label: Schema.String,
+            owner: Schema.String,
+            name: Schema.String,
+            status: Schema.String,
+            v2Id: Schema.optionalKey(Schema.String),
+            reason: Schema.optionalKey(Schema.String),
+            rules: Schema.optionalKey(
+              Schema.Struct({
+                omitted: Schema.Number,
+                always: Schema.Number,
+                never: Schema.Number,
+                otherwise: Schema.NullOr(Schema.String),
+              }),
+            ),
+          }),
+        ),
+      }),
+    ),
+  ),
   billing: Schema.optionalKey(
     Schema.Struct({
       subscription: Schema.NullOr(

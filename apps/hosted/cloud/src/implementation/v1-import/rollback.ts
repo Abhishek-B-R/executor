@@ -53,9 +53,12 @@ export const removeImported = (
     const rows = (yield* store.rows(organization)).flatMap((row) =>
       row.status === "imported" && row.v2_id !== null ? [{ ...row, v2_id: row.v2_id }] : [],
     );
+    // Integrations' apps, connections' own apps (decision 33) and artifacts' apps.
     const apps = rows.filter(
       (row) =>
-        (row.v1_kind === "integration" || row.v1_kind === "artifact") &&
+        (row.v1_kind === "integration" ||
+          row.v1_kind === "connection_app" ||
+          row.v1_kind === "artifact") &&
         (row.v2_kind === "app" || row.v2_kind === "undeployed_app"),
     );
     const copies = rows.filter(
@@ -68,7 +71,9 @@ export const removeImported = (
           ? "toolkit"
           : row.v1_kind === "artifact"
             ? "artifact"
-            : "integration";
+            : row.v1_kind === "connection_app"
+              ? "connection_app"
+              : "integration";
       if ((yield* store.sinceImported(kind, row.v1_id)) === "changed") changed.push(row.v1_id);
     }
     if (changed.length > 0)

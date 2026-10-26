@@ -213,6 +213,35 @@ const VaultFailure = Schema.Struct({
   integration: Schema.String,
   reason: Schema.Literals(["missing", "unavailable"]),
 });
+/**
+ * An integration whose connections' v1 rules differ, which moves as an app per connection
+ * (decision 33): each connection's app, by the connection's row id and name, with what it did or
+ * would do and, when it was generated, how many tools its rules leave out, ask before and run
+ * without asking, and what they do with a tool none of them names.
+ */
+const SplitIntegration = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  apps: Schema.Array(
+    Schema.Struct({
+      connection: Schema.String,
+      label: Schema.String,
+      owner: Schema.Literals(["org", "user"]),
+      name: Schema.String,
+      status: Schema.Literals(["imported", "planned", "failed", "skipped"]),
+      v2Id: Schema.optionalKey(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+      rules: Schema.optionalKey(
+        Schema.Struct({
+          omitted: Count,
+          always: Count,
+          never: Count,
+          otherwise: Schema.NullOr(Schema.Literals(["omitted", "always"])),
+        }),
+      ),
+    }),
+  ),
+});
 
 /**
  * An import's cutover check (`notes/v1-import.md`, cutover step 4): every planned item has a result
@@ -313,6 +342,8 @@ export const V1OrgReport = Schema.Struct({
   }),
   /** Connections whose secret v1's Vault did not return: missing, or unavailable after retries. */
   vaultFailures: Schema.Array(VaultFailure),
+  /** Integrations that move as an app per connection; absent from reports written before. */
+  splitIntegrations: Schema.optionalKey(Schema.Array(SplitIntegration)),
   /** A paid organization's subscription carry-over. */
   billing: Schema.optionalKey(V1BillingCarryOver),
   /** The organization an import moved into. */
@@ -449,6 +480,8 @@ export const V1ImportAggregate = Schema.Struct({
     ),
   }),
   vaultFailures: Listed(VaultFailure),
+  /** Absent from aggregates combined before integrations moved as an app per connection. */
+  splitIntegrations: Schema.optionalKey(Listed(SplitIntegration)),
 });
 export type V1ImportAggregate = typeof V1ImportAggregate.Type;
 
