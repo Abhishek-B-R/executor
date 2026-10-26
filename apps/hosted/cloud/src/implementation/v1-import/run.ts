@@ -40,6 +40,7 @@ import {
   v1ImportReportKey,
   v1ImportRunPrefix,
   type V1ImportParams,
+  type V1IntoMode,
   type V1OrgOutcome,
 } from "../../contracts/v1-import-run.ts";
 import {
@@ -50,9 +51,11 @@ import {
   type IntegrationRow,
 } from "./formats.ts";
 import {
+  importInto,
   importMembership,
   importOrganization,
   importUser,
+  intoOwner,
   matchUser,
   plannedDisplacement,
   plannedSlug,
@@ -60,6 +63,9 @@ import {
   slugCandidates,
   type Displacement,
   type DisplacementRefused,
+  setUpIn,
+  type Into,
+  type IntoRefused,
   type UserMatch,
 } from "./identity.ts";
 import {
@@ -127,7 +133,13 @@ import {
 } from "./billing.ts";
 import { makeImportStore, sourceHash, type MapKind, type MapResult } from "./store.ts";
 import { V1MovedState } from "./moved-flag.ts";
-import { importRefusal, listedDisplacement, movedFlag, type V1ImportWrites } from "./writes.ts";
+import {
+  importRefusal,
+  listedDisplacement,
+  listedInto,
+  movedFlag,
+  type V1ImportWrites,
+} from "./writes.ts";
 
 /** The note on an imported policy that matches none of the tools v1 last listed. */
 export const noToolMatches = "It matches no tool v1 last listed for its integration.";
@@ -365,6 +377,12 @@ interface Assessment {
     readonly match: Exclude<UserMatch["kind"], "create">;
   }>;
   readonly slug: V1OrgReport["slug"];
+  /**
+   * The existing v2 organization the operator listed for it to move into (decision 32), and why
+   * it does not when it may not. Absent when none is listed, and from assessments recorded before
+   * such moves.
+   */
+  readonly into?: V1OrgReport["into"];
   readonly v1Counts: Readonly<Record<string, number>>;
   readonly items: ItemKeys;
 }
@@ -548,6 +566,68 @@ const assessCarryOver = (
   });
 
 /**
+ * Whether the v1 organization moves into the existing v2 organization the operator listed
+ * (`listedInto`, decision 32). Every mode needs its owner to own the listed organization
+ * (`intoOwner`). `nothing_to_copy` and `leave_v1_data` move a free workspace of one active member
+ * with no pending invitation, which WorkOS lists as a pending membership; `nothing_to_copy` also
+ * needs it to have nothing to copy, no item of any kind the import moves. `copy_into_empty` takes
+ * any workspace an import takes, paid or shared, into an organization with nothing set up
+ * (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the rest
+ * of the assessment.
+ */
+const intoPlan = (
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly organization: string;
+    readonly target: string;
+    readonly mode: V1IntoMode | undefined;
+    readonly billing: V1Billing;
+    readonly members: number;
+    readonly pendingMembers: number;
+    readonly items: ItemKeys;
+    readonly owner: PlannedMember;
+    readonly email: string;
+  },
+): Effect.Effect<Into | IntoRefused, V1ImportUnavailable> =>
+  Effect.gen(function* () {
+    const refused = (reason: string) => ({ kind: "refused", refused: reason }) as const;
+    const mode = input.mode;
+    if (mode === undefined)
+      return refused("The allow table lists a mode the import does not know.");
+    if (mode !== "copy_into_empty") {
+      if (input.billing.kind !== "free")
+        return refused(`It has a paid v1 plan (${input.billing.plans.join(", ")}).`);
+      if (input.members !== 1)
+        return refused(
+          `It has ${input.members} active members; only a workspace of one moves into an existing v2 organization without its data.`,
+        );
+      if (input.pendingMembers > 0)
+        return refused(`It has ${input.pendingMembers} pending invitations.`);
+    }
+    if (mode === "nothing_to_copy") {
+      const toCopy = Object.entries(input.items).flatMap(([kind, ids]) =>
+        ids.length === 0 ? [] : [`${kind}: ${ids.length}`],
+      );
+      if (toCopy.length > 0) return refused(`It has items to copy (${toCopy.join(", ")}).`);
+    }
+    const store = makeImportStore(sql);
+    const decided = yield* intoOwner(sql, store, {
+      organization: input.organization,
+      target: input.target,
+      member: input.owner.user,
+      email: input.email,
+    });
+    if (decided.kind === "refused" || mode !== "copy_into_empty") return decided;
+    // A run that already recorded it continues into what it copied there before.
+    if ((yield* store.find("organization", input.organization))?.status === "imported")
+      return decided;
+    const set = yield* setUpIn(sql, decided.target.id);
+    return set === undefined
+      ? decided
+      : refused(`The listed v2 organization is not empty (${set}).`);
+  });
+
+/**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
  * organizations move by hand (decision 15). A paid organization moves with its v1 subscription
  * (decision 5) when it can carry over (`assessCarryOver`); an import holds it back otherwise. One
@@ -606,6 +686,13 @@ const assess = (params: V1ImportParams) =>
       allSnapshotTables,
     );
     const artifacts = yield* source.artifactSummaries(organization, subjects);
+    const items: ItemKeys = {
+      integrations: snapshot.integrations.map((row) => row.row_id),
+      connections: snapshot.connections.map((row) => row.row_id),
+      policies: snapshot.policies.map((row) => row.row_id),
+      toolkits: snapshot.toolkits.map((row) => row.row_id),
+      artifacts: artifacts.map((row) => row.row_id),
+    };
     const owner = members[0];
     const keys = yield* Effect.option(source.apiKeys(organization));
     const matches = yield* Effect.forEach(members, (member) => {
@@ -622,26 +709,59 @@ const assess = (params: V1ImportParams) =>
       recorded?.status === "imported" && recorded.v2_id !== null
         ? yield* store.target(recorded.v2_id)
         : undefined;
+    const listed = yield* listedInto(organization);
+    const ownerUser = users.get(owner.user);
+    if (ownerUser === undefined) return yield* new V1ImportUnavailable();
+    const into =
+      listed === undefined
+        ? undefined
+        : yield* intoPlan(sql, {
+            organization,
+            target: listed.organization,
+            mode: listed.mode,
+            billing,
+            members: base.v1Counts.members,
+            pendingMembers: base.v1Counts.pendingMembers,
+            items,
+            owner,
+            email: memberProfile(ownerUser).email,
+          });
     const slug: V1OrgReport["slug"] =
-      copy === undefined
-        ? yield* plannedSlugReport(
-            sql,
-            yield* slugPlan(source, organization, snapshot.organization.slug),
-            snapshot.organization.slug,
-          )
-        : {
+      into?.kind === "into"
+        ? {
             v1: snapshot.organization.slug,
-            v2: copy.slug,
-            changed: copy.slug !== snapshot.organization.slug,
-          };
+            v2: into.target.slug,
+            changed: into.target.slug !== snapshot.organization.slug,
+          }
+        : copy === undefined
+          ? yield* plannedSlugReport(
+              sql,
+              yield* slugPlan(source, organization, snapshot.organization.slug),
+              snapshot.organization.slug,
+            )
+          : {
+              v1: snapshot.organization.slug,
+              v2: copy.slug,
+              changed: copy.slug !== snapshot.organization.slug,
+            };
+    // A copy into an existing organization carries billing over as into a copy: its own customer
+    // must bill nothing.
     const carry =
-      billing.kind === "paid" ? yield* assessCarryOver(source, organization, copy?.id) : null;
+      billing.kind === "paid"
+        ? yield* assessCarryOver(
+            source,
+            organization,
+            copy?.id ?? (into?.kind === "into" ? (into.target.id as OrganizationId) : undefined),
+          )
+        : null;
     const held =
-      billing.kind === "enterprise"
-        ? "Enterprise organizations move by hand, after their v2 SSO is set up."
-        : carry !== null && carry.problem !== null && params.mode === "import"
-          ? `Its v1 subscription cannot carry over: ${carry.problem}`
-          : null;
+      into?.kind === "refused"
+        ? `It does not move into the listed v2 organization: ${into.refused}`
+        : billing.kind === "enterprise"
+          ? "Enterprise organizations move by hand, after their v2 SSO is set up."
+          : carry !== null && carry.problem !== null && params.mode === "import"
+            ? `Its v1 subscription cannot carry over: ${carry.problem}`
+            : null;
     return {
       ...base,
       carryOver: carry,
@@ -661,6 +781,15 @@ const assess = (params: V1ImportParams) =>
         match.kind === "create" ? [] : [{ user, match: match.kind }],
       ),
       slug,
+      ...(listed === undefined || into === undefined
+        ? {}
+        : {
+            into: {
+              organization: listed.organization,
+              mode: listed.mode ?? null,
+              ...(into.kind === "refused" ? { refused: into.refused } : {}),
+            },
+          }),
       v1Counts: {
         ...base.v1Counts,
         importedMembers: members.length,
@@ -671,13 +800,8 @@ const assess = (params: V1ImportParams) =>
         toolkits: snapshot.toolkits.length,
         artifacts: artifacts.length,
       },
-      items: {
-        integrations: snapshot.integrations.map((row) => row.row_id),
-        connections: snapshot.connections.map((row) => row.row_id),
-        policies: snapshot.policies.map((row) => row.row_id),
-        toolkits: snapshot.toolkits.map((row) => row.row_id),
-        artifacts: artifacts.map((row) => row.row_id),
-      },
+      // A move that leaves v1's data in v1 copies none of it.
+      items: listed?.mode === "leave_v1_data" ? noItems : items,
     } satisfies Assessment;
   });
 
@@ -1270,6 +1394,45 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
     const [owner, ...others] = assessment.members;
     if (owner === undefined || assessment.organization === null)
       return yield* new V1ImportUnavailable();
+    const billingHold =
+      assessment.carryOver === null || assessment.carryOver.subscription === null
+        ? null
+        : JSON.stringify(assessment.carryOver.subscription);
+    // A listed existing organization the assessment allowed, checked again as it is recorded. Its
+    // owner is already there; a copy's other members join it.
+    const into = assessment.into;
+    if (into !== undefined && into.refused === undefined && into.mode !== null) {
+      const moved = yield* importInto(sql, store, {
+        organization,
+        target: into.organization,
+        mode: into.mode,
+        member: owner,
+        email: memberProfile(yield* source.user(owner.user)).email,
+        billingHold,
+      });
+      const joined: Array<readonly [string, string]> = [[owner.user, moved.user]];
+      for (const member of others) {
+        const profile = memberProfile(yield* source.user(member.user));
+        const user = yield* importUser(sql, store, organization, member, profile);
+        yield* importMembership(sql, store, {
+          organization,
+          target: moved.target.id,
+          member,
+          user,
+        });
+        joined.push([member.user, user]);
+      }
+      return {
+        target: { id: moved.target.id, slug: moved.target.slug },
+        slug: {
+          v1: assessment.organization.slug,
+          v2: moved.target.slug,
+          changed: moved.target.slug !== assessment.organization.slug,
+        },
+        owner: moved.user,
+        users: joined,
+      } satisfies Identity;
+    }
     const users: Array<readonly [string, string]> = [];
     // Emails and names are read again here rather than kept in the assessment.
     for (const member of assessment.members) {
@@ -1286,10 +1449,7 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
       slug: assessment.organization.slug,
       candidates: plan.candidates,
       displacement: plan.displacement,
-      billingHold:
-        assessment.carryOver === null || assessment.carryOver.subscription === null
-          ? null
-          : JSON.stringify(assessment.carryOver.subscription),
+      billingHold,
     });
     for (const [index, member] of others.entries()) {
       const user = users[index + 1]?.[1];
@@ -2097,6 +2257,7 @@ const reportOf = (
       reason: member.reason,
     })),
     slug: assessment.slug,
+    ...(assessment.into === undefined ? {} : { into: assessment.into }),
     integrationFailures: outcomes.flatMap((outcome) =>
       outcome.kind === "integration" && outcome.status === "failed"
         ? [{ id: outcome.id, label: outcome.label, error: outcome.reason ?? "" }]

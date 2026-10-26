@@ -60,6 +60,13 @@ export const V1Report = Schema.Struct({
       ),
     }),
   ),
+  into: Schema.optionalKey(
+    Schema.Struct({
+      organization: Schema.String,
+      mode: Schema.NullOr(Schema.String),
+      refused: Schema.optionalKey(Schema.String),
+    }),
+  ),
   integrationFailures: Schema.Array(
     Schema.Struct({ id: Schema.String, label: Schema.String, error: Schema.String }),
   ),
@@ -219,6 +226,19 @@ export const listV1SlugDisplacement = (organization: string, holder: string) =>
     {
       sql: "update private_v1_import_allowed set displace_v2_org_id = $2 where v1_org_id = $1",
       params: [organization, holder],
+    },
+  ]).pipe(Effect.asVoid);
+
+/**
+ * List the existing v2 organization an import of this v1 organization moves into instead of a new
+ * one, and how, as a person with database access does: the allow table row's `into_v2_org_id` and
+ * `into_mode`, which the import reads as `nothing_to_copy` when unset.
+ */
+export const listV1Into = (organization: string, target: string, mode?: string) =>
+  writeRows("sso-database.json", [
+    {
+      sql: "update private_v1_import_allowed set into_v2_org_id = $2, into_mode = nullif($3, '') where v1_org_id = $1",
+      params: [organization, target, mode ?? ""],
     },
   ]).pipe(Effect.asVoid);
 

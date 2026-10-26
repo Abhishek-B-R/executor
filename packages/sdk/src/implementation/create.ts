@@ -238,6 +238,8 @@ export const createExecutor = (
         credentialsReadable: credentialsReadable(db, credentials),
         moveImportedAccount: moveImportedAccount(db),
         refreshImportedGrant: oauth.refreshImportedGrant,
+        // The same removal without the provider-side revocation `accountOperations` makes.
+        removeImportedAccount: makeAccounts(db, credentials, crypto, options.hooks).remove,
       },
       [StorageHost]: {
         transaction: (effect) =>

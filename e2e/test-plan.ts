@@ -8613,6 +8613,30 @@ export const scenarios = plan({
       "Cloud v1 import gives a v1 workspace the slug a v2 team holds only when the operator listed that team in its allow table row: the dry run plans the team's new slug and writes nothing, the import renames the team and creates the workspace at the slug in one transaction, the team's member keeps it and its apps at the new slug while the old slug names the workspace, a listed team that does not hold the slug is reported and left alone, and an unlisted holder keeps its slug while the workspace takes a suffix",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportInto: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import moves an empty v1 workspace into the v2 team its one member owns when the operator listed that team in its allow table row: the dry run plans it and writes nothing, the import records the workspace against the team and marks it moved at the team's slug without creating an organization, user, membership or billing hold or changing the team, v1's forwarded MCP requests run in the team, starting it again and a later dry run find the team through its map row, billing return is refused, and a rollback gives the workspace back to v1 without deleting the team",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportIntoLeave: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import moves a v1 workspace into its member's v2 team without its data when the operator lists it to leave v1's data behind: the dry run counts v1's items and plans none, the import marks it moved at the team's slug with nothing copied and v1's rows untouched, and a rollback gives it back without changing the team",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportIntoCopy: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import copies a paid, shared v1 workspace into the empty v2 team its owner owns when the operator lists it: the team keeps its name and slug, gains the workspace's app, accounts and toolkit copies, its teammate joins, its subscription carries over to the team, a second copy into the team is refused as it is no longer empty, and after its billing goes back a rollback removes only what the import added",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ImportIntoRefused: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, and when the listed mode is unknown: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportAllowed: {
     file: "cloud-v1-import-run.spec.ts",
     title:
