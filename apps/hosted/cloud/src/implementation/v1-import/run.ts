@@ -1410,7 +1410,10 @@ const dryPolicies = (
       "integrations",
       "policies",
     ]);
-    return yield* Effect.forEach(snapshot.policies, (row) =>
+    // Only the rules the assessment plans, as an import moves: none when v1's data stays in v1.
+    const planned = new Set(assessment.items.policies);
+    const rows = snapshot.policies.filter((row) => planned.has(row.row_id));
+    return yield* Effect.forEach(rows, (row) =>
       Effect.gen(function* () {
         const decided = policyDecision(snapshot, row);
         const base = {
@@ -1441,7 +1444,10 @@ const dryToolkits = (assessment: Assessment, organization: string, split: Readon
       allSnapshotTables,
     );
     const lookup = plannedLookup(snapshot, firstParty, split);
-    return yield* Effect.forEach(snapshot.toolkits, (row) =>
+    // Only the toolkits the assessment plans, as an import moves: none when v1's data stays in v1.
+    const planned = new Set(assessment.items.toolkits);
+    const rows = snapshot.toolkits.filter((row) => planned.has(row.row_id));
+    return yield* Effect.forEach(rows, (row) =>
       Effect.gen(function* () {
         const toolkit = decodeToolkit(row, snapshot.toolkitRules);
         if (toolkit === undefined)

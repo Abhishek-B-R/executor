@@ -1438,26 +1438,47 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         ))[0]?.slug;
         const workspace = yield* listedV1Workspace("leave", [address], team, "leave_v1_data");
         const organization = workspace.organization;
+        const tracker = `left_${randomUUID().slice(0, 6)}`;
+        const toolkitRow = (collection: string, data: Record<string, string>) =>
+          row(
+            "insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, 'org', '', 'toolkits', $2, $3, $4::json)",
+            organization,
+            collection,
+            data.id ?? "",
+            JSON.stringify(data),
+          );
         yield* writeRows("v1-database.json", [
           row(
             "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Left Tracker', $3::json)",
             organization,
-            `left_${randomUUID().slice(0, 6)}`,
+            tracker,
             JSON.stringify({
               transport: "remote",
               endpoint: "https://left.example.com/mcp",
               remoteTransport: "auto",
             }),
           ),
+          row(
+            "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'a0')",
+            organization,
+            `${tracker}.*.*.search`,
+          ),
           goneRule(organization),
+          toolkitRow("toolkits", { id: "tk_left", name: "Left kit", slug: "left" }),
+          toolkitRow("toolkitConnections", {
+            id: "tc_left",
+            toolkitId: "tk_left",
+            pattern: `${tracker}.org.*.*`,
+            position: "a0",
+          }),
         ]);
         const v1Data = v1Rows(
           Schema.Struct({ row_id: Schema.String }),
-          "select row_id::text from integration where tenant = $1 union all select row_id::text from tool_policy where tenant = $1 order by 1",
+          "select row_id::text from integration where tenant = $1 union all select row_id::text from tool_policy where tenant = $1 union all select row_id::text from plugin_storage where tenant = $1 order by 1",
           organization,
         );
         const before = yield* v1Data;
-        expect(before).toHaveLength(2);
+        expect(before).toHaveLength(5);
         const teamMembers = cloudRows(
           Schema.Struct({ userId: Schema.String, role: Schema.String }),
           `select "userId", role from member where "organizationId" = $1`,
@@ -1479,10 +1500,19 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         expect(planned.status, planned.reason ?? "").toBe("planned");
         expect(planned.into).toEqual(into);
         expect(planned.slug?.v2).toBe(teamSlug);
-        // v1's items are counted, and none is planned in v2.
-        expect(planned.counts.v1).toMatchObject({ integrations: 1, policies: 1 });
-        expect(planned.counts.v2).toMatchObject({ users: 0, mergedUsers: 1, apps: 0, policies: 0 });
+        // v1's items are counted, and none is planned in v2: no app, rule or toolkit copy.
+        expect(planned.counts.v1).toMatchObject({ integrations: 1, policies: 2, toolkits: 1 });
+        expect(planned.counts.v2).toMatchObject({
+          users: 0,
+          mergedUsers: 1,
+          apps: 0,
+          accounts: 0,
+          policies: 0,
+          skippedPolicies: 0,
+          mcpConnections: 0,
+        });
         expect(planned.integrationFailures).toEqual([]);
+        expect(planned.unmatchedRules).toEqual([]);
 
         const run = v1RunId("leave");
         const started = yield* operator.start({
