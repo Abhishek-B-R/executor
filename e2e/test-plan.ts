@@ -6266,6 +6266,19 @@ export const scenarios = plan({
       local: na("Local uses its configured instance API key."),
     },
   },
+  executorAppSetupLeavesVersion: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "executor-key-account.spec.ts",
+    managementApps: ["owner", "admin"],
+    title:
+      "A member joining links their Executor key without redeploying the organization's Executor app",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Recording Executor's installed version writes the runner-owned product database."),
+      local: na("Local uses its configured instance API key."),
+    },
+  },
   sharedAuthorization: {
     fixtures: "actors",
     file: "shared-authorization.spec.ts",
