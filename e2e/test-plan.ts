@@ -5405,6 +5405,19 @@ export const scenarios = plan({
       local: na("Hosted app routes; local shares the runtime and telemetry paths."),
     },
   },
+  hostApiRevision: {
+    fixtures: "actors",
+    file: "host-api-revision.spec.ts",
+    title:
+      "The Executor app keeps no tools from an API document of another revision, in its Worker or its database facet",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Only the self-host test entry point serves another API revision; a Cloud test stage deployed twice checks the rollout itself.",
+      ),
+      local: na("Local serves no host API to its apps."),
+    },
+  },
   deferredServerPaths: {
     fixtures: "actors",
     file: "deferred-server-paths.spec.ts",

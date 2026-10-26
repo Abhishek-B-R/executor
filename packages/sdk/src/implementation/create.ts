@@ -110,6 +110,7 @@ export const createExecutor = (
       accountsUsable: oauth.usableAll,
       crypto,
       lifecycle: options.hooks,
+      hostApi: options.hostApi,
     });
     const workflows = makeWorkflowRuns(
       options.database,
@@ -178,6 +179,7 @@ export const createExecutor = (
       oauth,
       firstPartyClients,
       apps.list,
+      options.hostApi,
     );
     const schedules = makeSchedules(
       options.database,
@@ -304,7 +306,13 @@ export const createExecutor = (
         unlink: webhookSources.unlink,
       },
       webhookSetup: webhooks.webhookSetup,
-      appData: makeAppData(options.database, oauth.resolveSelected, runtime, workflows.controls),
+      appData: makeAppData(
+        options.database,
+        oauth.resolveSelected,
+        runtime,
+        options.hostApi,
+        workflows.controls,
+      ),
       tools: { ...tools, search: search.page },
     };
   });

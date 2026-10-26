@@ -44,6 +44,7 @@ import {
   type Runtime,
   type RuntimeBuildUnavailable,
 } from "../contracts/runtime.ts";
+import type { HostApiCheck } from "../contracts/host-api.ts";
 import { Json, type BuildId } from "../contracts/shared.ts";
 import type { LoadedWorkerBuild } from "../contracts/worker-build.ts";
 import type { BlobStore } from "../contracts/blobs.ts";
@@ -145,6 +146,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
       input: {
         readonly app: string;
         readonly build: BuildId;
+        readonly hostApi: HostApiCheck | undefined;
         readonly database: boolean;
         readonly observeRevision?: (revision: number) => void;
       } & HostContext,
@@ -171,6 +173,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
             accounts: Redacted.value(input.accounts),
             // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
             headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
+            ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
             ...(input.approval === undefined ? {} : { approval: input.approval }),
             ...(input.replay === undefined ? {} : { replay: input.replay }),
             ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
@@ -408,7 +411,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
         ).pipe(Effect.withSpan(span("checkAccount"))),
       migrate: (input) =>
         dispatch(
-          { ...input, database: true, accounts: Redacted.make({ app: {} }) },
+          // Migrations run the build's SQL files only, so they read no cache or API.
+          {
+            ...input,
+            hostApi: undefined,
+            database: true,
+            accounts: Redacted.make({ app: {} }),
+          },
           { operation: "migrate" },
           MigrateResult,
           HostCallError,
