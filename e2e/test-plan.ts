@@ -6612,7 +6612,19 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-management-contracts.spec.ts",
     title:
-      "hosted agents read the apps release, are refused create without files, deploy the documented two-file app, get commit and deploy results as objects, see the files a commit removed, are refused a file inside a file, and learn the tool-only app has no UI",
+      "hosted agents read the apps release, are refused create without files, deploy the documented two-file app, get commit and deploy results as objects, and learn the tool-only app has no UI",
+    managementApps: ["owner"],
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("Local runs the same agent programs in its own scenario."),
+    },
+  },
+  appManagementSavesHosted: {
+    fixtures: "actors",
+    file: "app-management-contracts.spec.ts",
+    title:
+      "hosted agents see the files a save removed and restore them, are refused a file inside a file or a path that is not Unicode, and get bounded lists of many removed files",
     managementApps: ["owner"],
     targets: {
       "self-host": scheduled,
