@@ -7,7 +7,7 @@ import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
-import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
+import { heldAlarmMilliseconds, scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
@@ -76,6 +76,9 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
     // Whether this instance has armed the retired coordinator's heartbeat since background work
     // last stopped, which deletes it.
     let heartbeat = false;
+    // Alarm events in progress, their dispatch included. The runtime delivers one alarm at a time,
+    // so an alarm that falls due meanwhile waits for them without being held.
+    let alarmEvents = 0;
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.provide(resources), Effect.provideService(ObjectDatabase, database));
     const retire = Effect.suspend(() => retired.getByName(retiredName).retire()).pipe(
@@ -128,6 +131,20 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
         if (due === undefined || (yield* Clock.currentTimeMillis) >= due) yield* attempt;
       }),
     );
+    /**
+     * Writes a new time over a stored alarm well past its time while no alarm event runs. Such an
+     * alarm is held: the runtime can schedule a later time than the one it stores and reports
+     * (cloudflare/workerd#7330), and only writing a different time schedules it again. Before this,
+     * a held alarm left every wake waiting for the later time, up to the minute recovery alarm.
+     */
+    const rearm = (now: number, pending: number) =>
+      state.storage
+        .setAlarm(now)
+        .pipe(
+          Effect.andThen(
+            Effect.logWarning("Schedule alarm held past its time", { lateMs: now - pending }),
+          ),
+        );
     /** A stopped background deletes both objects' alarms, as before the handover. */
     const stop = alarms.withPermits(1)(
       Effect.gen(function* () {
@@ -254,16 +271,28 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
               // A wake only brings the alarm in. Wakes arrive from every write in every
               // organization; when each one moved the alarm a second out, wakes under a second
               // apart kept it from ever firing, and due runs waited up to a minute for a lull.
-              const due =
-                (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds;
+              const now = yield* Clock.currentTimeMillis;
+              const due = now + defaultScheduleWorkerOptions.pollMilliseconds;
               const pending = yield* state.storage.getAlarm();
               if (pending === null || pending > due) yield* state.storage.setAlarm(due);
+              else if (alarmEvents === 0 && pending < now - heldAlarmMilliseconds)
+                yield* rearm(now, pending);
             }),
           );
         }),
       alarm: () =>
         Effect.gen(function* () {
           if (yield* lifetime.isBackgroundStopped) return yield* stop;
+          // Released when the event's scope closes, after its background dispatch.
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              alarmEvents += 1;
+            }),
+            () =>
+              Effect.sync(() => {
+                alarmEvents -= 1;
+              }),
+          );
           // A durable recovery wake remains if storage is temporarily unavailable or this event crashes.
           yield* alarms.withPermits(1)(
             Effect.gen(function* () {
@@ -317,12 +346,18 @@ const makeRetiredScheduleCoordinator = Effect.gen(function* () {
     });
     // Keeps the next alarm at most a minute away. It never moves an earlier one later, so frequent
     // wakes cannot postpone it, and brings a later one in, such as old code's alarm for an hourly
-    // schedule, so a revert never waits for it.
+    // schedule, so a revert never waits for it. One well past its time is held by the runtime
+    // (cloudflare/workerd#7330); writing it again for now schedules it.
     const keep = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const due = now + scheduleRecoveryMilliseconds;
       const pending = yield* state.storage.getAlarm();
-      const armed = pending === null || pending > due ? due : pending;
+      const armed =
+        pending === null || pending > due
+          ? due
+          : pending < now - heldAlarmMilliseconds
+            ? now
+            : pending;
       if (armed !== pending) yield* state.storage.setAlarm(armed);
       yield* Effect.annotateCurrentSpan({
         "executor.schedule.heartbeat.at": now,
