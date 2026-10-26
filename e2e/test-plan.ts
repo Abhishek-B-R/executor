@@ -4420,7 +4420,18 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "grouped-resources.spec.ts",
     title:
-      "workflow starts and webhook sources follow the caller's linked account, which a new link replaces, while unlinked history stays",
+      "workflow starts follow the caller's linked account, which a new link replaces, while unlinked history stays",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local resource controls have a separate paired-browser scenario."),
+    },
+  },
+  groupedWebhookSources: {
+    fixtures: "actors",
+    file: "grouped-resources.spec.ts",
+    title:
+      "webhook sources follow the caller's linked account, each configured on its own, which a new link replaces and unlinking stops",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
