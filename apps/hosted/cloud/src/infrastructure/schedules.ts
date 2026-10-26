@@ -7,12 +7,16 @@ import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
-import { heldAlarmMilliseconds, scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
+import {
+  cloudScheduleConcurrency,
+  heldAlarmMilliseconds,
+  scheduleRecoveryMilliseconds,
+} from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Config, Clock, Duration, Effect, Exit, Layer, Schema, Semaphore } from "effect";
+import { Clock, Duration, Effect, Exit, Layer, Semaphore } from "effect";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";
@@ -52,11 +56,6 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
   const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
-  const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
-    Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Int.check(Schema.isGreaterThan(0)))),
-    Effect.orDie,
-  );
   const objectDatabase = yield* cloudObjectDatabase;
   const retired = yield* ScheduleCoordinator;
   return Effect.gen(function* () {
@@ -66,7 +65,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
     // overlap. The connections close when the last one ends: an open socket or idle timer would
     // keep the object from hibernating between its minute wakes.
     const database = yield* objectDatabase("schedules", Duration.zero);
-    const pool = yield* Semaphore.make(concurrency);
+    const pool = yield* Semaphore.make(cloudScheduleConcurrency);
     const lifecycle = yield* Semaphore.make(1);
     const alarms = yield* Semaphore.make(1);
     const restoring = yield* Semaphore.make(1);
@@ -212,10 +211,11 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
-              executor[WebhookSourceHost].tick(concurrency),
+              // Webhook source maintenance keeps the Node hosts' width; only scheduled runs widen.
+              executor[WebhookSourceHost].tick(defaultScheduleWorkerOptions.concurrency),
               executor.scheduler.tick({
                 runner: "cloud",
-                maxCandidates: concurrency,
+                maxCandidates: cloudScheduleConcurrency,
                 authorize,
                 execute: (operation) =>
                   pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),

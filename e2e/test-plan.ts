@@ -2319,6 +2319,17 @@ export const scenarios = plan({
       local: na("Local runs schedules in its own server process."),
     },
   },
+  cloudScheduleCapacity: {
+    fixtures: "actors",
+    file: "cloud-schedule-capacity.spec.ts",
+    title:
+      "Cloud's schedule coordinator keeps nine slow scheduled runs in flight at once and starts another due schedule while they run",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host runs schedules in its own server process, with its own pool."),
+      local: na("Local runs schedules in its own server process, with its own pool."),
+    },
+  },
   cloudScheduleWakeStream: {
     fixtures: "actors",
     file: "cloud-schedule-wakes.spec.ts",
