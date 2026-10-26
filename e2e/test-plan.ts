@@ -200,6 +200,28 @@ export const scenarios = plan({
       local: na("Local does not serve the marketing site."),
     },
   },
+  releasedClientPackageNames: {
+    fixtures: "actors",
+    file: "released-client-package-names.spec.ts",
+    title:
+      "Clients released before publisher scopes read Cloud's app source and public listings by names they decode",
+    targets: {
+      cloud: sourceStorageCloud,
+      "self-host": na("Self-host does not publish apps or serve the public registry."),
+      local: na("Local does not publish apps or serve the public registry."),
+    },
+  },
+  releasedClientWriteBinding: {
+    fixtures: "actors",
+    file: "released-client-package-names.spec.ts",
+    title:
+      "Clients released before publisher scopes cannot remove a listing by its short name, and copy only the commit they were shown across a replacement, a rename and a reused slug",
+    targets: {
+      cloud: sourceStorageCloud,
+      "self-host": na("Self-host does not publish apps or serve the public registry."),
+      local: na("Local does not publish apps or serve the public registry."),
+    },
+  },
   packageScopes: {
     fixtures: "actors",
     file: "package-scopes.spec.ts",
@@ -8321,7 +8343,8 @@ export const scenarios = plan({
   },
   remoteRegistryFailures: {
     file: "registry-failures.spec.ts",
-    title: "Public app catalog refuses registry redirects and reports distinct registry failures",
+    title:
+      "Public app catalog refuses registry redirects, reports distinct registry failures and leaves out listings it cannot read",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
@@ -8352,6 +8375,18 @@ export const scenarios = plan({
       cloud: na("Cloud dispatches on alarms and requests, not by polling."),
       local: na(
         "Local runs the same scheduler and event loops; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  remoteRegistryReleasedClients: {
+    file: "registry-failures.spec.ts",
+    title:
+      "Clients released before publisher scopes find a remote registry's listings by the names they were shown, are refused a name two listings share, and copy only the commit they were shown",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
+      local: na(
+        "Local uses the same registry client; only self-host starts a scenario-owned server.",
       ),
     },
   },

@@ -35,6 +35,15 @@ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/sto
 export { aesGcmCredentials } from "./implementation/credentials.ts";
 /** Read another host's public catalog over HTTPS. */
 export { remoteRegistry } from "./implementation/remote-registry.ts";
+/** Registry results for clients that read an earlier wire revision. */
+export {
+  packageNameFromRevision,
+  publicationForRevision,
+  publicationsForRevision,
+  readinessForRevision,
+  registryForRevision,
+  scopedNameFor,
+} from "./implementation/wire-revision.ts";
 export { webhookCallback } from "./implementation/webhook-http.ts";
 
 export * from "./contracts/workflows.ts";

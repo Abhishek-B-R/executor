@@ -3,8 +3,9 @@
  * with an empty 400 before any handler runs, so the request span is the only
  * place that can record why. Incident reporting skips them.
  */
-import { Context, Effect, ErrorReporter, Option, type SchemaIssue, Tracer } from "effect";
+import { Context, Effect, ErrorReporter, Option, Tracer } from "effect";
 import { HttpApiError } from "effect/http-api";
+import { issueSummary } from "./schema-issue.ts";
 
 /** Request parts the caller supplies. Response encoding failures (Body, ResponseHeaders) are server faults. */
 const requestKinds: ReadonlySet<HttpApiError.HttpApiSchemaError["kind"]> = new Set([
@@ -19,28 +20,6 @@ export const isRequestRejection = (error: unknown): error is HttpApiError.HttpAp
   HttpApiError.HttpApiSchemaError.is(error) && requestKinds.has(error.kind);
 
 const maxIssues = 10;
-const segment = (key: PropertyKey) =>
-  typeof key === "number" ? `[${key}]` : `.${String(key).slice(0, 64)}`;
-
-/** Issue locations and categories only. Values, messages and annotations can echo request content. */
-const issueSummary = (issue: SchemaIssue.Issue, path: string): ReadonlyArray<string> => {
-  switch (issue._tag) {
-    case "Pointer":
-      return issueSummary(issue.issue, path + issue.path.map(segment).join(""));
-    case "Encoding":
-      return issueSummary(issue.issue, path);
-    case "Composite":
-      return issue.issues.flatMap((inner) => issueSummary(inner, path));
-    // A union lists why each member rejected the value.
-    case "AnyOf":
-      return issue.issues.length === 0
-        ? [`${path}: AnyOf`]
-        : issue.issues.flatMap((inner) => issueSummary(inner, path));
-    default:
-      return [`${path}: ${issue._tag}`];
-  }
-};
-
 /** Record the rejection on the span that owns the rejected request. */
 const recorder: ErrorReporter.ErrorReporter = {
   [ErrorReporter.TypeId]: ErrorReporter.TypeId,
