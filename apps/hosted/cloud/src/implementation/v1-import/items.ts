@@ -437,16 +437,34 @@ export const connectionSnapshot = <S extends Pick<V1Snapshot, "connections">>(
 
 /**
  * A connection's own app's name (decision 33): its integration's, then the connection's. A
- * workspace connection that shares its name with a member's says so, as its account does.
+ * workspace connection that shares its name with a member's says so, as its account does. App
+ * names are unique in an organization, and members often gave their connections the same name, so
+ * each later connection of a name is numbered, in the order v1 made them.
  */
 export const connectionAppName = (
   snapshot: Pick<V1Snapshot, "connections">,
   integration: IntegrationRow,
   connection: ConnectionRow,
 ) => {
-  const name = connection.name.trim() === "" ? "connection" : connection.name.trim().slice(0, 60);
-  const own = accountLabel(snapshot, connection) === connection.name ? name : `${name}, workspace`;
-  return `${integrationLabel(integration).slice(0, 117 - own.length)} (${own})`;
+  const own = (row: ConnectionRow) => {
+    const name = row.name.trim() === "" ? "connection" : row.name.trim().slice(0, 56);
+    return accountLabel(snapshot, row) === row.name ? name : `${name}, workspace`;
+  };
+  const base = own(connection);
+  const index = snapshot.connections
+    .filter((row) => row.integration === connection.integration && own(row) === base)
+    .sort((a, b) =>
+      a.created_ms !== b.created_ms
+        ? a.created_ms - b.created_ms
+        : a.row_id < b.row_id
+          ? -1
+          : a.row_id > b.row_id
+            ? 1
+            : 0,
+    )
+    .findIndex((row) => row.row_id === connection.row_id);
+  const label = index > 0 ? `${base} ${index + 1}` : base;
+  return `${integrationLabel(integration).slice(0, 117 - label.length)} (${label})`;
 };
 
 /** An item context narrowed to one connection's own app (decision 33). */

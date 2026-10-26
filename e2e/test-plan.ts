@@ -8674,6 +8674,12 @@ export const scenarios = plan({
       "Cloud v1 import retries v1 plan reads that time out or fail and still reports the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportSplitNames: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import numbers the apps of members' connections that share a name when their integration becomes an app per connection, each private to its member, beside the workspace connection's app for everyone",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportShared: {
     file: "cloud-v1-import-run.spec.ts",
     title:

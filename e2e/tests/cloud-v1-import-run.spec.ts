@@ -387,6 +387,85 @@ const goneRule = (organization: string) =>
   );
 
 layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
+  it.effect(scenarios.v1ImportSplitNames.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const operator = yield* v1ImportOperator;
+        const older = `older-${randomUUID().slice(0, 8)}@example.test`;
+        const first = yield* emulators.identity("google");
+        const workspace = yield* emulators.v1Workspace([older, first.email]);
+        const olderUser = workspace.user;
+        const firstUser = yield* emulators.v1User(first.email);
+        yield* emulators.setV1MemberRole(workspace.organization, olderUser, "member");
+        const former = yield* emulators.v1Workspace([
+          `former-${randomUUID().slice(0, 8)}@example.test`,
+        ]);
+        const { tracker } = yield* seedShared(
+          workspace.organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          { first: firstUser, second: olderUser, former: former.user },
+        );
+        // A workspace rule blocks searching through the team connection alone, so each connection
+        // becomes its own app; both members named their own connection `mine`.
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'b0')",
+            workspace.organization,
+            `${tracker}.org.team.search`,
+          ),
+        ]);
+        yield* signInOnV1(first.email);
+        yield* allowV1Import(workspace.organization);
+        const run = v1RunId("split-names");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [workspace.organization],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        const report = yield* operator.waitForReport(run, workspace.organization);
+        expect(report.status, report.reason ?? "").toBe("imported");
+        const target = report.v2Organization;
+        if (target === undefined) return yield* Effect.die("The import named no organization");
+        expect(
+          (report.splitIntegrations?.[0]?.apps ?? []).map((app) => [app.name, app.status]).sort(),
+        ).toEqual([
+          ["Shared Tracker (mine 2)", "imported"],
+          ["Shared Tracker (mine)", "imported"],
+          ["Shared Tracker (team)", "imported"],
+        ]);
+        // The first member made their `mine` first, so theirs keeps the name; each member's app is
+        // theirs alone, and the team connection's is everyone's, made by the owner.
+        const userOf = (email: string) =>
+          cloudRows(
+            Schema.Struct({ id: Schema.String }),
+            `select id from "user" where lower(email) = lower($1)`,
+            email,
+          ).pipe(Effect.map((users) => users[0]?.id));
+        const firstV2 = yield* userOf(first.email);
+        const olderV2 = yield* userOf(older);
+        const access = yield* cloudRows(
+          Schema.Struct({
+            name: Schema.String,
+            audience: Schema.String,
+            creator: Schema.NullOr(Schema.String),
+          }),
+          `select a.name, h.audience, h.creator_id as creator from executor_apps a
+            join hosted_app_access h on h.id = a.id
+            where a.owner = $1 and a.name like 'Shared Tracker%'`,
+          `organization:${target.id}`,
+        );
+        expect([...access].sort((a, b) => (a.name < b.name ? -1 : 1))).toEqual([
+          { name: "Shared Tracker (mine 2)", audience: "private", creator: olderV2 },
+          { name: "Shared Tracker (mine)", audience: "private", creator: firstV2 },
+          { name: "Shared Tracker (team)", audience: "everyone", creator: firstV2 },
+        ]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
   it.effect(scenarios.v1ImportShared.title, (context) =>
     withCase(
       context,
