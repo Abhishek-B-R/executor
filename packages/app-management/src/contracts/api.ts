@@ -25,6 +25,7 @@ import {
   StorageError,
   PublicationReadiness,
   RegistryError,
+  RequestRejection,
 } from "@executor-js/sdk/core";
 export * from "./framework.ts";
 
@@ -171,7 +172,7 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
   const tenant =
     prefix === "/api" ? Schema.Struct({}) : Schema.Struct({ organization: Schema.NonEmptyString });
   const app = Schema.Struct({ ...tenant.fields, app: AppId });
-  return HttpApi.make("app-management").add(
+  const api = HttpApi.make("app-management").add(
     HttpApiGroup.make("appManagement")
       .add(
         HttpApiEndpoint.get("list", "/apps", {
@@ -313,4 +314,5 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
       .prefix(prefix)
       .middleware(access),
   );
+  return api.middleware(RequestRejection);
 };

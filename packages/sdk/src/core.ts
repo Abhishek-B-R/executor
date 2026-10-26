@@ -6,6 +6,7 @@ export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { declarationConfig } from "./implementation/declaration-config.ts";
 export { evaluatedDeclarations } from "./implementation/evaluated-declarations.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
+export { rejectRequest, requestRejections } from "./implementation/request-rejection.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
 export { withExecutorUserAgent } from "./implementation/user-agent.ts";
 export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
