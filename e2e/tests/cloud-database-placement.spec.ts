@@ -459,6 +459,14 @@ return out;`,
                       object: spans
                         .map(({ span }) => span.tags["executor.mcp.object_id"])
                         .find((id) => id !== undefined),
+                      // How the object reached the database for each connection it opened.
+                      routes: [
+                        ...new Set(
+                          spans
+                            .filter(({ span }) => span.operationName === "sql.connect")
+                            .map(({ span }) => String(span.tags["db.connect.route"])),
+                        ),
+                      ],
                     })
                   : Effect.fail(
                       new Error(
@@ -483,6 +491,12 @@ return out;`,
             3,
           );
           expect(first.windows, "The session's calls share one activity window").toBe(1);
+          // One object per grant: each connected directly, every active session would hold
+          // PgBouncer clients of its own, and enough active sessions exhaust PgBouncer's client
+          // limit. Through Hyperdrive they share its bounded pool.
+          expect(first.routes, "Session objects connect through Hyperdrive").toEqual([
+            "hyperdrive",
+          ]);
           const object = first.object;
           if (object === undefined) return yield* Effect.die("Missing the session object's ID");
           const owner = `mcp ${object}`;

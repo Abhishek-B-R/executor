@@ -24,6 +24,7 @@ import { lookupColo } from "./colo.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
+import { cloudDirectDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 
 /**
@@ -56,7 +57,8 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
   const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
-  const objectDatabase = yield* cloudObjectDatabase;
+  // The one coordinator connects directly: its few connections stay beside the database.
+  const objectDatabase = yield* cloudObjectDatabase(cloudDirectDatabaseConnection);
   const retired = yield* ScheduleCoordinator;
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
