@@ -334,6 +334,18 @@ export const scenarios = plan({
       local: na("Role hosts are Cloud's; local serves one origin."),
     },
   },
+  cloudInvocationSurface: {
+    fixtures: "actors",
+    file: "cloud-role-hosts.spec.ts",
+    title:
+      "Cloud invocation records name each request's host role, route group and client family, never its URL or user agent",
+    targets: {
+      // Records come from the Tail receiver. Alchemy's local runtime delivers no tail events to it.
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("The Tail receiver and role hosts are Cloud's."),
+      local: na("The Tail receiver and role hosts are Cloud's."),
+    },
+  },
   cloudRollbackSwitch: {
     fixtures: "actors",
     file: "cloud-rollback.spec.ts",
