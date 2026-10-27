@@ -7777,6 +7777,17 @@ export const scenarios = plan({
       local: na("Local has no organization roles or account audiences."),
     },
   },
+  hostedDepartedMemberAppLink: {
+    fixtures: "actors",
+    file: "departed-member-app-links.spec.ts",
+    title:
+      "an app link to a member's personal account stops filling the app's requirement when the member leaves and stays listed for its managers, while a shared account linked beside it keeps serving",
+    targets: {
+      local: na("Hosted members leave organizations; Local has one owner."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppLinkRoleLock: {
     fixtures: "actors",
     file: "app-account-link-role-lock.spec.ts",
