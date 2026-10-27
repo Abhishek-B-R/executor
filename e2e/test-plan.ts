@@ -6022,6 +6022,17 @@ export const scenarios = plan({
       local: na("Local has no organizations, so its MCP spans name none."),
     },
   },
+  organizationRequestSpans: {
+    fixtures: "actors",
+    file: "organization-request-spans.spec.ts",
+    title:
+      "Hosted management API request spans name only an organization the caller belongs to, never one a refused request asks for",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local has no organizations, so its request spans name none."),
+    },
+  },
   cloudMcpForwardOrganization: {
     fixtures: "actors",
     file: "mcp-organization-spans.spec.ts",
