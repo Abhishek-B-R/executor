@@ -80,11 +80,11 @@ export const appWorkerBudgetLimit = 2;
  */
 export const lazyStallTimeoutMs = 15_000;
 /**
- * Seconds the aged search rows scenario's server reuses a tool listing
- * (`EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS`), in place of the default day: MCP readers never renew
+ * Seconds after which the aged search rows scenarios' server renews the rows a search serves
+ * (`EXECUTOR_TOOL_LISTING_RENEW_SECONDS`), in place of the default day: MCP readers never renew
  * the rows they read, so every app's rows age past it together.
  */
-export const agedRowsMaxAgeSeconds = 30;
+export const agedRowsRenewSeconds = 30;
 /** Seconds an idle app Worker stays loaded in the idle unloading scenario. */
 export const appWorkerIdleSeconds = 4;
 /** A relay callback in a valid form other than its serialization, which the SDK sends. */
@@ -652,11 +652,11 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
     title:
-      "MCP execute serves a search from rows past the listing age at once and renews them in the background",
-    serverEnvironment: { EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS: String(agedRowsMaxAgeSeconds) },
+      "MCP execute serves a search from rows past the renewal age at once and renews them in the background",
+    serverEnvironment: { EXECUTOR_TOOL_LISTING_RENEW_SECONDS: String(agedRowsRenewSeconds) },
     targets: {
       "self-host": scheduled,
-      cloud: na("Needs a short listing age; Cloud serves search through the same listings code"),
+      cloud: na("Needs a short renewal age; Cloud serves search through the same listings code"),
       local: na("Hosted version API scenario"),
     },
   },
@@ -664,11 +664,11 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
     title:
-      "MCP execute reports an app whose aged search rows fail to renew, however fast, until its upstream recovers",
-    serverEnvironment: { EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS: String(agedRowsMaxAgeSeconds) },
+      "MCP execute keeps searching an app's aged rows when renewing them fails, reports why, and renews them once its upstream recovers",
+    serverEnvironment: { EXECUTOR_TOOL_LISTING_RENEW_SECONDS: String(agedRowsRenewSeconds) },
     targets: {
       "self-host": scheduled,
-      cloud: na("Needs a short listing age and a loopback upstream; same listings code"),
+      cloud: na("Needs a short renewal age and a loopback upstream; same listings code"),
       local: na("Hosted version API scenario"),
     },
   },
@@ -704,7 +704,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
     title:
-      "Cloud remembers a stopped renewal of aged search rows as timed out and reports the app until it recovers",
+      "Cloud keeps serving aged search rows when it stops their renewal, and does not start it again at once",
     targets: {
       cloud: managedCloud,
       "self-host": na(

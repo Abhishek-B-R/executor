@@ -8,6 +8,7 @@ import {
   routerFailure,
   approvalRequired,
   ToolListingTimedOut,
+  ToolSearchStale,
   ToolSearchUnavailable,
   resolveLinkedAccounts,
   AccountChoiceUnsupported,
@@ -1143,6 +1144,20 @@ function catalog(
           const { linked, value: searchable } = discovered;
           for (const { entry } of routerFailures(app, searchable.version, searchable.routers))
             failed.push(entry);
+          // The app's earlier tools are still searched; this says why they may be out of date.
+          if (searchable.stale !== undefined)
+            failed.push({
+              app: app.id,
+              name: app.name,
+              reason: diagnostic(
+                new ToolSearchStale({
+                  app: app.id,
+                  listedAt: searchable.stale.listedAt,
+                  cause: searchable.stale.failure.description,
+                }),
+                site("discover"),
+              ),
+            });
           found.push({
             ...placeOf(app, linked),
             listing: searchable.listing,

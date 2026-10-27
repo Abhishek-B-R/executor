@@ -1407,6 +1407,7 @@ export const makeTools = (
             state.scope,
           ),
           routers: found.routers.filter((router) => router.error !== undefined),
+          ...(found.stale === undefined ? {} : { stale: found.stale }),
         };
       }).pipe(Effect.withSpan("sdk.tools.searchable")),
     /**
