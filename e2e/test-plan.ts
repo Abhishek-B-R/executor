@@ -5416,6 +5416,17 @@ export const scenarios = plan({
       local: na("Hosted app routes; local shares the runtime and telemetry paths."),
     },
   },
+  scheduleRunTelemetry: {
+    fixtures: "actors",
+    file: "schedule-run-telemetry.spec.ts",
+    title:
+      "scheduled runs record whether the app's code or Executor's runtime failed them, and Cloud's dispatch records the due schedules it found",
+    targets: {
+      cloud: managedCloud,
+      "self-host": scheduled,
+      local: na("Hosted app routes; local shares the scheduler and runtime paths."),
+    },
+  },
   hostApiRevision: {
     fixtures: "actors",
     file: "host-api-revision.spec.ts",
