@@ -378,7 +378,11 @@ export const remoteAppRunner = <E>(remote: RemoteAppRunner<Effect.Effect<string,
         const callbacks = yield* remoteCapabilities(capabilities, lifetime.signal);
         return yield* runnerResult(remote.invoke(encoded, callbacks), invocation.hostApi?.revision);
       }),
-    ).pipe(Effect.withSpan("runtime.app.remote.invoke")),
+    ).pipe(
+      Effect.withSpan("runtime.app.remote.invoke", {
+        attributes: { "executor.app.id": invocation.app },
+      }),
+    ),
   declare: (bundle: LoadedWorkerBuild, headers: Readonly<Record<string, string>>) =>
     Effect.try({
       try: () => encodeLoadedBuild(bundle),
