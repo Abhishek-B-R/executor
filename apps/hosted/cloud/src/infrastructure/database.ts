@@ -336,7 +336,8 @@ const connectAttemptTimeout = Duration.millis(2500);
  * session `SET`, advisory locks or `LISTEN`). Building it opens no connection; the pool connects
  * on first use. Opening a connection gets a second attempt when the first fails or times out.
  * Each `sql.connect` span records its `db.connect.attempt`, and the second also records why the
- * first failed as `db.connect.retry_reason`. When both fail, the statement fails with the
+ * first failed as `db.connect.retry_reason`. A failed attempt, a timed-out one included, is an
+ * error span with `db.connect.failure`. When both fail, the statement fails with the
  * driver's `SqlError`; statements themselves are never repeated. Beside the client it provides
  * {@link OpenedConnections}, its count of those spans.
  */
