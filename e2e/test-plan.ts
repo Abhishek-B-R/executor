@@ -2342,6 +2342,28 @@ export const scenarios = plan({
       local: na("Local runs its background jobs in its own server process."),
     },
   },
+  cloudJobOutcomes: {
+    fixtures: "actors",
+    file: "cloud-job-outcomes.spec.ts",
+    title:
+      "Cloud cron jobs record their outcome on their dispatch span, including a failure the job handled and still answered 204 for",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host runs its background jobs in its own server process."),
+      local: na("Local runs its background jobs in its own server process."),
+    },
+  },
+  cloudJobBatchOutcomes: {
+    fixtures: "actors",
+    file: "cloud-job-outcomes.spec.ts",
+    title:
+      "Cloud cron jobs record their outcome over a batch: partial when the mail provider refuses one welcome of two, failed when it refuses the only one",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host runs its background jobs in its own server process."),
+      local: na("Local runs its background jobs in its own server process."),
+    },
+  },
   cloudScheduleCoordinatorPlaced: {
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
