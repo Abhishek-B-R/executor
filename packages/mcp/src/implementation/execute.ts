@@ -1059,10 +1059,13 @@ function catalog(
           ? []
           : [
               {
-                namespace: `${app.slug}.${toolPath(router.path)}`,
+                // The app's own router failed only for some of its accounts: its tools stay
+                // callable, so the failure is reported without closing the app's namespace.
+                namespace: router.path === "" ? undefined : `${app.slug}.${toolPath(router.path)}`,
                 entry: {
                   app: app.id,
-                  name: `${app.name} ${router.title ?? router.path}`,
+                  name:
+                    router.path === "" ? app.name : `${app.name} ${router.title ?? router.path}`,
                   router: router.path,
                   reason: diagnostic(
                     routerFailure({ app: app.id, version }, router.error),
@@ -1109,7 +1112,7 @@ function catalog(
         // so a call into it explains why instead of reporting an unknown tool.
         for (const { namespace, entry } of routerFailures(app, catalog.version, catalog.routers)) {
           failed.push(entry);
-          namespaces.set(namespace, entry);
+          if (namespace !== undefined) namespaces.set(namespace, entry);
         }
         const described: Target = {
           ...placeOf(app, linked),

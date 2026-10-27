@@ -2585,6 +2585,16 @@ export const scenarios = plan({
       local: na("Exercises the hosted app deploy and tool call APIs."),
     },
   },
+  mcpAccountFailureIsolated: {
+    fixtures: "actors",
+    file: "mcp-account-failures.spec.ts",
+    title: "One account whose MCP server fails discovery leaves the app's other accounts usable",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared Worker MCP transport."),
+      local: na("Exercises the hosted app deploy, tool call and MCP execute APIs."),
+    },
+  },
   mcpRefusedEventStream: {
     fixtures: "actors",
     file: "mcp-event-stream.spec.ts",
