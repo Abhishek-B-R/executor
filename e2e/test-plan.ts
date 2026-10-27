@@ -1165,6 +1165,17 @@ export const scenarios = plan({
       local: na("The local dashboard does not batch its reads; most of them are live streams"),
     },
   },
+  dashboardReadStatus: {
+    fixtures: "actors",
+    file: "dashboard-read-batches.spec.ts",
+    title:
+      "Each batched dashboard read's span records the status it answered, and a server error fails it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The local dashboard does not batch its reads; most of them are live streams"),
+    },
+  },
   dashboardBuildChange: {
     fixtures: "actors",
     file: "dashboard-read-batches.spec.ts",
