@@ -5989,6 +5989,28 @@ export const scenarios = plan({
       local: na("The hosted Sentry reporter owns this behavior."),
     },
   },
+  mcpOrganizationSpans: {
+    fixtures: "actors",
+    file: "mcp-organization-spans.spec.ts",
+    title:
+      "Hosted MCP operation and bearer-check spans name only the caller's own organization by opaque ID, refused and failed ones included",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local has no organizations, so its MCP spans name none."),
+    },
+  },
+  cloudMcpForwardOrganization: {
+    fixtures: "actors",
+    file: "mcp-organization-spans.spec.ts",
+    title:
+      "Cloud's gateway names an authenticated MCP request's organization on its forward even when the session object never answers",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host serves MCP sessions in its server process, with no gateway hop."),
+      local: na("Local serves MCP sessions in its server process, with no gateway hop."),
+    },
+  },
   mcpTelemetryPrivacy: {
     fixtures: "actors",
     file: "mcp-telemetry-privacy.spec.ts",

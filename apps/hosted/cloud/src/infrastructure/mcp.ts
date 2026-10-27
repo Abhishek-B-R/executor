@@ -64,8 +64,15 @@ export const cloudMcp = Effect.gen(function* () {
   const sessions = yield* McpSession.from(McpServer);
   const environment = yield* Cloudflare.WorkerEnvironment;
   const keys = yield* mcpSessionKeys;
+  /**
+   * Forward one request to its session object. An authenticated request's forward names its
+   * organization from the start, so a forward the object never answers still names it; one
+   * routed by its session id learns it only from the object's answer.
+   */
   const send = (
-    route: "authenticated" | "session",
+    route:
+      | { readonly kind: "authenticated"; readonly organization: string }
+      | { readonly kind: "session" },
     /** An approval page's request carries no JSON-RPC message. */
     carries: "json-rpc" | "approval",
     fetch: (
@@ -74,7 +81,11 @@ export const cloudMcp = Effect.gen(function* () {
   ) =>
     Effect.flatMap(Effect.option(Effect.currentSpan), (server) =>
       Effect.gen(function* () {
-        yield* Effect.annotateCurrentSpan("executor.mcp.route", route);
+        yield* Effect.annotateCurrentSpan(
+          route.kind === "authenticated"
+            ? { "executor.mcp.route": route.kind, "executor.organization.id": route.organization }
+            : { "executor.mcp.route": route.kind },
+        );
         const request = yield* HttpServerRequest.HttpServerRequest;
         // Read from a copy, so the forwarded body is untouched; only a lost response and the
         // method attributes need it.
@@ -101,6 +112,7 @@ export const cloudMcp = Effect.gen(function* () {
           const response = yield* refuseTooDeep(
             forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
           );
+          // A request routed by its session id learns its organization here, from the object.
           const organization = response.headers[sessionOrganizationHeader];
           if (organization !== undefined)
             yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
@@ -112,8 +124,10 @@ export const cloudMcp = Effect.gen(function* () {
     (carries: "json-rpc" | "approval") => (access: Parameters<typeof mcpSessionKey>[0]) =>
       Effect.annotateCurrentSpan("executor.organization.id", access.access.organization).pipe(
         Effect.andThen(
-          send("authenticated", carries, (attempt) =>
-            sessions.getByName(mcpSessionKey(access)).fetch(attempt),
+          send(
+            { kind: "authenticated", organization: access.access.organization },
+            carries,
+            (attempt) => sessions.getByName(mcpSessionKey(access)).fetch(attempt),
           ),
         ),
       );
@@ -147,7 +161,7 @@ export const cloudMcp = Effect.gen(function* () {
         return mcpSessionNotFound();
       }
       const object = Cloudflare.fromCloudflareFetcher(namespace.get(id.value));
-      return yield* send("session", "json-rpc", (attempt) => object.fetch(attempt));
+      return yield* send({ kind: "session" }, "json-rpc", (attempt) => object.fetch(attempt));
     }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
   return {
     http: Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {

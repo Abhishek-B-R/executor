@@ -37,6 +37,7 @@ import {
   type FailureSite,
 } from "./diagnostics.ts";
 import { nearest } from "./suggestions.ts";
+import { withOperationSpan } from "./telemetry.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
@@ -877,10 +878,10 @@ function catalog(
             );
           }),
         );
-      }).pipe(Effect.withSpan(name));
+      }).pipe(withOperationSpan(name));
     const apps = yield* backend
       .listApps({ toolsOnly: true })
-      .pipe(Effect.withSpan("mcp.discovery.apps"));
+      .pipe(withOperationSpan("mcp.discovery.apps"));
     yield* Effect.annotateCurrentSpan({
       "executor.discovery.apps": apps.length,
       "executor.discovery.concurrency": concurrency,
@@ -1278,7 +1279,7 @@ function catalog(
           "executor.discovery.tools": entries.length,
         });
         return entries;
-      }).pipe(Effect.withSpan("mcp.describe.discovery"));
+      }).pipe(withOperationSpan("mcp.describe.discovery"));
     /**
      * Report targets whose listing search no longer keeps, as discovery reports a target it could
      * not load, and leave them out of later searches.
@@ -1325,7 +1326,7 @@ function catalog(
           "executor.discovery.targets": targets.length,
         });
         return targets;
-      }).pipe(Effect.withSpan("mcp.search.discovery"));
+      }).pipe(withOperationSpan("mcp.search.discovery"));
     const reachable = (names: ReadonlySet<string>) =>
       discovered.filter(({ app }) => names.has(app.slug));
     const slugs = new Set(apps.map((app) => app.slug));
@@ -1366,7 +1367,7 @@ function catalog(
             loaded === undefined ? 0 : Object.keys(loaded).length,
           );
           return loaded;
-        }).pipe(Effect.withSpan("mcp.discovery.namespace")),
+        }).pipe(withOperationSpan("mcp.discovery.namespace")),
       ).pipe(Effect.map((open) => ({ app: selected.app, open }))),
     );
     /** Namespaces for the program over every app it does not hold, each loaded on first use. */
@@ -1624,7 +1625,7 @@ function runProgram(
         });
         return discovered;
       }).pipe(
-        Effect.withSpan("mcp.catalog"),
+        withOperationSpan("mcp.catalog"),
         Effect.map(Option.some),
         Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
       );
@@ -1802,7 +1803,7 @@ export function callTools(input: typeof CallInput.Type): Program {
           const entries = yield* discovered.described(named.filter((path) => path !== ""));
           return { discovered, entries };
         }).pipe(
-          Effect.withSpan("mcp.catalog"),
+          withOperationSpan("mcp.catalog"),
           Effect.map(Option.some),
           Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
         );
