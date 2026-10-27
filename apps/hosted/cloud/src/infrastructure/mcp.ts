@@ -17,6 +17,7 @@ import {
   forwardMcpRequest,
   refuseTooDeep,
 } from "../implementation/mcp-forward.ts";
+import { mcpRequestAttributes, parseMcpBody } from "../implementation/mcp-request-method.ts";
 import {
   mcpSessionNotFound,
   sessionOrganizationHeader,
@@ -65,42 +66,57 @@ export const cloudMcp = Effect.gen(function* () {
   const keys = yield* mcpSessionKeys;
   const send = (
     route: "authenticated" | "session",
+    /** An approval page's request carries no JSON-RPC message. */
+    carries: "json-rpc" | "approval",
     fetch: (
       attempt: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<HttpServerResponse.HttpServerResponse, HttpServerError>,
   ) =>
-    Effect.gen(function* () {
-      yield* Effect.annotateCurrentSpan("executor.mcp.route", route);
-      const request = yield* HttpServerRequest.HttpServerRequest;
-      // Read from a copy, so the forwarded body is untouched; only a lost response needs it.
-      const body =
-        request.method === "POST"
-          ? yield* HttpServerRequest.toWeb(request).pipe(
-              Effect.flatMap((web) => Effect.tryPromise(() => web.clone().text())),
-              Effect.option,
-              Effect.map(Option.getOrUndefined),
-            )
-          : undefined;
-      return yield* Effect.gen(function* () {
-        const headers = yield* traceHeaders;
-        const traced = request.modify({ headers: { ...request.headers, ...headers } });
-        const response = yield* refuseTooDeep(
-          forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
+    Effect.flatMap(Effect.option(Effect.currentSpan), (server) =>
+      Effect.gen(function* () {
+        yield* Effect.annotateCurrentSpan("executor.mcp.route", route);
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        // Read from a copy, so the forwarded body is untouched; only a lost response and the
+        // method attributes need it.
+        const body = parseMcpBody(
+          request.method === "POST"
+            ? yield* HttpServerRequest.toWeb(request).pipe(
+                Effect.flatMap((web) => Effect.tryPromise(() => web.clone().text())),
+                Effect.option,
+                Effect.map(Option.getOrUndefined),
+              )
+            : undefined,
         );
-        const organization = response.headers[sessionOrganizationHeader];
-        if (organization !== undefined)
-          yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
-        return HttpServerResponse.removeHeader(response, sessionOrganizationHeader);
-      }).pipe(Effect.flatMap(observeMcpStream("gateway")), answerMemoryLimit(body));
-    }).pipe(Effect.withSpan("mcp.session.forward"));
-  const forward = (access: Parameters<typeof mcpSessionKey>[0]) =>
-    Effect.annotateCurrentSpan("executor.organization.id", access.access.organization).pipe(
-      Effect.andThen(
-        send("authenticated", (attempt) =>
-          sessions.getByName(mcpSessionKey(access)).fetch(attempt),
-        ),
-      ),
+        if (carries === "json-rpc" && request.method === "POST") {
+          // Both the forward and the gateway's request span, which records the response status.
+          const attributes = mcpRequestAttributes(body);
+          yield* Effect.annotateCurrentSpan(attributes);
+          if (Option.isSome(server))
+            for (const [key, value] of Object.entries(attributes))
+              server.value.attribute(key, value);
+        }
+        return yield* Effect.gen(function* () {
+          const headers = yield* traceHeaders;
+          const traced = request.modify({ headers: { ...request.headers, ...headers } });
+          const response = yield* refuseTooDeep(
+            forwardMcpRequest(traced, (attempt) => timedForward(fetch(attempt))),
+          );
+          const organization = response.headers[sessionOrganizationHeader];
+          if (organization !== undefined)
+            yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
+          return HttpServerResponse.removeHeader(response, sessionOrganizationHeader);
+        }).pipe(Effect.flatMap(observeMcpStream("gateway")), answerMemoryLimit(body));
+      }).pipe(Effect.withSpan("mcp.session.forward")),
     );
+  const forward =
+    (carries: "json-rpc" | "approval") => (access: Parameters<typeof mcpSessionKey>[0]) =>
+      Effect.annotateCurrentSpan("executor.organization.id", access.access.organization).pipe(
+        Effect.andThen(
+          send("authenticated", carries, (attempt) =>
+            sessions.getByName(mcpSessionKey(access)).fetch(attempt),
+          ),
+        ),
+      );
   const inSession = (value: string) =>
     Effect.gen(function* () {
       const auth = yield* McpAuthentication;
@@ -131,13 +147,13 @@ export const cloudMcp = Effect.gen(function* () {
         return mcpSessionNotFound();
       }
       const object = Cloudflare.fromCloudflareFetcher(namespace.get(id.value));
-      return yield* send("session", (attempt) => object.fetch(attempt));
+      return yield* send("session", "json-rpc", (attempt) => object.fetch(attempt));
     }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
   return {
     http: Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
       const session = request.headers["mcp-session-id"];
-      return session === undefined ? authenticatedMcp(forward) : inSession(session);
+      return session === undefined ? authenticatedMcp(forward("json-rpc")) : inSession(session);
     }),
-    approvals: browserMcpRequest((access) => forward(access)),
+    approvals: browserMcpRequest(forward("approval")),
   };
 });
